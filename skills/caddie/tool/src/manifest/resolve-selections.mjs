@@ -107,6 +107,7 @@ export async function resolveSelectionsWithEvidence(manifest, {
       resolvedCommit: lockEntry.commit.toLowerCase(),
       fingerprint: inspected.evidence.fingerprint,
       freshness: inspected.resolution.freshness,
+      extensionFields: inspected.evidence.skill.extensionFields,
       ...lineageFields(selection),
     });
   }
@@ -145,16 +146,17 @@ async function resolveLocalSelection(manifest, source, selection) {
     }
     throw cause;
   }
-  const name = extractSkillName(content, skillFile, path.basename(skillPath));
+  const metadata = validatedSkillMetadata(content, skillFile, path.basename(skillPath));
   const git = await localGitProvenance(skillPath);
   return {
-    name,
+    name: metadata.name,
     scope: manifest.scope,
     source: source.name,
     sourceType: 'local',
     selectedPath: selection.path,
     skillPath,
     skillFile,
+    extensionFields: metadata.extensionFields,
     ...(git ?? {}),
     ...lineageFields(selection),
   };
@@ -216,6 +218,10 @@ function requireSkillName(metadata, skillFile) {
 }
 
 export function extractSkillName(content, skillFile = 'SKILL.md', expectedDirectoryName = null) {
+  return validatedSkillMetadata(content, skillFile, expectedDirectoryName).name;
+}
+
+function validatedSkillMetadata(content, skillFile, expectedDirectoryName) {
   const metadata = parseSkillMetadata(content);
   if (!metadata.frontmatterPresent) {
     throw invalid('skill-frontmatter-missing', `SKILL.md has no YAML frontmatter: ${skillFile}`, { skillFile });
@@ -231,7 +237,7 @@ export function extractSkillName(content, skillFile = 'SKILL.md', expectedDirect
       skillFile, name, directory: expectedDirectoryName,
     });
   }
-  return name;
+  return metadata;
 }
 
 function isSkillConformanceFinding(finding) {

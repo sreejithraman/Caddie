@@ -72,6 +72,7 @@ async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scope
       classification: exact ? 'exact' : 'modified',
       preselected: exact,
       preserved: true,
+      extensionFields: skillShape.extensionFields,
       legacyEvidence: legacy.entries[name] || null,
     });
   }
@@ -110,7 +111,7 @@ async function inspectSkillShape(installedPath, expectedName) {
   const metadata = parseSkillMetadata(content);
   const findings = [...metadata.standardFindings];
   if (metadata.name && metadata.name !== expectedName) findings.push({ code: 'skill-name-directory-mismatch' });
-  return { valid: findings.length === 0, findings };
+  return { valid: findings.length === 0, findings, extensionFields: metadata.extensionFields };
 }
 
 function isPermissionFailure(error) {

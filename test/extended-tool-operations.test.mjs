@@ -23,6 +23,24 @@ test('inspect-source exposes bounded untrusted local evidence through the public
   assert.equal(envelope.result.skill.name, 'fixture');
 });
 
+test('inspect-source reports client extension fields without reducing coverage', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-extension-'));
+  const selected = path.join(root, 'extended');
+  await mkdir(selected, { recursive: true });
+  await writeFile(path.join(selected, 'SKILL.md'), `---
+name: extended
+description: Compatible upstream skill.
+disable-model-invocation: true
+---
+`);
+
+  const envelope = invoke('inspect-source', { type: 'local', root, selectionPath: 'extended' });
+
+  assert.equal(envelope.ok, true, JSON.stringify(envelope));
+  assert.equal(envelope.coverage.status, 'complete');
+  assert.deepEqual(envelope.result.skill.extensionFields, ['disable-model-invocation']);
+});
+
 test('inspect surfaces single- and multi-origin declared Lineage with its Migration Record', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-lineage-'));
   const source = path.join(root, 'skills');
