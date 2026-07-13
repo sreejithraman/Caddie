@@ -2,6 +2,8 @@
 
 Caddie manages agent skills across a user's shared environment and registered projects while preserving ownership, provenance, and local work.
 
+This repository context defines the domain language for designing, implementing, and reviewing Caddie.
+
 ## Product
 
 **Caddie**:
@@ -43,8 +45,7 @@ The skills a project adds to User Skills through its project-scoped Caddie Manif
 _Avoid_: Project Stack, local skills, project install
 
 **Available Skills**:
-The skills Caddie makes available for a particular project after combining user and project scope.
-A same-named Project Skill shadows its User Skill; Caddie retains explicit evidence of both selections.
+The skills Caddie makes available for a particular project after combining user and project scope. A same-named Project Skill shadows its User Skill; Caddie retains evidence of both selections.
 _Avoid_: Effective Stack, merged skills, installed skills
 
 **Bird's-eye View**:
