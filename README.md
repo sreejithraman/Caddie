@@ -34,7 +34,7 @@ Caddie is an Agent App, not a human-facing package-manager CLI. Its scripts are 
 - Recommend Git without requiring it.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
-The committed [Wayfinder map](.scratch/map.md) and its linked research record the design process. The GitHub v1 specification is the normative implementation source.
+The GitHub v1 specification is the normative implementation source.
 
 ## License
 
