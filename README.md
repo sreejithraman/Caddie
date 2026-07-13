@@ -11,7 +11,7 @@ Caddie v1 is under active implementation.
 - [Caddie v1 specification](https://github.com/sreejithraman/Caddie/issues/1)
 - [First implementation ticket](https://github.com/sreejithraman/Caddie/issues/2)
 
-The specification is divided into agent-ready tracer-bullet tickets with native dependency relationships. Work can proceed from any unblocked ticket in the GitHub issue frontier.
+The specification and its tracer-bullet tickets remain the baseline v1 product requirements. Repository architecture decisions record accepted changes and supersede only the requirements they identify.
 
 ## Intended experience
 
@@ -34,7 +34,7 @@ Caddie is an Agent App. Users interact through the Caddie Skill, which directs t
 - Leave ordinary repository authoring, worktrees, commits, and pull requests to the hosting agent.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
-The GitHub v1 specification is the normative implementation source.
+The v1 specification remains the baseline; see [the architecture decisions](docs/adr/) for accepted changes.
 
 ## Caddie Tool
 

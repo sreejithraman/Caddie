@@ -6,4 +6,6 @@ Repository authoring is outside that seam. Hosting agents can create worktrees, 
 
 Caddie therefore leaves repository workflows to the hosting agent. The Caddie Skill may guide the agent to author and publish source changes using its normal capabilities. Once source content is final, Caddie inspects and resolves that source, then produces an immutable plan for the resulting managed-state mutation.
 
+This decision supersedes user stories 61–75 and the corresponding repository-workflow implementation and testing decisions in the original v1 specification. Those requirements remain historical product context rather than current Caddie Tool behavior.
+
 Filesystem defenses remain inside the Caddie Tool wherever it writes Caddie-owned state. This decision removes orchestration, not path validation, symlink safety, atomic writes, approval binding, or recovery for managed mutations.
