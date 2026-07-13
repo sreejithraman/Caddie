@@ -20,30 +20,30 @@ _Avoid_: Installer, package manager, CLI
 The one-time action that makes the Caddie Skill available and hands its installation into normal Caddie self-management.
 _Avoid_: Setup wizard, installation workflow
 
-## Stacks and projects
+## Skills and projects
 
-**Stack Repository**:
-A Git repository that owns a User Stack and may contain its user-authored skills and upstream selections.
-_Avoid_: Registered Project, dotfiles repository, skills folder
+**Skills Repository**:
+A Git repository containing one or more agent skills for authoring, distribution, or both.
+_Avoid_: Stack Repository, package registry, skills folder
 
 **Registered Project**:
-A project Caddie knows about and can include in focused or bird's-eye inspection. Registration does not imply that the project has a Project Stack.
-_Avoid_: Stack Repository, portfolio entry, tracked repository
+A project Caddie knows about and can include in focused or bird's-eye inspection. Registration does not imply that the project declares Project Skills.
+_Avoid_: Skills Repository, portfolio entry, tracked repository
 
-**User Stack**:
+**User Skills**:
 The skills a user makes available across projects through a user-scoped Caddie Manifest.
-_Avoid_: Global Stack, default install
+_Avoid_: User Stack, global skills, default install
 
-**Project Stack**:
-The skills a project adds to the User Stack through its project-scoped Caddie Manifest.
-_Avoid_: Local skills, project install
+**Project Skills**:
+The skills a project adds to User Skills through its project-scoped Caddie Manifest.
+_Avoid_: Project Stack, local skills, project install
 
-**Effective Stack**:
-The combination of the User Stack and the additive Project Stack for a particular project.
-_Avoid_: Merged stack, active install
+**Available Skills**:
+The skills Caddie makes available for a particular project after combining user and project scope.
+_Avoid_: Effective Stack, merged skills, installed skills
 
 **Bird's-eye View**:
-A live Caddie assessment spanning the User Stack and all Registered Projects, regardless of the project from which Caddie is invoked.
+A live Caddie assessment spanning User Skills and all Registered Projects, regardless of the project from which Caddie is invoked.
 _Avoid_: Portfolio, dashboard, snapshot
 
 ## Declared and resolved state
@@ -61,7 +61,7 @@ A named local or remote origin from which Caddie can select skills.
 _Avoid_: Package, registry
 
 **Skill Selection**:
-A choice of one skill directory from a Skill Source for inclusion in a stack.
+A choice of one skill directory from a Skill Source for inclusion at a scope.
 _Avoid_: Dependency, package install
 
 **Lineage**:

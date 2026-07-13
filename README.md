@@ -15,8 +15,8 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 
 ## Intended experience
 
-- Keep a User Stack of skills available across repositories.
-- Add project-owned skills through an additive Project Stack.
+- Keep User Skills available across projects.
+- Add project-owned capabilities through Project Skills.
 - Expose one canonical `.agents/skills` installation to Codex and Claude.
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
