@@ -110,6 +110,36 @@ test('legacy manager cleanup removes only a verified Vercel lock', async () => {
   assert.equal(await readFile(path.join(fixture.installed, 'SKILL.md'), 'utf8'), fixture.skillContent);
 });
 
+test('legacy manager cleanup plan becomes stale when installed-state evidence changes', async (t) => {
+  await t.test('managed skill drifts', async () => {
+    const fixture = await currentFixture();
+    await json(path.join(fixture.home, '.agents', '.skill-lock.json'), {
+      version: 3, skills: { shared: legacyEntry('shared') },
+    });
+    const planned = invoke('plan', { workflow: 'legacy-manager-cleanup' }, fixture);
+    assert.equal(planned.ok, true, JSON.stringify(planned));
+    await writeFile(path.join(fixture.installed, 'SKILL.md'), 'changed after approval\n');
+    const applied = invoke('apply-plan', { plan: planned.result.plan, approval: approve(planned.result.plan) }, fixture);
+    assert.equal(applied.ok, false, JSON.stringify(applied));
+    assert.equal(applied.error.code, 'stale-plan');
+    await access(path.join(fixture.home, '.agents', '.skill-lock.json'));
+  });
+
+  await t.test('obsolete skill appears', async () => {
+    const fixture = await currentFixture();
+    await json(path.join(fixture.home, '.agents', '.skill-lock.json'), {
+      version: 3, skills: { removed: legacyEntry('removed') },
+    });
+    const planned = invoke('plan', { workflow: 'legacy-manager-cleanup' }, fixture);
+    assert.equal(planned.ok, true, JSON.stringify(planned));
+    await skill(path.join(fixture.home, '.agents', 'skills', 'removed'), 'removed', 'appeared after approval\n');
+    const applied = invoke('apply-plan', { plan: planned.result.plan, approval: approve(planned.result.plan) }, fixture);
+    assert.equal(applied.ok, false, JSON.stringify(applied));
+    assert.equal(applied.error.code, 'stale-plan');
+    await access(path.join(fixture.home, '.agents', '.skill-lock.json'));
+  });
+});
+
 test('legacy manager cleanup is blocked by malformed or unowned live entries', async (t) => {
   await t.test('malformed lock', async () => {
     const fixture = await currentFixture();
@@ -135,6 +165,20 @@ test('legacy manager cleanup is blocked by malformed or unowned live entries', a
     const inspected = invoke('inspect', { view: 'legacy-manager' }, fixture);
     assert.equal(inspected.result.legacyManagerState.status, 'unsupported');
     assert.equal(inspected.result.legacyManagerState.removalRecommended, false);
+  });
+  await t.test('malformed Caddie ledger', async () => {
+    const fixture = await currentFixture();
+    await json(path.join(fixture.home, '.agents', '.skill-lock.json'), {
+      version: 3, skills: { shared: legacyEntry('shared') },
+    });
+    await json(path.join(fixture.home, '.agents', '.caddie', 'ledger.json'), {
+      version: 1, scopeId: 'user', entries: [null],
+    });
+    const inspected = invoke('inspect', { view: 'legacy-manager' }, fixture);
+    assert.equal(inspected.ok, true, JSON.stringify(inspected));
+    assert.equal(inspected.result.legacyManagerState.status, 'unverified');
+    assert.equal(inspected.result.legacyManagerState.findings[0].code, 'current-caddie-ledger-invalid');
+    assert.equal(invoke('plan', { workflow: 'legacy-manager-cleanup' }, fixture).ok, false);
   });
 });
 

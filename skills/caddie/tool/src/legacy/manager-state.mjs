@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { invalid } from '../protocol/errors.mjs';
+import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
 
 const require = createRequire(import.meta.url);
 const { fingerprint, fingerprintIfPresent } = require('../apply/filesystem');
@@ -42,11 +43,9 @@ export async function inspectLegacyManagerState(input = {}, runtime = {}) {
     };
   }
   const ledgerFile = await readObject(layout.ledgerPath, { allowMissing: true });
-  const ledger = ledgerFile.status === 'ready' ? ledgerFile.value : null;
   const manifestPresent = await realFileFingerprint(layout.manifestPath);
   const ledgerPresent = ledgerFile.status === 'ready' ? await realFileFingerprint(layout.ledgerPath) : null;
-  if (!ledger || ledger.version !== 1 || ledger.scopeId !== 'user' || !Array.isArray(ledger.entries)
-    || !manifestPresent || !ledgerPresent) {
+  if (ledgerFile.status !== 'ready' || !manifestPresent || !ledgerPresent) {
     return {
       status: 'unverified',
       path: layout.legacySkillLockPath,
@@ -54,6 +53,19 @@ export async function inspectLegacyManagerState(input = {}, runtime = {}) {
       removalRecommended: false,
       entries: [],
       findings: [{ code: 'current-caddie-state-incomplete' }],
+    };
+  }
+  const ledger = ledgerFile.value;
+  try {
+    validateOwnershipLedger(ledger, { expectedScopeId: 'user', label: 'current User Skills ledger' });
+  } catch {
+    return {
+      status: 'unverified',
+      path: layout.legacySkillLockPath,
+      fingerprint: await fingerprint(layout.legacySkillLockPath),
+      removalRecommended: false,
+      entries: [],
+      findings: [{ code: 'current-caddie-ledger-invalid' }],
     };
   }
 
@@ -121,6 +133,12 @@ export async function createLegacyManagerCleanupPlan(input = {}, runtime = {}) {
       preconditions: [
         { path: layout.manifestPath, expected: { state: 'file', fingerprint: evidence.manifestFingerprint } },
         { path: layout.ledgerPath, expected: { state: 'file', fingerprint: evidence.ledgerFingerprint } },
+        ...evidence.entries.map((entry) => ({
+          path: entry.installedPath,
+          expected: entry.classification === 'managed'
+            ? { state: 'fingerprint', fingerprint: entry.installedFingerprint }
+            : { state: 'absent' },
+        })),
       ],
       operations: [{
         type: 'remove-legacy-manager-state',
