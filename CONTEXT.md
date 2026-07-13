@@ -1,77 +1,135 @@
-# SreeStack
+# Caddie
 
-SreeStack defines and reproduces a curated environment of authored and third-party agent skills.
+Caddie manages agent skills across a user's shared environment and registered projects while preserving ownership, provenance, and local work.
 
-## Language
+## Product
 
-**Skill Environment Manager**:
-The deterministic part of SreeStack that maintains a declared skill environment.
-_Avoid_: Installer, package manager
+**Caddie**:
+The Agent App as a whole, combining a conversational skill, deterministic tooling, and durable skill-management state.
+_Avoid_: Skill package manager, Caddie CLI
 
-**SreeStack Operator**:
-The agent-facing skill that interprets user intent and guides changes to a SreeStack environment.
-_Avoid_: Meta skill, manager skill
+**Caddie Skill**:
+The conversational agent interface that understands user intent and skill semantics, presents choices, and directs Caddie operations.
+_Avoid_: Operator, meta skill, manager skill
+
+**Caddie Tool**:
+The deterministic engine the Caddie Skill uses to gather evidence and execute exact operations.
+_Avoid_: Installer, package manager, CLI
+
+**Bootstrap**:
+The one-time action that makes the Caddie Skill available and hands its installation into normal Caddie self-management.
+_Avoid_: Setup wizard, installation workflow
+
+## Stacks and projects
 
 **Stack Repository**:
-A Git repository that declares a user's global skill environment and contains the skills they author.
-_Avoid_: Dotfiles repository, skills folder
+A Git repository that owns a User Stack and may contain its user-authored skills and upstream selections.
+_Avoid_: Registered Project, dotfiles repository, skills folder
+
+**Registered Project**:
+A project Caddie knows about and can include in focused or bird's-eye inspection. Registration does not imply that the project has a Project Stack.
+_Avoid_: Stack Repository, portfolio entry, tracked repository
 
 **User Stack**:
-The skills a user makes available across repositories through their user-scoped Stack Manifest.
-_Avoid_: Global Stack, user skills, default install
+The skills a user makes available across projects through a user-scoped Caddie Manifest.
+_Avoid_: Global Stack, default install
 
 **Project Stack**:
-A project's committed declaration of skills that supplement the User Stack.
+The skills a project adds to the User Stack through its project-scoped Caddie Manifest.
 _Avoid_: Local skills, project install
 
 **Effective Stack**:
-The resolved combination of the User Stack and a project's opted-in Project Stack.
-_Avoid_: Merged skills, active install
+The combination of the User Stack and the additive Project Stack for a particular project.
+_Avoid_: Merged stack, active install
 
-**Migration Proposal**:
-An evidence-backed, reviewable interpretation of upstream skill changes that has not yet altered the declared or installed environment.
-_Avoid_: Automatic migration, update
+**Bird's-eye View**:
+A live Caddie assessment spanning the User Stack and all Registered Projects, regardless of the project from which Caddie is invoked.
+_Avoid_: Portfolio, dashboard, snapshot
 
-**Operator Bootstrap**:
-The minimal one-time action that makes the SreeStack Operator available to a user's agent harness.
-_Avoid_: Installation workflow, setup wizard
+## Declared and resolved state
 
-**Agent App**:
-A system whose primary user interface is an agent skill, supported by deterministic tools and durable repository artifacts.
-_Avoid_: CLI application, interactive installer
-
-**Caddie**:
-The standalone Agent App that manages skill lifecycles and placements across a Stack Repository and its managed projects.
-_Avoid_: Skill package manager, Caddie CLI
-
-**Migration Record**:
-A durable narrative artifact explaining an accepted interpretation of upstream skill changes, referenced by structured SreeStack state when needed.
-_Avoid_: Migration log, changelog entry
-
-**Stack Manifest**:
-A versioned `caddie.json` declaration of desired skill state at either user or project scope.
+**Caddie Manifest**:
+A versioned declaration of desired skill sources and selections at user or project scope.
 _Avoid_: Configuration file, skills list
 
-**Resolution Lock**:
-A generated `caddie.lock` record of the exact sources and skill content resolved from a Stack Manifest.
+**Caddie Lock**:
+A generated record of the exact external source revisions resolved for a Caddie Manifest.
 _Avoid_: Install state, cache index
 
+**Skill Source**:
+A named local or remote origin from which Caddie can select skills.
+_Avoid_: Package, registry
+
+**Skill Selection**:
+A choice of one skill directory from a Skill Source for inclusion in a stack.
+_Avoid_: Dependency, package install
+
+**Lineage**:
+The declared or inferred semantic ancestry between a skill and one or more originating skills.
+_Avoid_: Copy history, fork metadata
+
+## Installation and ownership
+
 **Canonical Installation**:
-The complete skill directories exposed to harnesses under a scope's `.agents/skills`; user-level entries are materialized, while Git-backed project-owned skills may live there in place.
-_Avoid_: Source of truth, skill cache
+The complete skill directories for a scope that Caddie exposes to agent harnesses.
+_Avoid_: Source repository, skill cache
 
 **In-place Skill**:
-A Git-backed, project-owned skill whose committed authoring source is also its directory in the project's Canonical Installation.
-_Avoid_: Local copy, unmanaged skill
+A project-owned skill whose authoring location is also its location in the project's Canonical Installation.
+_Avoid_: Materialized Skill, unmanaged skill
 
 **Materialized Skill**:
-A complete Caddie-owned skill directory copied from a declared source into a Canonical Installation.
-_Avoid_: Vendored skill, symlinked skill
+A complete skill directory Caddie copies from a Skill Source into a Canonical Installation and owns there.
+_Avoid_: In-place Skill, vendored skill, symlinked skill
+
+**Harness Exposure**:
+A Caddie-managed connection that makes a Canonical Installation visible to an agent harness.
+_Avoid_: Skill copy, source link
+
+**Caddie Ledger**:
+The machine-local record of Materialized Skills and Harness Exposures Caddie owns, including their last reconciled state.
+_Avoid_: Caddie Lock, manifest, inventory
+
+**Adoption**:
+The preservation-first process of bringing an existing skill installation under Caddie ownership.
+_Avoid_: Import, reinstall, takeover
+
+**Unmanagement**:
+The process of ending Caddie ownership while preserving installed skills and working Harness Exposures by default.
+_Avoid_: Uninstall, delete, cleanup
+
+## Change interpretation
+
+**Upstream Change**:
+A change in a selected skill's source after the currently resolved revision.
+_Avoid_: Drift, local modification
+
+**Drift**:
+A change in a Materialized Skill since Caddie last reconciled it that is not explained by its source.
+_Avoid_: Upstream Change, update
+
+**Divergence**:
+The state in which a Skill Source and its Materialized Skill have changed differently since their last reconciliation.
+_Avoid_: Drift, merge conflict
+
+**Migration Proposal**:
+An evidence-backed interpretation of an upstream identity or behavior change that presents choices without changing managed state.
+_Avoid_: Caddie Plan, automatic migration, update
+
+**Migration Record**:
+A durable narrative explaining an accepted semantic interpretation that would be expensive to reconstruct.
+_Avoid_: Migration log, changelog entry
+
+## Change execution
+
+**Caddie Plan**:
+An immutable proposal of exact effects and required conditions that can be approved for execution.
+_Avoid_: Migration Proposal, shell script, intent
 
 **Change Set**:
-One approved Caddie outcome coordinated across one or more owning repositories and published in dependency-ordered waves when required.
-_Avoid_: Umbrella PR, batch update
+One approved Caddie outcome coordinated across one or more owning repositories.
+_Avoid_: Caddie Plan, umbrella PR, batch update
 
 **Change Sandbox**:
-An isolated temporary copy used to prepare an approved content change when the owning directory is not Git-backed.
+An isolated temporary copy used to prepare an approved content change when its owning location is not Git-backed.
 _Avoid_: Worktree, backup
