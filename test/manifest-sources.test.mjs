@@ -111,6 +111,31 @@ test('local selections reject nonconforming metadata and directory-name mismatch
   await assert.rejects(() => resolveSelections(manifest), (error) => error.code === 'skill-name-directory-mismatch');
 });
 
+test('local selections preserve client-specific frontmatter extensions', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-extended-skill-'));
+  const source = path.join(root, 'source');
+  const selected = path.join(source, 'extended-skill');
+  await mkdir(selected, { recursive: true });
+  await writeFile(path.join(selected, 'SKILL.md'), `---
+name: extended-skill
+description: Compatible upstream skill.
+disable-model-invocation: true
+---
+`);
+  const manifest = {
+    manifestPath: path.join(root, 'caddie.json'),
+    manifestVersion: 1,
+    scope: 'project',
+    sources: { local: { name: 'local', type: 'local', path: source } },
+    skills: [{ source: 'local', path: 'extended-skill' }],
+  };
+
+  const [resolved] = await resolveSelections(manifest);
+
+  assert.equal(resolved.name, 'extended-skill');
+  assert.deepEqual(resolved.extensionFields, ['disable-model-invocation']);
+});
+
 test('Git selections use the exact lock commit after the declared branch moves', async () => {
   const fixture = await gitFixture();
   const manifestPath = path.join(fixture.root, 'caddie.json');

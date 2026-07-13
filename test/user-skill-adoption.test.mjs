@@ -118,6 +118,30 @@ test('adoption preserves non-directory and nonconforming root entries', async (t
   );
 });
 
+test('adoption reports client extensions for a valid unknown User Skill', async (t) => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-extension-adoption-'));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const home = path.join(fixture, 'home');
+  const scopeRoot = path.join(fixture, 'SreeStack');
+  const installed = path.join(home, '.agents', 'skills', 'extended');
+  await mkdir(installed, { recursive: true });
+  await mkdir(scopeRoot, { recursive: true });
+  await writeFile(path.join(installed, 'SKILL.md'), `---
+name: extended
+description: Compatible upstream skill.
+disable-model-invocation: true
+---
+`);
+
+  const inspected = invoke('inspect', {
+    view: 'adoption', scopeRoot, scope: { id: 'user', root: scopeRoot }, candidates: [],
+  }, { HOME: home });
+
+  assert.equal(inspected.ok, true, JSON.stringify(inspected));
+  assert.equal(inspected.result.proposal.entries[0].classification, 'unknown');
+  assert.deepEqual(inspected.result.proposal.entries[0].extensionFields, ['disable-model-invocation']);
+});
+
 function invoke(operation, input, env) {
   const result = spawnSync(process.execPath, [tool], {
     cwd: repositoryRoot,

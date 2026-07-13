@@ -10,18 +10,21 @@ test('one metadata parser handles LF, CRLF, and quoted values consistently', () 
     name: 'plain',
     description: 'text',
     standardFindings: [],
+    extensionFields: [],
   });
   assert.deepEqual(parseSkillMetadata('---\r\nname: "quoted-skill"\r\ndescription: \'quoted text\'\r\n---\r\n'), {
     frontmatterPresent: true,
     name: 'quoted-skill',
     description: 'quoted text',
     standardFindings: [],
+    extensionFields: [],
   });
   assert.deepEqual(parseSkillMetadata('No frontmatter.'), {
     frontmatterPresent: false,
     name: null,
     description: null,
     standardFindings: [{ code: 'skill-frontmatter-missing' }],
+    extensionFields: [],
   });
 });
 
@@ -35,8 +38,8 @@ test('metadata diagnostics follow the Agent Skills frontmatter contract', () => 
       standardFindings: [
         { code: 'skill-description-missing' },
         { code: 'skill-name-invalid', field: 'name' },
-        { code: 'skill-frontmatter-field-nonstandard', field: 'owner' },
       ],
+      extensionFields: ['owner'],
     },
   );
 });
@@ -55,6 +58,23 @@ metadata:
     name: 'yaml-skill',
     description: 'Use this skill when YAML matters.\n',
     standardFindings: [],
+    extensionFields: [],
+  });
+});
+
+test('client-specific extension fields are preserved without invalidating standard metadata', () => {
+  assert.deepEqual(parseSkillMetadata(`---
+name: extended-skill
+description: Compatible upstream skill.
+argument-hint: "<target>"
+disable-model-invocation: true
+---
+`), {
+    frontmatterPresent: true,
+    name: 'extended-skill',
+    description: 'Compatible upstream skill.',
+    standardFindings: [],
+    extensionFields: ['argument-hint', 'disable-model-invocation'],
   });
 });
 

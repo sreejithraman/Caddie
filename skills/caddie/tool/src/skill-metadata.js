@@ -7,18 +7,18 @@ const STANDARD_FIELDS = new Set(['name', 'description', 'license', 'compatibilit
 function parseSkillMetadata(content) {
   if (typeof content !== 'string') throw new TypeError('SKILL.md content must be a string');
   const frontmatter = content.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:[ \t]*\r?\n|$)/);
-  if (!frontmatter) return result(false, null, null, [{ code: 'skill-frontmatter-missing' }]);
+  if (!frontmatter) return result(false, null, null, [{ code: 'skill-frontmatter-missing' }], []);
 
   let fields;
   try {
     const document = YAML.parseDocument(frontmatter[1], { schema: 'core', uniqueKeys: true });
-    if (document.errors.length > 0) return result(true, null, null, [{ code: 'skill-frontmatter-yaml-invalid' }]);
+    if (document.errors.length > 0) return result(true, null, null, [{ code: 'skill-frontmatter-yaml-invalid' }], []);
     fields = document.toJS();
   } catch {
-    return result(true, null, null, [{ code: 'skill-frontmatter-yaml-invalid' }]);
+    return result(true, null, null, [{ code: 'skill-frontmatter-yaml-invalid' }], []);
   }
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    return result(true, null, null, [{ code: 'skill-frontmatter-yaml-invalid' }]);
+    return result(true, null, null, [{ code: 'skill-frontmatter-yaml-invalid' }], []);
   }
 
   const name = stringField(fields.name);
@@ -43,14 +43,12 @@ function parseSkillMetadata(content) {
   if (fields.metadata !== undefined && !stringMap(fields.metadata)) {
     findings.push({ code: 'skill-metadata-invalid', field: 'metadata' });
   }
-  for (const field of Object.keys(fields).filter((field) => !STANDARD_FIELDS.has(field)).sort()) {
-    findings.push({ code: 'skill-frontmatter-field-nonstandard', field });
-  }
-  return result(true, name, description, findings);
+  const extensionFields = Object.keys(fields).filter((field) => !STANDARD_FIELDS.has(field)).sort();
+  return result(true, name, description, findings, extensionFields);
 }
 
-function result(frontmatterPresent, name, description, standardFindings) {
-  return { frontmatterPresent, name, description, standardFindings };
+function result(frontmatterPresent, name, description, standardFindings, extensionFields) {
+  return { frontmatterPresent, name, description, standardFindings, extensionFields };
 }
 
 function stringField(value) {

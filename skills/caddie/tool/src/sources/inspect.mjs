@@ -101,6 +101,7 @@ export async function inspectSelectedDirectory({
     skill: {
       name: metadata.name,
       description: metadata.description,
+      extensionFields: metadata.extensionFields,
       skillFile: skillContent,
       skillFileBytes: skillBytes,
       skillFileTruncated: skillBytes > maxContentBytes,
