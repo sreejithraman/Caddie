@@ -5,11 +5,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { createPlan } = require('../plans');
 const { fingerprint, fingerprintIfPresent } = require('../apply/filesystem');
-const { canonicalSkillsRoot, claudeSkillsRoot, stateRoot } = require('../layout');
+const { canonicalSkillsRoot, claudeSkillsRoot, scopeLayout, userLayout } = require('../layout');
 const { parseSkillMetadata } = require('../skill-metadata');
 
-async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scopeRoot }, candidates = [], legacyLockPath = path.join(scopeRoot, '.skill-lock.json'), home = os.homedir() }) {
+async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scopeRoot }, candidates = [], legacyLockPath, home = os.homedir() }) {
   const canonicalRoot = canonicalSkillsRoot(scope, home);
+  legacyLockPath ??= scope.id === 'user'
+    ? userLayout(home).legacySkillLockPath
+    : path.join(scopeRoot, '.skill-lock.json');
   const duplicateNames = new Set();
   const candidateByName = new Map();
   for (const candidate of candidates) {
@@ -140,7 +143,7 @@ async function readLegacyEvidence(candidate) {
   return result;
 }
 
-async function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state: 'absent' }, ensureClaude = true, removeLegacy = false, registration, home = os.homedir() }) {
+async function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state: 'absent' }, ensureClaude = true, registration, home = os.homedir() }) {
   const adopted = proposal.entries.filter((entry) => entry.preselected && entry.classification === 'exact');
   const exposures = [];
   if (ensureClaude) {
@@ -173,11 +176,7 @@ async function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { 
   const operations = [];
   if (registration) operations.push(registration);
   operations.push(...exposures);
-  if (removeLegacy) {
-    if (!proposal.legacy.removalRecommended) throw new Error('legacy state cannot be removed before independent verification');
-    operations.push({ type: 'remove-legacy-lock', path: proposal.legacy.path, expected: { state: 'file', fingerprint: proposal.legacy.fingerprint } });
-  }
-  operations.push({ type: 'write-ledger', path: path.join(stateRoot(scope), 'ledger.json'), content, expected: ledgerExpected });
+  operations.push({ type: 'write-ledger', path: scopeLayout(scope, home).ledgerPath, content, expected: ledgerExpected });
   return createPlan({ kind: 'adopt', home, scope, operations });
 }
 
@@ -195,14 +194,14 @@ async function expectedExposure(linkPath, targetPath) {
 function createUnmanagementPlan({ scope, ledgerFingerprint, registry, home = os.homedir() }) {
   const operations = [];
   if (registry) operations.push({
-    type: 'write-machine-config',
+    type: 'write-registry',
     path: registry.path,
     content: registry.nextContent,
     expected: { state: 'file', fingerprint: registry.currentFingerprint },
   });
   operations.push({
     type: 'remove-ledger',
-    path: path.join(stateRoot(scope), 'ledger.json'),
+    path: scopeLayout(scope, home).ledgerPath,
     expected: { state: 'file', fingerprint: ledgerFingerprint },
   });
   return createPlan({ kind: 'unmanage', home, scope, operations });

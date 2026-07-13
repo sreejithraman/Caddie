@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { exists, writeJsonAtomic } = require('../apply/filesystem');
-const { runtimeUserCoordinationRoot, stateRoot } = require('../layout');
+const { runtimeUserCoordinationRoot, scopeLayout } = require('../layout');
 const { planHome } = require('../plans');
 
 class UserHarnessCoordinationError extends Error {
@@ -21,7 +21,7 @@ function reservationPath(plan) {
 }
 
 function journalPath(plan) {
-  return path.join(stateRoot(plan.scope), 'operation-journal.json');
+  return scopeLayout(plan.scope, planHome(plan)).operationJournalPath;
 }
 
 function subject(plan) {
@@ -119,7 +119,7 @@ async function readReservation(candidate) {
     throw invalidReservation('User Skills recovery reservation is unreadable');
   }
   const expectedJournal = typeof reservation?.scopeRoot === 'string'
-    ? path.join(stateRoot({ root: reservation.scopeRoot }), 'operation-journal.json')
+    ? path.join(path.resolve(reservation.scopeRoot), '.agents', '.caddie', 'operation-journal.json')
     : null;
   if (reservation?.version !== 1 || !['preparing', 'active', 'terminal'].includes(reservation.phase)
     || typeof reservation.planId !== 'string' || typeof reservation.scopeRoot !== 'string'
@@ -135,7 +135,7 @@ async function validateJournalIdentity(reservation) {
   try { journal = JSON.parse(await fs.readFile(reservation.journalPath, 'utf8')); } catch (_) {
     throw invalidReservation('User Skills reservation recovery journal is unreadable', reservation);
   }
-  if (journal?.planId !== reservation.planId || journal?.scopeId !== 'user'
+  if (journal?.planId !== reservation.planId
     || path.resolve(journal?.plan?.scope?.root ?? '') !== path.resolve(reservation.scopeRoot)) {
     throw invalidReservation('User Skills reservation does not match its recovery journal', reservation);
   }

@@ -62,6 +62,14 @@ _Avoid_: Configuration file, skills list
 A generated record of the exact external source revisions resolved for a Caddie Manifest.
 _Avoid_: Install state, cache index
 
+**Caddie State Root**:
+The fixed directory containing a scope's Caddie Manifest, Caddie Lock, Caddie Ledger, and recovery state: `~/.agents/.caddie` for User Skills and `<project>/.agents/.caddie` for Project Skills.
+_Avoid_: Configuration home, Skills Repository
+
+**Caddie Registry**:
+The user-scoped record of Registered Projects stored in the User Caddie State Root.
+_Avoid_: Machine configuration, project manifest
+
 **Skill Source**:
 A named local or remote origin from which Caddie can select skills.
 _Avoid_: Package, registry

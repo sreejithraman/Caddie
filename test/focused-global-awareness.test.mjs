@@ -13,23 +13,18 @@ test('focused inspection counts relevant findings in other registered projects',
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-elsewhere-'));
   const current = path.join(fixture, 'current');
   const other = path.join(fixture, 'other');
-  const configHome = path.join(fixture, 'config');
-  const userManifest = path.join(fixture, 'user', 'caddie.json');
+  const home = path.join(fixture, 'home');
   await mkdir(current, { recursive: true });
   await mkdir(other, { recursive: true });
-  await json(userManifest, { version: 1, scope: 'user', sources: {}, selections: [] });
-  await json(path.join(current, 'caddie.json'), { version: 1, scope: 'project', sources: {}, selections: [] });
-  await json(path.join(other, 'caddie.json'), { version: 999, scope: 'project', sources: {}, selections: [] });
-  await json(path.join(configHome, 'caddie', 'config.json'), {
-    version: 1,
-    userManifest,
-    registeredProjects: [current, other],
-  });
+  await json(path.join(home, '.agents', '.caddie', 'manifest.json'), { version: 1, scope: 'user', sources: {}, selections: [] });
+  await json(path.join(home, '.agents', '.caddie', 'registry.json'), { version: 1, registeredProjects: [current, other] });
+  await json(path.join(current, '.agents', '.caddie', 'manifest.json'), { version: 1, scope: 'project', sources: {}, selections: [] });
+  await json(path.join(other, '.agents', '.caddie', 'manifest.json'), { version: 999, scope: 'project', sources: {}, selections: [] });
 
   const envelope = invoke({
     version: 1,
     operation: 'inspect',
-    input: { cwd: current, configHome },
+    input: { cwd: current, home },
   });
 
   assert.equal(envelope.ok, true);
@@ -43,7 +38,7 @@ test('focused inspection counts relevant findings in other registered projects',
         type: 'coverage',
         scope: 'project',
         code: 'unsupported-manifest-version',
-        path: path.join(other, 'caddie.json'),
+        path: path.join(other, '.agents', '.caddie', 'manifest.json'),
         supported: [1],
         received: 999,
       }],

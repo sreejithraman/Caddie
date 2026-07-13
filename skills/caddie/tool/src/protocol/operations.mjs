@@ -13,13 +13,15 @@ import {
 import { ToolError, invalid } from './errors.mjs';
 import { authorizedUserHarnessLinks, loadOwnershipLedger, validateLedgerProposal } from './ledger-ownership.mjs';
 import { planProjectRegistration } from '../registry/plan-registration.mjs';
+import { createUserStateMigrationPlan, inspectUserStateMigration } from '../migration/user-state.mjs';
+import { createLegacyManagerCleanupPlan, inspectLegacyManagerState } from '../legacy/manager-state.mjs';
 
 const require = createRequire(import.meta.url);
 const { createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
 const { fingerprint } = require('../apply/filesystem');
 const { ownsHarnessLink } = require('../mutations/strategies');
-const { claudeSkillsRoot, stateRoot } = require('../layout');
+const { claudeSkillsRoot, scopeLayout } = require('../layout');
 const { recover } = require('../recovery');
 const {
   createAdoptionPlan,
@@ -42,13 +44,35 @@ async function inspectOperation(input, runtime) {
     if (input.view === 'adoption') {
       return { proposal: await inspectAdoption({ ...input, home: runtimeHome(input, runtime) }), coverage: completeCoverage() };
     }
+    if (input.view === 'migration') {
+      return { migration: await inspectUserStateMigration(input, runtime), coverage: completeCoverage() };
+    }
+    if (input.view === 'legacy-manager') {
+      return { legacyManagerState: await inspectLegacyManagerState(input, runtime), coverage: completeCoverage() };
+    }
     if (input.view !== undefined) {
       throw invalid('unsupported-inspect-view', `Unsupported inspect view: ${String(input.view)}`);
     }
-    return inspectAvailableSkills(input, runtime);
+    const result = await inspectAvailableSkills(input, runtime);
+    result.legacyManagerState = await inspectLegacyManagerState(input, {
+      ...runtime,
+      installedFingerprints: userInstallationFingerprints(result),
+    });
+    return result;
   } catch (error) {
     throw normaliseOperationError(error);
   }
+}
+
+function userInstallationFingerprints(inspection) {
+  const fingerprints = new Map();
+  for (const skill of inspection.scopes?.user?.skills ?? []) {
+    const installation = skill.reconciliation?.evidence?.installation;
+    if (installation?.complete === true && typeof installation.digest === 'string') {
+      fingerprints.set(skill.name, installation.digest);
+    }
+  }
+  return fingerprints;
 }
 
 async function inspectSourceOperation(input) {
@@ -87,6 +111,10 @@ async function planOperation(input, runtime) {
       plan = createUnmanagementPlan({ ...input, home });
     } else if (input.workflow === 'cleanup') {
       plan = await createCleanupPlan({ ...input, home });
+    } else if (input.workflow === 'state-migration') {
+      ({ plan } = await createUserStateMigrationPlan({ ...input, home }, runtime));
+    } else if (input.workflow === 'legacy-manager-cleanup') {
+      ({ plan } = await createLegacyManagerCleanupPlan({ ...input, home }, runtime));
     } else {
       if (input.workflow !== undefined) {
         throw invalid('unsupported-plan-workflow', `Unsupported plan workflow: ${String(input.workflow)}`);
@@ -100,7 +128,7 @@ async function planOperation(input, runtime) {
           ...input,
           home,
           scope: registration.scope,
-          operations: await bindHarnessOwnershipInLedger(registration.scope, exposedOperations),
+        operations: await bindHarnessOwnershipInLedger(registration.scope, exposedOperations, home),
         });
       } else {
         plan = createPlan({ ...input, home });
@@ -112,12 +140,12 @@ async function planOperation(input, runtime) {
   }
 }
 
-async function bindHarnessOwnershipInLedger(scope, operations) {
+async function bindHarnessOwnershipInLedger(scope, operations, home) {
   const plannedHarnessLinks = operations
     .filter(ownsHarnessLink)
     .map(({ linkPath }) => linkPath);
   if (plannedHarnessLinks.length === 0) return operations;
-  const ledgerPath = path.join(stateRoot(scope), 'ledger.json');
+  const ledgerPath = scopeLayout(scope, home).ledgerPath;
   const plannedLedger = operations.find(({ type }) => type === 'write-ledger');
   const existingLedger = await loadOwnershipLedger(ledgerPath, {
     expectedScopeId: scope.id,
@@ -217,8 +245,7 @@ async function expectedExposure(linkPath, targetPath, replaceableHarnessLinks = 
 
 async function loadUserHarnessOwnership(input, runtime, scope, home) {
   if (scope.id !== 'user') return {};
-  const env = runtime.env ?? process.env;
-  const currentLedger = await loadOwnershipLedger(path.join(stateRoot(scope), 'ledger.json'), {
+  const currentLedger = await loadOwnershipLedger(scopeLayout(scope, home).ledgerPath, {
     expectedScopeId: 'user',
     allowMissing: true,
     label: 'current User Skills ledger',
@@ -226,32 +253,13 @@ async function loadUserHarnessOwnership(input, runtime, scope, home) {
   const current = currentLedger
     ? authorizedUserHarnessLinks(currentLedger, { scopeRoot: scope.root, home })
     : new Map();
-  const configHome = input.configHome ?? env.XDG_CONFIG_HOME ?? path.join(home, '.config');
-  const configPath = path.join(configHome, 'caddie', 'config.json');
-  let config;
-  try { config = JSON.parse(await fs.readFile(configPath, 'utf8')); } catch (error) {
-    if (error.code === 'ENOENT') return { current, replaceable: new Map() };
-    throw invalid('invalid-machine-config', `Caddie machine configuration is unreadable: ${configPath}`);
-  }
-  if (typeof config.userManifest !== 'string') return { current, replaceable: new Map() };
-  const previousScope = path.dirname(config.userManifest);
-  if (path.resolve(previousScope) === path.resolve(scope.root)) return { current, replaceable: new Map() };
-  const ledgerPath = path.join(stateRoot({ root: previousScope }), 'ledger.json');
-  const ledger = await loadOwnershipLedger(ledgerPath, {
-    expectedScopeId: 'user',
-    allowMissing: true,
-    label: 'previous User Skills ledger',
-  });
-  const replaceable = ledger
-    ? authorizedUserHarnessLinks(ledger, { scopeRoot: previousScope, home })
-    : new Map();
-  return { current, replaceable };
+  return { current, replaceable: new Map() };
 }
 
 async function applyPlanOperation(input) {
   try {
     const kind = input.plan?.kind;
-    if (['reconcile', 'adopt', 'unmanage', 'cleanup', 'recovery'].includes(kind)) {
+    if (['reconcile', 'adopt', 'unmanage', 'cleanup', 'migrate', 'recovery'].includes(kind)) {
       return { ...(await applyPlan(input)), coverage: completeCoverage() };
     }
     throw invalid('unsupported-plan-kind', `Unsupported apply plan kind: ${kind ?? 'missing'}`);

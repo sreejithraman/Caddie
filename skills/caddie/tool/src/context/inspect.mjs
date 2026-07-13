@@ -9,7 +9,7 @@ import { classifyFingerprints, fingerprintDirectory } from '../fingerprint/index
 import { invalid } from '../protocol/errors.mjs';
 
 const require = createRequire(import.meta.url);
-const { canonicalSkillsRoot, stateRoot } = require('../layout');
+const { scopeLayout } = require('../layout');
 
 export async function inspect(input, runtime = {}) {
   const context = await locate(input, runtime);
@@ -21,7 +21,7 @@ export async function inspect(input, runtime = {}) {
     if (located.status !== 'found') continue;
     let manifest;
     try {
-      manifest = await parseManifest(located.manifestPath, scope);
+      manifest = await parseManifest(located.manifestPath, scope, located.root);
     } catch (error) {
       if (error?.code !== 'unsupported-manifest-version') throw error;
       scopes[scope] = {
@@ -39,7 +39,8 @@ export async function inspect(input, runtime = {}) {
       });
       continue;
     }
-    const lock = await readJson(path.join(path.dirname(manifest.manifestPath), 'caddie.lock'));
+    const layout = scopeLayout({ id: scope, root: located.root }, envHome(runtime));
+    const lock = await readJson(layout.lockPath);
     const env = runtime.env ?? process.env;
     const cacheHome = input.cacheHome ?? env.XDG_CACHE_HOME ?? path.join(env.HOME ?? os.homedir(), '.cache');
     const selectionEvidence = await resolveSelectionsWithEvidence(manifest, {
@@ -54,7 +55,8 @@ export async function inspect(input, runtime = {}) {
       selectionEvidence.skills,
       manifest,
       scope,
-      env.HOME ?? os.homedir(),
+      located.root,
+      envHome(runtime),
     );
     scopes[scope] = {
       status: 'inspected',
@@ -94,7 +96,7 @@ export async function inspect(input, runtime = {}) {
 }
 
 function scopeEvidence(located) {
-  return { status: 'missing', manifestPath: located.manifestPath };
+  return { status: 'missing', root: located.root, manifestPath: located.manifestPath };
 }
 
 async function inspectBirdseye(input, runtime, context) {
@@ -187,14 +189,14 @@ async function inspectRegisteredProject(input, runtime, root) {
   }
 }
 
-async function enrichLiveState(skills, manifest, scopeId, home) {
-  const scopeRoot = path.dirname(manifest.manifestPath);
+async function enrichLiveState(skills, manifest, scopeId, scopeRoot, home) {
   const scope = { id: scopeId, root: scopeRoot };
-  const ledger = await readLedger(path.join(stateRoot(scope), 'ledger.json'));
+  const layout = scopeLayout(scope, home);
+  const ledger = await readLedger(layout.ledgerPath);
   const entries = new Map((ledger?.entries ?? []).map((entry) => [entry.name, entry]));
   return Promise.all(skills.map(async (skill) => {
     const source = manifest.sources[skill.source];
-    const installationPath = path.join(canonicalSkillsRoot(scope, home), skill.name);
+    const installationPath = path.join(layout.canonicalSkillsRoot, skill.name);
     const inPlace = source?.type === 'local' && await sameLocation(skill.skillPath, installationPath);
     if (inPlace) {
       return {
@@ -221,6 +223,10 @@ async function enrichLiveState(skills, manifest, scopeId, home) {
       }),
     };
   }));
+}
+
+function envHome(runtime = {}) {
+  return runtime.env?.HOME ?? os.homedir();
 }
 
 async function sameLocation(left, right) {

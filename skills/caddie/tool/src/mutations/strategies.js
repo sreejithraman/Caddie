@@ -8,10 +8,11 @@ const DEFINITIONS = Object.freeze({
   'ensure-harness-exposure': descriptor('symlink', 'linkPath', 'expected', 'link', { userHarnessAnchored: true, ownsHarnessLink: true }),
   'write-manifest': descriptor('file-replace', 'path', 'expected', 'file'),
   'write-lock': descriptor('file-replace', 'path', 'expected', 'file'),
-  'write-machine-config': descriptor('file-replace', 'path', 'expected', 'file'),
+  'write-registry': descriptor('file-replace', 'path', 'expected', 'file', { userStateAnchored: true }),
   'write-ledger': descriptor('file-replace', 'path', 'expected', 'file'),
   'remove-ledger': descriptor('remove', 'path', 'expected', 'removed'),
-  'remove-legacy-lock': descriptor('remove', 'path', 'expected', 'removed'),
+  'remove-legacy-state': descriptor('remove', 'path', 'expected', 'legacy-state'),
+  'remove-legacy-manager-state': descriptor('remove', 'path', 'expected', 'legacy-manager', { userStateAnchored: true }),
   'cleanup-preserved-skill': descriptor('remove', 'path', 'expected', 'removed'),
   'cleanup-exposure': descriptor('remove', 'path', 'expected', 'removed', { userHarnessAnchored: true }),
 });
@@ -42,6 +43,10 @@ function isUserHarnessAnchored(operationOrType) {
   return strategyFor(operationOrType)?.userHarnessAnchored === true;
 }
 
+function isUserStateAnchored(operationOrType) {
+  return strategyFor(operationOrType)?.userStateAnchored === true;
+}
+
 function ownsHarnessLink(operationOrType) {
   return strategyFor(operationOrType)?.ownsHarnessLink === true;
 }
@@ -51,6 +56,7 @@ module.exports = {
   RECOVERY_OPERATION_TYPES,
   expectedFor,
   isUserHarnessAnchored,
+  isUserStateAnchored,
   ownsHarnessLink,
   strategyFor,
   targetFor,

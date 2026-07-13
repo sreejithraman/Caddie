@@ -128,6 +128,7 @@ test('public exact Git materialization remains available for approved plan/apply
   await mkdir(scopeRoot);
   const destination = path.join(scopeRoot, '.agents', 'skills', 'alpha');
   const plan = invoke('plan', {
+    home: scopeRoot,
     configHome: path.join(fixture.root, 'config'),
     kind: 'reconcile',
     scope: { id: `project:${scopeRoot}`, root: scopeRoot },

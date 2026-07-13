@@ -7,7 +7,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { parseSkillMetadata } = require('../skills/caddie/tool/src/skill-metadata');
 const { createBootstrapLayout } = require('./bootstrap/artifacts.cjs');
-const { createLegacyMigration } = require('./bootstrap/legacy-migration.cjs');
 const { assertSafeAncestorChain } = require('./bootstrap/safe-path.cjs');
 const { stageArtifactSet } = require('./bootstrap/stage-artifact-set.cjs');
 
@@ -34,30 +33,16 @@ async function main() {
     fail('The pinned source does not contain a valid Caddie Skill.');
   }
 
-  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-  const layout = createBootstrapLayout({ home: os.homedir(), configHome });
+  const layout = createBootstrapLayout({ home: os.homedir() });
   const { caddieHome, userHome, outputs, journalPath, lockPath } = layout;
   const { fingerprintDirectory } = await import('../skills/caddie/tool/src/fingerprint/index.mjs');
-  const legacyMigration = createLegacyMigration({
-    fingerprintDirectory,
-    writeJson,
-    releaseOwnedFile,
-    ensureParents,
-    maybeInjectFailure,
-    maybeCrash,
-    validOwner,
-  });
   assertSafeAncestorChain(layout.anchors.state, lockPath);
   assertSafeAncestorChain(layout.anchors.state, journalPath);
   requireRealStateFileIfPresent(lockPath, 'Bootstrap lock');
   requireRealStateFileIfPresent(journalPath, 'Bootstrap recovery journal');
   const owner = acquireBootstrapLock(lockPath);
   try {
-    await recoverBootstrap(layout, fingerprintDirectory, legacyMigration);
-    if (await legacyMigration.tryMigrate({ sourceSkill, commit, repository, layout, owner })) {
-      process.stdout.write(`${userHome}\n`);
-      return;
-    }
+    await recoverBootstrap(layout, fingerprintDirectory);
 
   // Preflight every final path and all existing ancestors before staging or
   // creating any destination directory.
@@ -126,16 +111,12 @@ function verifyExactSource(sourceRoot, commit) {
   }
 }
 
-async function recoverBootstrap(layout, fingerprintDirectory, legacyMigration) {
+async function recoverBootstrap(layout, fingerprintDirectory) {
   const { journalPath } = layout;
   if (!fs.existsSync(journalPath)) return;
   requireRealStateFileIfPresent(journalPath, 'Bootstrap recovery journal');
   let journal;
   try { journal = JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch { fail('Bootstrap recovery journal is invalid.'); }
-  if (legacyMigration.recognizesJournal(journal)) {
-    await legacyMigration.recover(journalPath, journal, layout);
-    return;
-  }
   const artifactNames = layout.artifacts.map(({ name }) => name);
   if (journal.version !== 2 || !validOwner(journal.owner)
     || !hasExactKeys(journal.expected, artifactNames)) {

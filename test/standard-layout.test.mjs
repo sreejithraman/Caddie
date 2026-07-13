@@ -12,7 +12,7 @@ const tool = path.join(repositoryRoot, 'bin', 'caddie-tool.mjs');
 test('user reconciliation installs in the cross-client root and adds only Claude compatibility', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-standard-layout-'));
   const home = path.join(fixture, 'home');
-  const scopeRoot = path.join(fixture, 'SreeStack');
+  const scopeRoot = home;
   const source = path.join(scopeRoot, 'authored', 'shared');
   const destination = path.join(home, '.agents', 'skills', 'shared');
   await mkdir(source, { recursive: true });
@@ -44,7 +44,7 @@ test('user reconciliation installs in the cross-client root and adds only Claude
 test('user reconciliation rejects a repository-local pseudo-canonical destination', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-nonstandard-layout-'));
   const home = path.join(fixture, 'home');
-  const scopeRoot = path.join(fixture, 'SreeStack');
+  const scopeRoot = home;
   const source = path.join(fixture, 'source', 'shared');
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, 'SKILL.md'), '---\nname: shared\ndescription: Shared fixture.\n---\n');
@@ -55,7 +55,7 @@ test('user reconciliation rejects a repository-local pseudo-canonical destinatio
   const planned = invoke('plan', {
     kind: 'reconcile', scope: { id: 'user', root: scopeRoot }, operations: [{
       type: 'materialize-skill', name: 'shared', sourcePath: source,
-      destinationPath: path.join(scopeRoot, '.agents', 'skills', 'shared'),
+      destinationPath: path.join(fixture, 'SreeStack', '.agents', 'skills', 'shared'),
       sourceFingerprint: inspected.result.fingerprint.digest, expectedDestination: { state: 'absent' },
     }],
   }, env);

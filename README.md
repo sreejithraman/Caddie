@@ -18,6 +18,7 @@ The specification and its tracer-bullet tickets remain the baseline v1 product r
 - Keep User Skills available across projects.
 - Add project-owned capabilities through Project Skills.
 - Install User Skills in the cross-client `~/.agents/skills` convention and add only the Claude compatibility links that are needed.
+- Keep Caddie's User Skills state together in `~/.agents/.caddie`; keep each project's state in `<project>/.agents/.caddie`.
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
@@ -45,6 +46,8 @@ printf '%s\n' '{"version":1,"operation":"locate","input":{"cwd":"/path/to/projec
 ```
 
 The self-contained Caddie Skill source is in `skills/caddie`. `.agents/skills` is reserved for installed User Skills and Project Skills, not source-repository organization. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
+
+Existing v1 installations that stored state under `~/.config/caddie` are upgraded through Caddie's explicit, preservation-first `state-migration` workflow. Migration is inspected, planned, approved, applied, and verified like every other managed-state change; bootstrap does not silently rewrite an existing installation.
 
 See [the protocol](docs/protocol.md) and [persisted formats](docs/formats.md).
 

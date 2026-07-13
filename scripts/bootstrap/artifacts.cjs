@@ -2,8 +2,7 @@ const path = require('node:path');
 const {
   canonicalSkillsRoot,
   claudeSkillsRoot,
-  runtimeUserCoordinationRoot,
-  stateRoot,
+  userLayout,
 } = require('../../skills/caddie/tool/src/layout');
 
 const ARTIFACT_DESCRIPTORS = Object.freeze([
@@ -23,69 +22,56 @@ const ARTIFACT_DESCRIPTORS = Object.freeze([
     name: 'manifest',
     kind: 'document',
     anchor: 'state',
-    resolve: ({ userHome }) => path.join(userHome, 'caddie.json'),
+    resolve: ({ layout }) => layout.manifestPath,
   },
   {
     name: 'lock',
     kind: 'document',
     anchor: 'state',
-    resolve: ({ userHome }) => path.join(userHome, 'caddie.lock'),
+    resolve: ({ layout }) => layout.lockPath,
   },
   {
     name: 'ledger',
     kind: 'document',
     anchor: 'state',
-    resolve: ({ userScope }) => path.join(stateRoot(userScope), 'ledger.json'),
+    resolve: ({ layout }) => layout.ledgerPath,
   },
   {
-    name: 'config',
+    name: 'registry',
     kind: 'document',
     anchor: 'state',
-    resolve: ({ caddieHome }) => path.join(caddieHome, 'config.json'),
+    resolve: ({ layout }) => layout.registryPath,
   },
 ]);
 
-function createBootstrapLayout({ home, configHome }) {
-  const caddieHome = path.join(configHome, 'caddie');
-  const userHome = path.join(caddieHome, 'user');
+function createBootstrapLayout({ home }) {
+  const layout = userLayout(home);
+  const caddieHome = layout.stateRoot;
+  const userHome = path.resolve(home);
   const userScope = { id: 'user', root: userHome };
   const anchors = {
     user: path.resolve(home),
-    state: path.resolve(configHome),
+    state: path.resolve(home),
   };
-  const context = { home, configHome, caddieHome, userHome, userScope };
+  const context = { home, caddieHome, userHome, userScope, layout };
   const artifacts = ARTIFACT_DESCRIPTORS.map(({ resolve, ...descriptor }) => ({
     ...descriptor,
     path: resolve(context),
     anchor: anchors[descriptor.anchor],
   }));
   const outputs = Object.fromEntries(artifacts.map((artifact) => [artifact.name, artifact.path]));
-  const activeOperationFiles = [
-    {
-      name: 'legacyOperationJournal',
-      path: path.join(stateRoot(userScope), 'operation-journal.json'),
-      anchor: anchors.state,
-    },
-    {
-      name: 'standardUserOperation',
-      path: path.join(runtimeUserCoordinationRoot(home), 'user-operation.json'),
-      anchor: anchors.user,
-    },
-  ];
   return {
     caddieHome,
     userHome,
     outputs,
     journalPath: path.join(caddieHome, '.bootstrap-journal.json'),
     lockPath: path.join(caddieHome, '.bootstrap.lock'),
-    legacyDestination: path.join(canonicalSkillsRoot({ id: 'project', root: userHome }), 'caddie'),
     anchors,
     artifacts,
-    activeOperationFiles,
   };
 }
 
-function createArtifactDocuments({ outputs, repository, commit, fingerprint, config = {} }) {
+function createArtifactDocuments({ outputs, repository, commit, fingerprint, registry = {} }) {
   const source = { type: 'git', url: repository, ref: commit };
   return {
     manifest: {
@@ -110,11 +96,10 @@ function createArtifactDocuments({ outputs, repository, commit, fingerprint, con
         fingerprint,
       }],
     },
-    config: {
-      ...config,
+    registry: {
+      ...registry,
       version: 1,
-      userManifest: outputs.manifest,
-      registeredProjects: Array.isArray(config.registeredProjects) ? config.registeredProjects : [],
+      registeredProjects: Array.isArray(registry.registeredProjects) ? registry.registeredProjects : [],
     },
   };
 }

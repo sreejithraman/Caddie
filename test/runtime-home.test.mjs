@@ -10,7 +10,7 @@ import { runTool } from '../skills/caddie/tool/src/protocol/run-tool.mjs';
 test('programmatic reconciliation binds and applies runtime.env.HOME roots', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-runtime-home-reconcile-'));
   const home = path.join(fixture, 'runtime-home');
-  const scopeRoot = path.join(fixture, 'config', 'caddie', 'user');
+  const scopeRoot = home;
   const source = path.join(fixture, 'source', 'shared');
   const destination = path.join(home, '.agents', 'skills', 'shared');
   await skill(source);
@@ -62,7 +62,7 @@ test('programmatic reconciliation binds and applies runtime.env.HOME roots', asy
 test('programmatic adoption and cleanup share the bound runtime.env.HOME', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-runtime-home-adoption-'));
   const home = path.join(fixture, 'runtime-home');
-  const scopeRoot = path.join(fixture, 'config', 'caddie', 'user');
+  const scopeRoot = home;
   const installed = path.join(home, '.agents', 'skills', 'shared');
   await skill(installed);
   await mkdir(scopeRoot, { recursive: true });
