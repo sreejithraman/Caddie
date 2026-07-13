@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { applyPlan } = require('../.agents/skills/caddie/tool/src/apply');
-const { fingerprint } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
-const { approvePlan, createPlan } = require('../.agents/skills/caddie/tool/src/plans');
-const { recover } = require('../.agents/skills/caddie/tool/src/recovery');
+const { applyPlan } = require('../skills/caddie/tool/src/apply');
+const { fingerprint } = require('../skills/caddie/tool/src/apply/filesystem');
+const { approvePlan, createPlan } = require('../skills/caddie/tool/src/plans');
+const { recover } = require('../skills/caddie/tool/src/recovery');
 
 test('rollback of an interrupted User Skills retarget restores the previous owned link', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-retarget-recovery-'));
@@ -99,5 +99,5 @@ test('rollback reports replan when an interrupted exposure becomes regular conte
 
 async function skill(directory, body) {
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, 'SKILL.md'), `---\nname: shared\n---\n${body}\n`);
+  await writeFile(path.join(directory, 'SKILL.md'), `---\nname: shared\ndescription: Test fixture.\n---\n${body}\n`);
 }

@@ -12,7 +12,7 @@ import {
   inspectLocalSource,
   materializeLockedGitSource,
   resolveGitSource,
-} from '../.agents/skills/caddie/tool/src/sources/index.mjs';
+} from '../skills/caddie/tool/src/sources/index.mjs';
 
 const exec = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');

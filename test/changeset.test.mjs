@@ -14,15 +14,15 @@ import {
   prepareChangeSandbox,
   prepareGitChange,
   verifyGitPreparation,
-} from '../.agents/skills/caddie/tool/src/changeset/index.mjs';
+} from '../skills/caddie/tool/src/changeset/index.mjs';
 import {
   applyPreparationWorkflow,
   createPreparationWorkflowPlan,
-} from '../.agents/skills/caddie/tool/src/protocol/preparation-workflows.mjs';
+} from '../skills/caddie/tool/src/protocol/preparation-workflows.mjs';
 
 const exec = promisify(execFile);
 const require = createRequire(import.meta.url);
-const { hashValue } = require('../.agents/skills/caddie/tool/src/plans');
+const { hashValue } = require('../skills/caddie/tool/src/plans');
 
 test('prepares one validated focused commit from freshly fetched origin/main without touching primary files', async () => {
   const fixture = await gitFixture();

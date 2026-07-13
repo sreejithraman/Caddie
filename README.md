@@ -44,7 +44,7 @@ The deterministic tool accepts one versioned JSON request on standard input:
 printf '%s\n' '{"version":1,"operation":"locate","input":{"cwd":"/path/to/project"}}' | node bin/caddie-tool.mjs
 ```
 
-The Caddie Skill is in `.agents/skills/caddie`. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
+The self-contained Caddie Skill source is in `skills/caddie`. `.agents/skills` is reserved for installed User Skills and Project Skills, not source-repository organization. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
 
 See [the protocol](docs/protocol.md) and [persisted formats](docs/formats.md).
 

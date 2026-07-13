@@ -6,9 +6,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { parseManifest } from '../.agents/skills/caddie/tool/src/manifest/parse-manifest.mjs';
-import { resolveSelections, resolveSelectionsWithEvidence } from '../.agents/skills/caddie/tool/src/manifest/resolve-selections.mjs';
-import { inspectLocalSource } from '../.agents/skills/caddie/tool/src/sources/index.mjs';
+import { parseManifest } from '../skills/caddie/tool/src/manifest/parse-manifest.mjs';
+import { resolveSelections, resolveSelectionsWithEvidence } from '../skills/caddie/tool/src/manifest/resolve-selections.mjs';
+import { inspectLocalSource } from '../skills/caddie/tool/src/sources/index.mjs';
 
 const exec = promisify(execFile);
 
@@ -91,6 +91,26 @@ test('one realpath containment seam rejects selected symlinks escaping a source'
   );
 });
 
+test('local selections reject nonconforming metadata and directory-name mismatches', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-invalid-skill-'));
+  const source = path.join(root, 'source');
+  const selected = path.join(source, 'expected-name');
+  await mkdir(selected, { recursive: true });
+  const manifest = {
+    manifestPath: path.join(root, 'caddie.json'),
+    manifestVersion: 1,
+    scope: 'project',
+    sources: { local: { name: 'local', type: 'local', path: source } },
+    skills: [{ source: 'local', path: 'expected-name' }],
+  };
+
+  await writeFile(path.join(selected, 'SKILL.md'), '---\nname: expected-name\n---\n');
+  await assert.rejects(() => resolveSelections(manifest), (error) => error.code === 'skill-metadata-invalid');
+
+  await writeFile(path.join(selected, 'SKILL.md'), '---\nname: wrong-name\ndescription: fixture\n---\n');
+  await assert.rejects(() => resolveSelections(manifest), (error) => error.code === 'skill-name-directory-mismatch');
+});
+
 test('Git selections use the exact lock commit after the declared branch moves', async () => {
   const fixture = await gitFixture();
   const manifestPath = path.join(fixture.root, 'caddie.json');
@@ -106,9 +126,11 @@ test('Git selections use the exact lock commit after the declared branch moves',
     }],
   });
   const manifest = await parseManifest(manifestPath, 'user');
-  const firstCommit = await commitSkill(fixture.working, 'old-name', 'first');
+  const firstCommit = await commitSkill(fixture.working, 'alpha', 'first');
   await git(fixture.working, 'push', '-u', 'origin', 'trunk');
-  await commitSkill(fixture.working, 'new-name', 'second');
+  await writeFile(path.join(fixture.working, 'skills', 'alpha', 'revision.txt'), 'second\n');
+  await git(fixture.working, 'add', '.');
+  await git(fixture.working, 'commit', '-m', 'second');
   await git(fixture.working, 'push', 'origin', 'trunk');
 
   const result = await resolveSelectionsWithEvidence(manifest, {
@@ -116,9 +138,7 @@ test('Git selections use the exact lock commit after the declared branch moves',
     cacheDir: path.join(fixture.root, 'cache'),
   });
 
-  assert.equal(result.coverage.complete, false);
-  assert.equal(result.coverage.findings.some(({ code }) => code === 'skill-name-directory-mismatch'), true);
-  assert.equal(result.skills[0].name, 'old-name');
+  assert.equal(result.skills[0].name, 'alpha');
   assert.equal(result.skills[0].commit, firstCommit);
   assert.deepEqual(result.skills[0].derivedFrom, [{ source: 'upstream', path: 'skills/basis' }]);
   assert.equal(result.skills[0].migrationRecord, 'docs/migrations/alpha.md');
@@ -128,10 +148,32 @@ test('Git selections use the exact lock commit after the declared branch moves',
     lock: { version: 1, sources: { upstream: { type: 'git', url: fixture.remote, commit: firstCommit } } },
     cacheDir: path.join(fixture.root, 'cache'),
   });
-  assert.equal(stale.skills[0].name, 'old-name');
+  assert.equal(stale.skills[0].name, 'alpha');
   assert.equal(stale.skills[0].freshness, 'stale');
   assert.equal(stale.coverage.complete, false);
   assert.ok(stale.coverage.findings.some((finding) => finding.code === 'remote-unavailable'));
+});
+
+test('nonconforming locked Git selections remain findings and never become available skills', async () => {
+  const fixture = await gitFixture();
+  const commit = await commitSkill(fixture.working, 'wrong-name', 'invalid skill name');
+  await git(fixture.working, 'push', '-u', 'origin', 'trunk');
+  const manifest = {
+    manifestPath: path.join(fixture.root, 'caddie.json'),
+    manifestVersion: 1,
+    scope: 'project',
+    sources: { upstream: { name: 'upstream', type: 'git', url: fixture.remote, ref: 'refs/heads/trunk' } },
+    skills: [{ source: 'upstream', path: 'skills/alpha' }],
+  };
+
+  const result = await resolveSelectionsWithEvidence(manifest, {
+    lock: { version: 1, sources: { upstream: { type: 'git', url: fixture.remote, commit } } },
+    cacheDir: path.join(fixture.root, 'cache'),
+  });
+
+  assert.deepEqual(result.skills, []);
+  assert.equal(result.coverage.complete, false);
+  assert.equal(result.coverage.findings.some(({ code }) => code === 'skill-name-directory-mismatch'), true);
 });
 
 test('missing Git lock produces bounded partial evidence without resolving the moving ref', async () => {
@@ -158,7 +200,7 @@ test('missing Git lock produces bounded partial evidence without resolving the m
 
 test('local Git provenance treats untracked files as dirty evidence', async () => {
   const fixture = await gitFixture();
-  await commitSkill(fixture.working, 'local-skill', 'tracked skill');
+  await commitSkill(fixture.working, 'alpha', 'tracked skill');
   await writeFile(path.join(fixture.working, 'untracked.txt'), 'not committed\n');
   const manifest = {
     manifestPath: path.join(fixture.root, 'caddie.json'),
@@ -170,7 +212,7 @@ test('local Git provenance treats untracked files as dirty evidence', async () =
 
   const [resolved] = await resolveSelections(manifest);
 
-  assert.equal(resolved.name, 'local-skill');
+  assert.equal(resolved.name, 'alpha');
   assert.equal(resolved.repositoryRoot, await realpath(fixture.working));
   assert.equal(resolved.repositoryDirty, true);
   assert.match(resolved.resolvedCommit, /^[0-9a-f]{40,64}$/);

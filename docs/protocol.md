@@ -12,6 +12,8 @@ Diagnostics belong on standard error. Persisted formats have their own version f
 
 User reconciliation materializes complete skills directly beneath the runtime HOME `~/.agents/skills`; project reconciliation materializes them beneath `<project>/.agents/skills`. Adoption records exact existing directories at those locations without relocating them. Both scopes add only individual Claude compatibility links under the matching `.claude/skills` root. These fixed paths are bound by the immutable plan and revalidated during apply and recovery.
 
+Every materialized or adopted skill must have Agent Skills-conforming `SKILL.md` frontmatter. During inspection, a Project Skill deterministically shadows a same-named User Skill; the effective skill list contains the project selection and `shadowedSkills` preserves explicit evidence of both selections.
+
 All Caddie mutations at the standard user root or user Claude compatibility root serialize on one runtime-HOME lock and reserve recovery before publishing the scope journal, even when their User Skills manifests live in different repositories. The fixed coordination files are `~/.agents/.caddie/user-mutation.lock` and `user-operation.json`; they are machine-local state, not plan effects. Ordinary exposure never replaces existing regular Claude content.
 
 `npm run test:release` is the harness and end-to-end release gate. It requires installed Codex and Claude Code binaries rather than silently skipping harness discovery; the compatibility decision is recorded in [ADR 0001](adr/0001-expose-individual-skills-to-claude.md).

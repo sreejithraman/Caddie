@@ -8,10 +8,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { applyPlan } = require('../.agents/skills/caddie/tool/src/apply');
-const { fingerprint } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
-const { approvePlan, createPlan } = require('../.agents/skills/caddie/tool/src/plans');
-const { recover } = require('../.agents/skills/caddie/tool/src/recovery');
+const { applyPlan } = require('../skills/caddie/tool/src/apply');
+const { fingerprint } = require('../skills/caddie/tool/src/apply/filesystem');
+const { approvePlan, createPlan } = require('../skills/caddie/tool/src/plans');
+const { recover } = require('../skills/caddie/tool/src/recovery');
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tool = path.join(repositoryRoot, 'bin', 'caddie-tool.mjs');
 
@@ -90,6 +90,32 @@ test('rollback restores a standard User Skill after interrupted replacement', as
   await applyPlan({ plan: recovery.rollbackPlan, approval: approvePlan(recovery.rollbackPlan) });
   assert.equal(await fingerprint(installed), original);
   assert.equal(await readFile(path.join(installed, 'notes.txt'), 'utf8'), 'original auxiliary bytes\n');
+});
+
+test('adoption preserves non-directory and nonconforming root entries', async (t) => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-invalid-adoption-'));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const home = path.join(fixture, 'home');
+  const scopeRoot = path.join(fixture, 'SreeStack');
+  const root = path.join(home, '.agents', 'skills');
+  await mkdir(root, { recursive: true });
+  await mkdir(scopeRoot, { recursive: true });
+  await writeFile(path.join(root, 'not-a-skill'), 'preserve me\n');
+  await mkdir(path.join(root, 'missing-description'));
+  await writeFile(path.join(root, 'missing-description', 'SKILL.md'), '---\nname: missing-description\n---\n');
+  const env = { HOME: home };
+
+  const inspected = invoke('inspect', {
+    view: 'adoption', scopeRoot, scope: { id: 'user', root: scopeRoot }, candidates: [],
+  }, env);
+  assert.equal(inspected.ok, true, JSON.stringify(inspected));
+  assert.deepEqual(
+    inspected.result.proposal.entries.map(({ name, classification, preselected }) => [name, classification, preselected]),
+    [
+      ['missing-description', 'invalid-skill', false],
+      ['not-a-skill', 'invalid-skill', false],
+    ],
+  );
 });
 
 function invoke(operation, input, env) {

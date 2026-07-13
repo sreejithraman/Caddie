@@ -28,8 +28,8 @@ test('inspect surfaces single- and multi-origin declared Lineage with its Migrat
   const source = path.join(root, 'skills');
   await mkdir(path.join(source, 'derived-one'), { recursive: true });
   await mkdir(path.join(source, 'derived-many'), { recursive: true });
-  await writeFile(path.join(source, 'derived-one', 'SKILL.md'), '---\nname: derived-one\n---\n');
-  await writeFile(path.join(source, 'derived-many', 'SKILL.md'), '---\nname: derived-many\n---\n');
+  await writeFile(path.join(source, 'derived-one', 'SKILL.md'), '---\nname: derived-one\ndescription: Test fixture.\n---\n');
+  await writeFile(path.join(source, 'derived-many', 'SKILL.md'), '---\nname: derived-many\ndescription: Test fixture.\n---\n');
   await writeFile(path.join(root, 'caddie.json'), `${JSON.stringify({
     version: 1,
     scope: 'project',
@@ -73,7 +73,7 @@ test('inspect rejects malformed declared Lineage through the public tool', async
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-lineage-invalid-'));
   const source = path.join(root, 'skills', 'derived');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: derived\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: derived\ndescription: Test fixture.\n---\n');
   await writeFile(path.join(root, 'caddie.json'), `${JSON.stringify({
     version: 1,
     scope: 'project',
@@ -143,7 +143,7 @@ test('evidence fingerprint flows through exact plan approval into complete mater
   const destination = path.join(scopeRoot, '.agents', 'skills', 'fixture');
   const ledgerPath = path.join(scopeRoot, '.agents', '.caddie', 'ledger.json');
   await mkdir(path.join(source, 'assets'), { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n\nFixture.\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n\nFixture.\n');
   await writeFile(path.join(source, 'assets', 'complete.txt'), 'complete\n');
 
   const evidence = invoke('inspect-source', { type: 'local', root: sourceRoot, selectionPath: 'fixture' });
@@ -200,7 +200,7 @@ test('adoption inspection and preservation-first planning are reachable through 
   const source = path.join(scopeRoot, 'source', 'fixture');
   const installed = path.join(scopeRoot, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   await cp(source, installed, { recursive: true });
   const candidates = [{
     name: 'fixture',
@@ -232,7 +232,7 @@ test('adoption inspection and preservation-first planning are reachable through 
   assert.equal(applied.ok, true, JSON.stringify(applied));
   const ledger = JSON.parse(await readFile(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'), 'utf8'));
   assert.equal(ledger.entries[0].name, 'fixture');
-  assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), '---\nname: fixture\n---\n');
+  assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
 });
 
 test('adoption planning recomputes live evidence instead of trusting a caller proposal', async () => {
@@ -307,7 +307,7 @@ test('user-scope reconciliation never registers the User Skills home as a projec
   const source = path.join(root, 'source', 'fixture');
   await mkdir(home, { recursive: true });
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   const planned = invoke('plan', {
     kind: 'reconcile',
     configHome: path.join(root, 'config'),
@@ -342,8 +342,8 @@ test('user reconciliation preserves unchanged harness ownership in its complete 
   await mkdir(home, { recursive: true });
   await mkdir(oldSkill, { recursive: true });
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(oldSkill, 'SKILL.md'), '---\nname: old\n---\n');
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: new\n---\n');
+  await writeFile(path.join(oldSkill, 'SKILL.md'), '---\nname: old\ndescription: Test fixture.\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: new\ndescription: Test fixture.\n---\n');
   for (const linkPath of oldLinks) {
     await mkdir(path.dirname(linkPath), { recursive: true });
     await symlink(oldSkill, linkPath, 'dir');
@@ -392,7 +392,7 @@ test('user-scope adoption keeps the standard installation and adds Claude compat
   await mkdir(source, { recursive: true });
   await mkdir(home, { recursive: true });
   await mkdir(scopeRoot, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   await cp(source, installed, { recursive: true });
   const env = { HOME: home };
 

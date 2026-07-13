@@ -27,7 +27,7 @@ test('installed Claude Code discovers a skill exposed by an individual directory
 
   const exposure = path.join(home, '.claude', 'skills', 'caddie');
   await mkdir(path.dirname(exposure), { recursive: true });
-  await symlink(path.join(repoRoot, '.agents', 'skills', 'caddie'), exposure, 'dir');
+  await symlink(path.join(repoRoot, 'skills', 'caddie'), exposure, 'dir');
 
   const result = spawnSync('claude', args, { encoding: 'utf8', env: { ...process.env, HOME: home } });
   const output = `${result.stdout}${result.stderr}`;
@@ -53,7 +53,7 @@ test('installed Codex discovers a real skill in the standard user root', async (
 
   const exposure = path.join(home, '.agents', 'skills', 'caddie');
   await mkdir(path.dirname(exposure), { recursive: true });
-  await cp(path.join(repoRoot, '.agents', 'skills', 'caddie'), exposure, { recursive: true });
+  await cp(path.join(repoRoot, 'skills', 'caddie'), exposure, { recursive: true });
 
   const result = spawnSync('codex', args, { cwd: home, encoding: 'utf8', env });
   assert.equal(result.status, 0, result.stderr);
