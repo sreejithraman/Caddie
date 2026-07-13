@@ -52,6 +52,8 @@ When the chosen result requires writing or substantially restructuring a skill, 
 
 Planning is complete only when the user approved the exact current plan. Without approval, stop before mutation.
 
+When adopting an existing User Skill that is a real directory at `~/.agents/skills/<name>` into a canonical User Skills scope elsewhere, use one reconciliation plan with an earlier `materialize-skill` that copies that exact directory to the absent canonical destination and a paired `adopt-user-skill-exposure` that transactionally replaces the fingerprint-bound original directory with its Codex link. Never use ordinary `ensure-harness-exposure` to replace an existing directory. Preserve an existing Claude link whose direct target is that Codex path; it will continue through the adopted link and remains unmanaged unless Caddie created it. User-scope harness mutations share one runtime-HOME lock and durable recovery reservation across canonical scopes.
+
 ## Apply and verify
 
 1. Submit `apply-plan` with the exact approved plan and approval binding.

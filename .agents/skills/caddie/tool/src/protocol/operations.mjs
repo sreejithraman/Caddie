@@ -20,6 +20,8 @@ const require = createRequire(import.meta.url);
 const { createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
 const { fingerprint } = require('../apply/filesystem');
+const { isAdoptionPair } = require('../mutations/relationships');
+const { ownsHarnessLink } = require('../mutations/strategies');
 const { recover } = require('../recovery');
 const {
   createAdoptionPlan,
@@ -117,7 +119,7 @@ async function planOperation(input, runtime) {
 
 async function bindHarnessOwnershipInLedger(scope, operations) {
   const plannedHarnessLinks = operations
-    .filter(({ type }) => type === 'ensure-harness-exposure')
+    .filter(ownsHarnessLink)
     .map(({ linkPath }) => linkPath);
   if (plannedHarnessLinks.length === 0) return operations;
   const ledgerPath = path.join(scope.root, '.agents', '.caddie', 'ledger.json');
@@ -179,11 +181,16 @@ function sameLedgerEntry(entry, name, candidatePath) {
 async function withUserHarnessExposures(scope, operations, replaceableHarnessLinks = new Map()) {
   if (scope.id !== 'user') return operations;
   const result = [...operations];
-  const existing = new Set(operations.filter(({ type }) => type === 'ensure-harness-exposure').map(({ linkPath }) => path.resolve(linkPath)));
+  const existing = new Set(operations
+    .filter(ownsHarnessLink)
+    .map(({ linkPath }) => path.resolve(linkPath)));
   for (const materialization of operations.filter(({ type }) => type === 'materialize-skill')) {
+    const adoptedCodexExposure = operations.find((operation) => isAdoptionPair(materialization, operation));
     for (const harness of ['codex', 'claude']) {
       const linkPath = path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills', materialization.name);
       if (existing.has(path.resolve(linkPath))) continue;
+      if (harness === 'claude' && adoptedCodexExposure
+        && await isSymlinkTo(linkPath, adoptedCodexExposure.linkPath)) continue;
       result.push({
         type: 'ensure-harness-exposure',
         harness,
@@ -195,6 +202,12 @@ async function withUserHarnessExposures(scope, operations, replaceableHarnessLin
     }
   }
   return result;
+}
+
+async function isSymlinkTo(linkPath, targetPath) {
+  const stat = await fs.lstat(linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat?.isSymbolicLink()) return false;
+  return path.resolve(path.dirname(linkPath), await fs.readlink(linkPath)) === path.resolve(targetPath);
 }
 
 async function expectedExposure(linkPath, targetPath, replaceableHarnessLinks = new Map()) {

@@ -5,7 +5,8 @@
 // as the single taxonomy used by planning, application, and recovery.
 const DEFINITIONS = Object.freeze({
   'materialize-skill': descriptor('directory-replace', 'destinationPath', 'expectedDestination', 'skill'),
-  'ensure-harness-exposure': descriptor('symlink', 'linkPath', 'expected', 'link'),
+  'adopt-user-skill-exposure': descriptor('symlink', 'linkPath', 'expected', 'link', { userHarnessAnchored: true, ownsHarnessLink: true }),
+  'ensure-harness-exposure': descriptor('symlink', 'linkPath', 'expected', 'link', { userHarnessAnchored: true, ownsHarnessLink: true }),
   'write-manifest': descriptor('file-replace', 'path', 'expected', 'file'),
   'write-lock': descriptor('file-replace', 'path', 'expected', 'file'),
   'write-machine-config': descriptor('file-replace', 'path', 'expected', 'file'),
@@ -13,14 +14,14 @@ const DEFINITIONS = Object.freeze({
   'remove-ledger': descriptor('remove', 'path', 'expected', 'removed'),
   'remove-legacy-lock': descriptor('remove', 'path', 'expected', 'removed'),
   'cleanup-preserved-skill': descriptor('remove', 'path', 'expected', 'removed'),
-  'cleanup-exposure': descriptor('remove', 'path', 'expected', 'removed'),
+  'cleanup-exposure': descriptor('remove', 'path', 'expected', 'removed', { userHarnessAnchored: true }),
 });
 
 const MUTATION_OPERATION_TYPES = Object.freeze(Object.keys(DEFINITIONS));
 const RECOVERY_OPERATION_TYPES = Object.freeze(['recover-finish', 'recover-rollback']);
 
-function descriptor(strategy, targetField, expectedField, storageSuffix) {
-  return Object.freeze({ strategy, targetField, expectedField, storageSuffix });
+function descriptor(strategy, targetField, expectedField, storageSuffix, traits = {}) {
+  return Object.freeze({ strategy, targetField, expectedField, storageSuffix, ...traits });
 }
 
 function strategyFor(operationOrType) {
@@ -38,10 +39,20 @@ function expectedFor(operation) {
   return definition && operation[definition.expectedField];
 }
 
+function isUserHarnessAnchored(operationOrType) {
+  return strategyFor(operationOrType)?.userHarnessAnchored === true;
+}
+
+function ownsHarnessLink(operationOrType) {
+  return strategyFor(operationOrType)?.ownsHarnessLink === true;
+}
+
 module.exports = {
   MUTATION_OPERATION_TYPES,
   RECOVERY_OPERATION_TYPES,
   expectedFor,
+  isUserHarnessAnchored,
+  ownsHarnessLink,
   strategyFor,
   targetFor,
 };

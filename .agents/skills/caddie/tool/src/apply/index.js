@@ -8,7 +8,8 @@ const { canonicalize, verifyApprovedPlan } = require('../plans');
 const { copyDirectory, exists, fingerprint, fingerprintIfPresent, writeJsonAtomic } = require('./filesystem');
 const { validateJournal } = require('../recovery/journal');
 const { parseSkillMetadata } = require('../skill-metadata');
-const { expectedFor, strategyFor, targetFor } = require('../mutations/strategies');
+const { expectedFor, isUserHarnessAnchored, strategyFor, targetFor } = require('../mutations/strategies');
+const userHarnessReservation = require('../coordination/user-harness-reservation');
 
 class ApplyError extends Error {
   constructor(message, code = 'apply-failed', details) {
@@ -21,6 +22,17 @@ class ApplyError extends Error {
 
 async function acquireScopeLock(scopeRoot) {
   const lockPath = path.join(scopeRoot, '.agents', '.caddie', 'mutation.lock');
+  return acquireOwnerLock(lockPath);
+}
+
+async function acquireUserHarnessLock() {
+  const home = path.resolve(os.homedir());
+  const lockPath = path.join(home, '.agents', '.caddie', 'user-mutation.lock');
+  await assertNoSymlinkAncestors(home, path.dirname(lockPath));
+  return acquireOwnerLock(lockPath);
+}
+
+async function acquireOwnerLock(lockPath) {
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
   const owner = { pid: process.pid, nonce: crypto.randomUUID(), acquiredAt: new Date().toISOString() };
   await createOwnerFile(lockPath, owner, 0);
@@ -127,13 +139,48 @@ function processIsRunning(pid) {
 async function applyPlan({ plan, approval, onBoundary }) {
   verifyApprovedPlan(plan, approval);
   await assertMutationAncestors(plan);
-  const release = await acquireScopeLock(plan.scope.root);
+  const releaseUserHarness = needsUserHarnessLock(plan) ? await acquireUserHarnessLock() : null;
+  let releaseScope;
+  let reservationStarted = false;
   try {
+    releaseScope = await acquireScopeLock(plan.scope.root);
+    if (releaseUserHarness) {
+      await userHarnessReservation.verifyAccess(plan);
+      if (plan.kind !== 'recovery') {
+        await reserveExistingUserJournal(plan);
+        await userHarnessReservation.begin(plan);
+        reservationStarted = true;
+      }
+    }
     if (plan.kind === 'recovery') return await applyRecovery(plan, onBoundary);
     return await applyFresh(plan, onBoundary);
+  } catch (error) {
+    if (reservationStarted) await userHarnessReservation.abandonIfUnjournaled(plan);
+    throw error;
   } finally {
-    await release();
+    if (releaseScope) await releaseScope();
+    if (releaseUserHarness) await releaseUserHarness();
   }
+}
+
+async function reserveExistingUserJournal(plan) {
+  const journalPath = path.join(plan.scope.root, '.agents', '.caddie', 'operation-journal.json');
+  if (!await exists(journalPath)) return;
+  let journal;
+  try {
+    journal = JSON.parse(await fs.readFile(journalPath, 'utf8'));
+    await validateJournal(journal, plan.scope);
+  } catch (error) {
+    throw new ApplyError(`unfinished User Skills journal is invalid: ${error.message}`, 'recovery-invalid');
+  }
+  if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.activate(journal.plan);
+  throw new ApplyError('unfinished mutation requires recovery', 'recovery-required');
+}
+
+function needsUserHarnessLock(plan) {
+  if (plan.scope.id !== 'user') return false;
+  return plan.operations.some((operation) => isUserHarnessAnchored(operation)
+    || operation.interruptedPlan?.operations?.some(isUserHarnessAnchored));
 }
 
 async function applyFresh(plan, onBoundary) {
@@ -164,6 +211,8 @@ async function applyFresh(plan, onBoundary) {
     phase: 'staged',
   };
   await writeJsonAtomic(journalPath, journal);
+  await boundary(onBoundary, 'journal-published', journal);
+  if (needsUserHarnessLock(plan)) await userHarnessReservation.activate(plan);
   await boundary(onBoundary, 'journal-created', journal);
   return finishJournal(journalPath, journal, onBoundary);
 }
@@ -289,7 +338,9 @@ async function finishJournal(journalPath, journal, onBoundary) {
   await boundary(onBoundary, 'sources-cleaned', journal);
   await fs.rm(journal.operationRoot, { recursive: true, force: true });
   await boundary(onBoundary, 'storage-cleaned', journal);
+  if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.markTerminal(journal.plan);
   await fs.rm(journalPath, { force: true });
+  if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.clear(journal.plan);
   return { status: 'applied', planId: journal.planId, operationsApplied: journal.records.length };
 }
 
@@ -395,6 +446,7 @@ async function applyRecovery(plan, onBoundary) {
     throw new ApplyError('recovery approval does not bind the interrupted plan', 'stale-plan');
   }
   for (const condition of plan.preconditions || []) await verifyCondition(condition);
+  if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.activate(journal.plan);
   if (operation.type === 'recover-finish') {
     if (journal.phase === 'rolling-back') throw new ApplyError('a rollback already started and can only be resumed', 'recovery-invalid');
     return finishJournal(operation.journalPath, journal, onBoundary);
@@ -425,7 +477,9 @@ async function rollbackJournal(journalPath, journal, onBoundary) {
   await cleanupEphemeralSources(journal.plan);
   await fs.rm(journal.operationRoot, { recursive: true, force: true });
   await boundary(onBoundary, 'rollback-storage-cleaned', journal);
+  if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.markTerminal(journal.plan);
   await fs.rm(journalPath, { force: true });
+  if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.clear(journal.plan);
 }
 
 async function rollbackRecord(record, onBoundary, journal, recordIndex) {
@@ -434,14 +488,22 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
   const strategy = definition?.strategy;
   const originalExpected = expectedFor(operation);
   if (strategy === 'symlink') {
-    const live = await snapshotSymlink(operation.linkPath);
+    const live = await snapshotExposure(operation.linkPath);
     const isPlaced = live.state === 'symlink' && live.resolvedTarget === path.resolve(operation.targetPath);
-    const isOriginal = live.state === 'symlink' && originalExpected.state === 'symlink'
-      && live.target === originalExpected.target;
+    const isOriginal = (live.state === 'symlink' && originalExpected.state === 'symlink'
+      && live.target === originalExpected.target)
+      || (live.state === 'fingerprint' && originalExpected.state === 'fingerprint'
+        && live.fingerprint === originalExpected.fingerprint);
     if (live.state !== 'absent' && !isPlaced && !isOriginal) {
       throw new ApplyError('cannot roll back modified exposure', 'replan');
     }
-    if (await exists(record.backupPath)) {
+    const hasBackup = await exists(record.backupPath);
+    if (hasBackup && isOriginal) throw new ApplyError('cannot roll back ambiguous exposure state', 'replan');
+    if (!hasBackup && originalExpected.state !== 'absent') {
+      if (isOriginal) return;
+      throw new ApplyError('cannot roll back exposure without its approved backup', 'replan');
+    }
+    if (hasBackup) {
       if (live.state !== 'absent') await fs.unlink(operation.linkPath);
       await fs.rename(record.backupPath, operation.linkPath);
       await boundary(onBoundary, `rollback-mutation:${recordIndex}:restored-link`, journal);
@@ -489,10 +551,10 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
   }
 }
 
-async function snapshotSymlink(candidate) {
+async function snapshotExposure(candidate) {
   const stat = await fs.lstat(candidate).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!stat) return { state: 'absent' };
-  if (!stat.isSymbolicLink()) return { state: 'other' };
+  if (!stat.isSymbolicLink()) return { state: 'fingerprint', fingerprint: await fingerprint(candidate) };
   const target = await fs.readlink(candidate);
   return { state: 'symlink', target, resolvedTarget: path.resolve(path.dirname(candidate), target) };
 }
@@ -519,7 +581,7 @@ async function assertMutationAncestors(plan) {
     for (const candidate of candidates) {
       const resolved = path.resolve(candidate);
       const configRoot = plan.scope.configRoot && path.resolve(plan.scope.configRoot);
-      const harnessRoot = ['ensure-harness-exposure', 'cleanup-exposure'].includes(operation.type) && plan.scope.id === 'user'
+      const harnessRoot = isUserHarnessAnchored(operation) && plan.scope.id === 'user'
         ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
         : null;
       const anchor = isInside(scopeRoot, resolved)

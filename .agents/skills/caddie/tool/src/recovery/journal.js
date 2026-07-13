@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { canonicalize, verifyPlanIntegrity } = require('../plans');
 const { exists, fingerprint } = require('../apply/filesystem');
-const { expectedFor, strategyFor, targetFor } = require('../mutations/strategies');
+const { expectedFor, isUserHarnessAnchored, strategyFor, targetFor } = require('../mutations/strategies');
 const PHASES = new Set(['staged', 'applying', 'verified', 'rolling-back', 'rolled-back']);
 
 class JournalValidationError extends Error {
@@ -53,7 +53,7 @@ async function validateJournal(journal, scope) {
       const scopeRoot = path.resolve(scope.root);
       const configRoot = scope.configRoot && path.resolve(scope.configRoot);
       const anchor = isInside(scopeRoot, resolved) ? scopeRoot : configRoot && isInside(configRoot, resolved) ? configRoot : null;
-      const harnessRoot = ['ensure-harness-exposure', 'cleanup-exposure'].includes(operation.type) && scope.id === 'user'
+      const harnessRoot = isUserHarnessAnchored(operation) && scope.id === 'user'
         ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
         : null;
       const approvedAnchor = anchor || (harnessRoot && isInside(harnessRoot, resolved) ? os.homedir() : null);

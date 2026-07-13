@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
 const { MUTATION_OPERATION_TYPES, RECOVERY_OPERATION_TYPES } = require('../mutations/strategies');
+const { isAdoptionPair } = require('../mutations/relationships');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
@@ -90,6 +91,25 @@ function validateOperation(operation, scope, kind) {
       }
     }
     validateExpected(operation.expectedDestination, 'expectedDestination');
+    return;
+  }
+
+  if (operation.type === 'adopt-user-skill-exposure') {
+    if (scope.id !== 'user' || operation.harness !== 'codex') {
+      throw new PlanError('User Skill Adoption is limited to the Codex User Skills harness');
+    }
+    const exposureRoot = path.join(os.homedir(), '.agents', 'skills');
+    if (path.dirname(path.resolve(operation.linkPath)) !== exposureRoot
+      || path.dirname(path.resolve(operation.targetPath)) !== canonicalRoot
+      || path.basename(operation.linkPath) !== path.basename(operation.targetPath)
+      || path.resolve(operation.linkPath) === path.resolve(operation.targetPath)) {
+      throw new PlanError('User Skill Adoption must link matching direct children at the fixed Codex and canonical roots');
+    }
+    if (typeof operation.targetFingerprint !== 'string') throw new PlanError('User Skill Adoption must bind the exact target fingerprint');
+    validateExpected(operation.expected, 'User Skill Adoption expected state');
+    if (operation.expected.state !== 'fingerprint') {
+      throw new PlanError('User Skill Adoption must bind the exact existing directory fingerprint');
+    }
     return;
   }
 
@@ -196,6 +216,7 @@ function createPlan(input) {
   assertAbsolute(input.scope.root, 'scope.root');
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new PlanError('plan requires at least one operation');
   input.operations.forEach((operation) => validateOperation(operation, input.scope, input.kind));
+  validateOperationRelationships(input.operations);
 
   const payload = {
     version: PLAN_VERSION,
@@ -227,7 +248,30 @@ function verifyPlanIntegrity(plan) {
   if (id !== actual) throw new PlanError('plan content does not match its immutable id', 'altered-plan');
   if (!PLAN_KINDS.has(plan.kind) || !plan.scope || !Array.isArray(plan.operations)) throw new PlanError('plan shape is invalid');
   plan.operations.forEach((operation) => validateOperation(operation, plan.scope, plan.kind));
+  validateOperationRelationships(plan.operations);
   return true;
+}
+
+function validateOperationRelationships(operations) {
+  const adoptionLinks = new Set();
+  const adoptionTargets = new Set();
+  for (let index = 0; index < operations.length; index += 1) {
+    const operation = operations[index];
+    if (operation.type !== 'adopt-user-skill-exposure') continue;
+    const link = path.resolve(operation.linkPath);
+    const target = path.resolve(operation.targetPath);
+    if (adoptionLinks.has(link) || adoptionTargets.has(target)) {
+      throw new PlanError('User Skill Adoption paths must be unique within a plan');
+    }
+    adoptionLinks.add(link);
+    adoptionTargets.add(target);
+    const matchingMaterializations = operations
+      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+      .filter(({ candidate }) => isAdoptionPair(candidate, operation));
+    if (matchingMaterializations.length !== 1 || matchingMaterializations[0].candidateIndex >= index) {
+      throw new PlanError('User Skill Adoption requires an earlier exact-copy materialization from the existing harness directory to an absent canonical destination');
+    }
+  }
 }
 
 function verifyApprovedPlan(plan, approval) {
