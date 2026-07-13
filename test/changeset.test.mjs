@@ -7,11 +7,12 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   buildPublicationPlan,
+  applyChangeSandbox,
   parsePullRequestMarkers,
   prepareChangeSandbox,
   prepareGitChange,
   verifyGitPreparation,
-} from '../src/changeset/index.mjs';
+} from '../.agents/skills/caddie/tool/src/changeset/index.mjs';
 
 const exec = promisify(execFile);
 
@@ -85,10 +86,49 @@ test('prepares a non-Git Change Sandbox with a reviewable apply plan', async () 
 
   assert.equal(await readFile(path.join(source, 'SKILL.md'), 'utf8'), 'before\n');
   assert.equal(prepared.applyPlan.version, 1);
+  assert.equal(typeof prepared.applyPlan.id, 'string');
+  assert.equal(prepared.applyPlan.stageRoot, prepared.directory);
   assert.deepEqual(prepared.applyPlan.operations.map(({ type, path: file }) => [type, file]), [
     ['write', 'new.txt'],
     ['write', 'SKILL.md'],
   ].sort((a, b) => a[1].localeCompare(b[1])));
+});
+
+test('applies approved sandbox bytes atomically and rejects tampering or stale destinations', async () => {
+  const prepared = await sandboxFixture();
+  const result = await applyChangeSandbox(prepared.applyPlan, { approval: prepared.applyPlan.id });
+  assert.equal(result.applied, true);
+  assert.equal(await readFile(path.join(prepared.source, 'SKILL.md'), 'utf8'), 'after\n');
+
+  const tampered = await sandboxFixture();
+  await writeFile(path.join(tampered.directory, 'SKILL.md'), 'tampered\n');
+  await assert.rejects(
+    applyChangeSandbox(tampered.applyPlan, { approval: tampered.applyPlan.id }),
+    { code: 'sandbox-stage-tampered', disposition: 'replan' },
+  );
+  assert.equal(await readFile(path.join(tampered.source, 'SKILL.md'), 'utf8'), 'before\n');
+
+  const stale = await sandboxFixture();
+  await writeFile(path.join(stale.source, 'SKILL.md'), 'human work\n');
+  await assert.rejects(
+    applyChangeSandbox(stale.applyPlan, { approval: stale.applyPlan.id }),
+    { code: 'sandbox-destination-stale', disposition: 'replan' },
+  );
+  assert.equal(await readFile(path.join(stale.source, 'SKILL.md'), 'utf8'), 'human work\n');
+});
+
+test('rolls back the entire sandbox destination when publication is interrupted', async () => {
+  for (const failurePoint of ['source-moved', 'result-published']) {
+    const prepared = await sandboxFixture();
+    await assert.rejects(
+      applyChangeSandbox(prepared.applyPlan, {
+        approval: prepared.applyPlan.id,
+        onBoundary(name) { if (name === failurePoint) throw new Error(`interrupt ${name}`); },
+      }),
+      new RegExp(`interrupt ${failurePoint}`),
+    );
+    assert.equal(await readFile(path.join(prepared.source, 'SKILL.md'), 'utf8'), 'before\n');
+  }
 });
 
 test('builds dependency waves and reconstructable GitHub draft markers with honest fallbacks', () => {
@@ -120,6 +160,21 @@ test('builds dependency waves and reconstructable GitHub draft markers with hone
 
 function gitPreparation(id, remoteUrl) {
   return { id, kind: 'git', branch: `caddie/${id}`, headCommit: `${id}-head`, remoteUrl };
+}
+
+async function sandboxFixture() {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-sandbox-apply-'));
+  const source = path.join(root, 'source');
+  await mkdir(source);
+  await writeFile(path.join(source, 'SKILL.md'), 'before\n');
+  const prepared = await prepareChangeSandbox({
+    source,
+    slug: 'prepared',
+    workspaceRoot: path.join(root, 'sandboxes'),
+    author: async ({ directory }) => writeFile(path.join(directory, 'SKILL.md'), 'after\n'),
+    validate: async () => {},
+  });
+  return prepared;
 }
 
 async function gitFixture() {

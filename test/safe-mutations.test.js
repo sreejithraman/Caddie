@@ -5,11 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { createPlan, approvePlan } = require('../src/plans');
-const { applyPlan, acquireScopeLock } = require('../src/apply');
-const { fingerprint, exists } = require('../src/apply/filesystem');
-const { recover } = require('../src/recovery');
-const { createAdoptionPlan, createUnmanagementPlan, inspectAdoption } = require('../src/adoption');
+const { createPlan, approvePlan } = require('../.agents/skills/caddie/tool/src/plans');
+const { applyPlan, acquireScopeLock } = require('../.agents/skills/caddie/tool/src/apply');
+const { fingerprint, exists } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
+const { recover } = require('../.agents/skills/caddie/tool/src/recovery');
+const { createAdoptionPlan, createUnmanagementPlan, inspectAdoption } = require('../.agents/skills/caddie/tool/src/adoption');
+
+const journalPathFor = (fx) => path.join(fx.root, '.agents', '.caddie', 'operation-journal.json');
+const lockPathFor = (fx) => path.join(fx.root, '.agents', '.caddie', 'mutation.lock');
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-safe-'));
@@ -75,11 +78,27 @@ test('scope mutations serialize without locking reads', async (t) => {
   const fx = await fixture();
   t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
   const release = await acquireScopeLock(fx.root);
+  assert.equal((await fs.lstat(lockPathFor(fx))).isFile(), true);
   await assert.rejects(acquireScopeLock(fx.root), (error) => error.code === 'scope-locked');
   assert.equal(await fs.readFile(path.join(fx.source, 'SKILL.md'), 'utf8').then(Boolean), true);
   await release();
   const releaseAgain = await acquireScopeLock(fx.root);
   await releaseAgain();
+});
+
+test('stale lock takeover is atomic and nonce-safe release cannot remove a new owner', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  await fs.mkdir(path.dirname(lockPathFor(fx)), { recursive: true });
+  await fs.writeFile(lockPathFor(fx), JSON.stringify({ pid: 2147483647, nonce: 'dead-owner' }));
+  const release = await acquireScopeLock(fx.root);
+  const liveOwner = JSON.parse(await fs.readFile(lockPathFor(fx), 'utf8'));
+  assert.equal(liveOwner.pid, process.pid);
+  assert.notEqual(liveOwner.nonce, 'dead-owner');
+  await fs.unlink(lockPathFor(fx));
+  await fs.writeFile(lockPathFor(fx), JSON.stringify({ pid: process.pid, nonce: 'replacement-owner' }), { flag: 'wx' });
+  await release();
+  assert.equal(JSON.parse(await fs.readFile(lockPathFor(fx), 'utf8')).nonce, 'replacement-owner');
 });
 
 test('interruption exposes immutable finish and rollback plans; finish resumes exactly', async (t) => {
@@ -117,6 +136,72 @@ test('rollback restores the exact pre-mutation state', async (t) => {
   assert.equal(await exists(fx.ledgerPath), false);
 });
 
+test('an interrupted rollback can only resume rollback and remains exact', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const plan = await reconcilePlan(fx);
+  await assert.rejects(applyPlan({
+    plan,
+    approval: approvePlan(plan),
+    onBoundary(name) { if (name === 'operation:1') throw new Error('stop apply'); },
+  }), /stop apply/);
+  const firstRecovery = await recover({ scope: fx.scope });
+  await assert.rejects(applyPlan({
+    plan: firstRecovery.rollbackPlan,
+    approval: approvePlan(firstRecovery.rollbackPlan),
+    onBoundary(name) { if (name === 'rollback-mutation:0:removed-new') throw new Error('stop rollback'); },
+  }), /stop rollback/);
+  const resumed = await recover({ scope: fx.scope });
+  assert.equal(resumed.finishPlan, null);
+  await applyPlan({ plan: resumed.rollbackPlan, approval: approvePlan(resumed.rollbackPlan) });
+  assert.equal(await exists(fx.destination), false);
+  assert.equal((await recover({ scope: fx.scope })).status, 'clean');
+});
+
+test('recovery rejects tampered embedded plans, order, and operation paths without touching outside content', async (t) => {
+  for (const tamper of [
+    (journal) => { journal.plan.operations[0].destinationPath = path.join(journal.plan.scope.root, 'outside'); },
+    (journal) => { journal.order = [...journal.order].reverse(); },
+    (journal) => { journal.records[0].backupPath = path.join(journal.plan.scope.root, 'outside-backup'); },
+    (journal) => { journal.operationRoot = path.join(journal.plan.scope.root, 'outside-operation-root'); },
+  ]) {
+    const fx = await fixture();
+    t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+    const outside = path.join(fx.root, 'outside-marker');
+    await fs.writeFile(outside, 'preserve');
+    const plan = await reconcilePlan(fx);
+    await assert.rejects(applyPlan({
+      plan,
+      approval: approvePlan(plan),
+      onBoundary(name) { if (name === 'journal-created') throw new Error('stop'); },
+    }), /stop/);
+    const journalPath = journalPathFor(fx);
+    const journal = JSON.parse(await fs.readFile(journalPath, 'utf8'));
+    tamper(journal);
+    await fs.writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+    await assert.rejects(recover({ scope: fx.scope }), (error) => error.code === 'recovery-invalid');
+    assert.equal(await fs.readFile(outside, 'utf8'), 'preserve');
+  }
+});
+
+test('approved recovery rejects live state changed after recovery planning', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const plan = await reconcilePlan(fx);
+  await assert.rejects(applyPlan({
+    plan,
+    approval: approvePlan(plan),
+    onBoundary(name) { if (name === 'mutation:0:placed') throw new Error('stop'); },
+  }), /stop/);
+  const recovery = await recover({ scope: fx.scope });
+  await fs.writeFile(path.join(fx.destination, 'SKILL.md'), 'changed after recovery planning');
+  await assert.rejects(
+    applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) }),
+    (error) => ['stale-plan', 'recovery-invalid'].includes(error.code),
+  );
+  assert.equal(await exists(fx.ledgerPath), false);
+});
+
 test('adoption is read-only, preselects exact matches, and treats legacy data as evidence', async (t) => {
   const fx = await fixture();
   t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
@@ -148,6 +233,25 @@ test('adoption is read-only, preselects exact matches, and treats legacy data as
   assert.equal(JSON.parse(await fs.readFile(fx.ledgerPath, 'utf8')).entries.length, 1);
   assert.equal(await exists(legacyPath), false);
   assert.equal(await fs.readFile(path.join(modified, 'SKILL.md'), 'utf8'), 'changed');
+});
+
+test('adoption ledger extras cannot override canonical ownership fields', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  await fs.mkdir(path.dirname(fx.destination), { recursive: true });
+  await fs.cp(fx.source, fx.destination, { recursive: true });
+  const proposal = await inspectAdoption({ scopeRoot: fx.root, candidates: [{ name: 'chosen', sourcePath: fx.source }] });
+  const plan = createAdoptionPlan({
+    scope: fx.scope,
+    proposal,
+    ensureClaude: false,
+    ledger: { version: 999, scopeId: 'attacker', entries: [{ name: 'attacker' }], harmlessExtra: true },
+  });
+  const ledger = JSON.parse(plan.operations.find((operation) => operation.type === 'write-ledger').content);
+  assert.equal(ledger.version, 1);
+  assert.equal(ledger.scopeId, fx.scope.id);
+  assert.deepEqual(ledger.entries.map((entry) => entry.name), ['chosen']);
+  assert.equal(ledger.harmlessExtra, true);
 });
 
 test('unmanagement removes ownership and registration while preserving skills and exposure', async (t) => {

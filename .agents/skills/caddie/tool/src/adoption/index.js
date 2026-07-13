@@ -101,6 +101,7 @@ async function readLegacyEvidence(candidate) {
 function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state: 'absent' }, ensureClaude = true, removeLegacy = false }) {
   const adopted = proposal.entries.filter((entry) => entry.preselected && entry.classification === 'exact');
   const content = `${JSON.stringify({
+    ...(ledger || {}),
     version: 1,
     scopeId: scope.id,
     entries: adopted.map((entry) => ({
@@ -111,7 +112,6 @@ function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state:
       fingerprint: entry.installedFingerprint,
       adopted: true,
     })),
-    ...(ledger || {}),
   }, null, 2)}\n`;
   const operations = [];
   if (ensureClaude) operations.push({

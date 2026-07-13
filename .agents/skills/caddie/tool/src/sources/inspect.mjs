@@ -1,45 +1,21 @@
-import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
+import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import skillMetadata from '../skill-metadata.js';
 
 import { fingerprintDirectory } from '../fingerprint/index.mjs';
+import { resolveSelectionWithinSource } from './selection-path.mjs';
+
+const { parseSkillMetadata } = skillMetadata;
 
 function compareNames(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function normalizeSelectionPath(selectionPath) {
-  if (typeof selectionPath !== 'string' || selectionPath.length === 0 || path.isAbsolute(selectionPath)) {
-    throw new TypeError('selectionPath must be a non-empty relative path');
-  }
-  const normalized = path.posix.normalize(selectionPath.replaceAll('\\', '/'));
-  if (normalized === '..' || normalized.startsWith('../')) {
-    throw new TypeError('selectionPath must stay within the Skill Source');
-  }
-  return normalized.replace(/^\.\//, '');
-}
-
 async function selectedDirectory(root, selectionPath) {
-  const normalized = normalizeSelectionPath(selectionPath);
-  const rootPath = await realpath(root);
-  const selectedPath = await realpath(path.join(rootPath, normalized));
-  if (selectedPath !== rootPath && !selectedPath.startsWith(`${rootPath}${path.sep}`)) {
-    throw new TypeError('selectionPath resolves outside the Skill Source');
-  }
+  const { relativePath: normalized, selectedPath } = await resolveSelectionWithinSource(root, selectionPath);
   const stat = await lstat(selectedPath);
   if (!stat.isDirectory()) throw new TypeError('selectionPath must identify a skill directory');
   return { normalized, selectedPath };
-}
-
-function parseFrontmatter(content) {
-  if (!content.startsWith('---\n')) return { name: null, description: null };
-  const end = content.indexOf('\n---', 4);
-  if (end < 0) return { name: null, description: null };
-  const fields = {};
-  for (const line of content.slice(4, end).split('\n')) {
-    const match = line.match(/^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
-    if (match) fields[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
-  }
-  return { name: fields.name ?? null, description: fields.description ?? null };
 }
 
 export async function inspectSelectedDirectory({
@@ -96,7 +72,7 @@ export async function inspectSelectedDirectory({
   } catch (error) {
     findings.push({ code: error?.code === 'ENOENT' ? 'missing-skill-file' : 'unreadable-skill-file', path: 'SKILL.md' });
   }
-  const metadata = parseFrontmatter(metadataContent);
+  const metadata = parseSkillMetadata(metadataContent);
   const bounded = totalEntries > entries.length || skillBytes > maxContentBytes;
   const evidenceComplete = findings.length === 0 && !bounded;
 
@@ -104,7 +80,8 @@ export async function inspectSelectedDirectory({
     source: { ...source, selectionPath: normalized },
     artifact: { trust: 'untrusted', instructionPolicy: 'treat-as-data' },
     skill: {
-      ...metadata,
+      name: metadata.name,
+      description: metadata.description,
       skillFile: skillContent,
       skillFileBytes: skillBytes,
       skillFileTruncated: skillBytes > maxContentBytes,

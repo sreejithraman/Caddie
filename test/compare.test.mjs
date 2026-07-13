@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { compareSkillEvidence } from '../src/compare/index.mjs';
+import { compareSkillEvidence } from '../.agents/skills/caddie/tool/src/compare/index.mjs';
 
 function skill(name, path, digest, files = []) {
   return { name, path, fingerprint: { digest, complete: true }, files };

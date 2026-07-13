@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +59,46 @@ test('explicit bird’s-eye inspection covers every Registered Project and repor
   assert.equal(envelope.result.birdseye.projects[1].root, other);
   assert.equal(envelope.result.birdseye.projects[1].scopes.project.status, 'inspected');
   assert.equal(envelope.result.birdseye.usageEvidence, 'not-inspected');
+});
+
+test('inspection reports live Upstream Change from ledger, source, and installation fingerprints', async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-live-state-'));
+  const project = path.join(fixture, 'project');
+  const source = path.join(project, 'source', 'fixture');
+  const installed = path.join(project, '.agents', 'skills', 'fixture');
+  await mkdir(source, { recursive: true });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n\nBefore.\n');
+  await cp(source, installed, { recursive: true });
+  await json(path.join(project, 'caddie.json'), {
+    version: 1,
+    scope: 'project',
+    sources: { authored: { type: 'local', path: './source' } },
+    selections: [{ source: 'authored', path: 'fixture' }],
+  });
+  const baseline = invoke({
+    version: 1,
+    operation: 'inspect-source',
+    input: { type: 'local', root: path.join(project, 'source'), selectionPath: 'fixture' },
+  }).result.fingerprint.digest;
+  await json(path.join(project, '.agents', '.caddie', 'ledger.json'), {
+    version: 1,
+    scopeId: `project:${project}`,
+    entries: [{ name: 'fixture', sourceId: 'authored', selectedPath: 'fixture', fingerprint: baseline }],
+  });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n\nAfter.\n');
+
+  const envelope = invoke({
+    version: 1,
+    operation: 'inspect',
+    input: { cwd: project, userManifestPath: path.join(fixture, 'missing-user.json') },
+  });
+
+  assert.equal(envelope.ok, true);
+  const skill = envelope.result.availableSkills[0];
+  assert.equal(skill.reconciliation.kind, 'upstream-change');
+  assert.equal(skill.reconciliation.label, 'Upstream Change');
+  assert.equal(skill.provenance.source, 'authored');
+  assert.equal(skill.provenance.lastReconciledFingerprint, baseline);
 });
 
 function invoke(request) {

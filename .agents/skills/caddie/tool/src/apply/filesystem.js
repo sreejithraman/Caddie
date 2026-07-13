@@ -27,6 +27,7 @@ async function fingerprint(candidate) {
 }
 
 async function fingerprintIfPresent(candidate) {
+  if (!await exists(candidate)) return null;
   try {
     return await fingerprint(candidate);
   } catch (error) {

@@ -24,7 +24,7 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 - Prepare repository changes in isolated worktrees and draft pull requests.
 - Inspect every registered project from one conversational bird's-eye view.
 
-Caddie is an Agent App, not a human-facing package-manager CLI. Its scripts are tools for the agent; bootstrap is the only intended direct shell interaction.
+Caddie is an Agent App. Users interact through the Caddie Skill, which directs the Caddie Tool; bootstrap is the only intended direct shell interaction.
 
 ## Design principles
 

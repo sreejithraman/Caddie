@@ -17,6 +17,10 @@ export async function resolveGitSource({ gitClient = new GitClient(), ...options
   return gitClient.resolve(options);
 }
 
+export async function resolveExactGitSource({ gitClient = new GitClient(), ...options }) {
+  return gitClient.resolveExact(options);
+}
+
 export async function inspectGitSource({
   sourceId,
   url,
@@ -27,6 +31,23 @@ export async function inspectGitSource({
   ...limits
 }) {
   const resolution = await gitClient.resolve({ url, ref, cacheDir });
+  return inspectResolvedGitSource({ sourceId, url, selectionPath, resolution, gitClient, limits });
+}
+
+export async function inspectLockedGitSource({
+  sourceId,
+  url,
+  commit,
+  selectionPath,
+  cacheDir,
+  gitClient = new GitClient(),
+  ...limits
+}) {
+  const resolution = await gitClient.resolveExact({ url, commit, cacheDir });
+  return inspectResolvedGitSource({ sourceId, url, selectionPath, resolution, gitClient, limits });
+}
+
+async function inspectResolvedGitSource({ sourceId, url, selectionPath, resolution, gitClient, limits }) {
   if (!resolution.commit) {
     return {
       resolution,
@@ -77,3 +98,4 @@ export function createGitLockEntry({ sourceId, url, ref = null, commit }) {
 
 export { GitClient } from './git-client.mjs';
 export { inspectSelectedDirectory } from './inspect.mjs';
+export { resolveSelectionWithinSource, SelectionOutsideSourceError } from './selection-path.mjs';

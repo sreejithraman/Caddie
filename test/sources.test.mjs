@@ -11,7 +11,7 @@ import {
   inspectGitSource,
   inspectLocalSource,
   resolveGitSource,
-} from '../src/sources/index.mjs';
+} from '../.agents/skills/caddie/tool/src/sources/index.mjs';
 
 const exec = promisify(execFile);
 

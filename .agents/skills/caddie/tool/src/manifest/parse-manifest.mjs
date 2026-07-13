@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { ToolError, invalid } from '../protocol/errors.mjs';
+import { validateGitRef, validateGitUrl } from '../sources/git-client.mjs';
 
 export const MANIFEST_VERSION = 1;
 
@@ -65,15 +66,30 @@ function normaliseSources(raw, manifestPath) {
       throw invalid('invalid-source', 'Every Skill Source must have a name', { manifestPath });
     }
     if (sources[name]) throw invalid('duplicate-source', `Duplicate Skill Source: ${name}`, { manifestPath, source: name });
-    if (source.type !== 'local') {
+    if (source.type !== 'local' && source.type !== 'git') {
       throw invalid('unsupported-source-type', `Unsupported Skill Source type: ${String(source.type)}`, {
-        manifestPath, source: name, supported: ['local'], received: source.type ?? null,
+        manifestPath, source: name, supported: ['local', 'git'], received: source.type ?? null,
       });
     }
-    if (typeof source.path !== 'string' || !source.path) {
-      throw invalid('invalid-source-path', `Local Skill Source ${name} must have a path`, { manifestPath, source: name });
+    if (source.type === 'local') {
+      if (typeof source.path !== 'string' || !source.path || Object.hasOwn(source, 'url') || Object.hasOwn(source, 'ref')) {
+        throw invalid('invalid-local-source', `Local Skill Source ${name} must have only a path`, { manifestPath, source: name });
+      }
+      sources[name] = { name, type: 'local', path: path.resolve(path.dirname(manifestPath), source.path) };
+      continue;
     }
-    sources[name] = { name, type: 'local', path: path.resolve(path.dirname(manifestPath), source.path) };
+    if (Object.hasOwn(source, 'path')) {
+      throw invalid('invalid-git-source', `Git Skill Source ${name} cannot have a local path`, { manifestPath, source: name });
+    }
+    try {
+      validateGitUrl(source.url);
+      validateGitRef(source.ref);
+    } catch (cause) {
+      throw invalid('invalid-git-source', `Git Skill Source ${name} must have a valid url and optional ref`, {
+        manifestPath, source: name, reason: cause.message,
+      });
+    }
+    sources[name] = { name, type: 'git', url: source.url, ...(source.ref ? { ref: source.ref } : {}) };
   }
   return sources;
 }

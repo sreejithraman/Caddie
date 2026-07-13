@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -104,6 +104,45 @@ test('evidence fingerprint flows through exact plan approval into complete mater
   assert.equal(await readFile(path.join(destination, 'assets', 'complete.txt'), 'utf8'), 'complete\n');
   assert.equal(await readlink(path.join(scopeRoot, '.claude', 'skills')), '../.agents/skills');
   assert.equal(JSON.parse(await readFile(ledgerPath, 'utf8')).entries[0].name, 'fixture');
+});
+
+test('adoption inspection and preservation-first planning are reachable through the public tool', async () => {
+  const scopeRoot = await mkdtemp(path.join(tmpdir(), 'caddie-operation-adopt-'));
+  const source = path.join(scopeRoot, 'source', 'fixture');
+  const installed = path.join(scopeRoot, '.agents', 'skills', 'fixture');
+  await mkdir(source, { recursive: true });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await cp(source, installed, { recursive: true });
+  const candidates = [{
+    name: 'fixture',
+    sourcePath: source,
+    sourceId: 'authored',
+    selectedPath: 'fixture',
+  }];
+
+  const inspected = invoke('inspect', { view: 'adoption', scopeRoot, candidates });
+  assert.equal(inspected.ok, true);
+  assert.equal(inspected.result.proposal.entries[0].classification, 'exact');
+  assert.equal(inspected.result.proposal.mutationsPerformed, false);
+
+  const planned = invoke('plan', {
+    workflow: 'adoption',
+    scopeRoot,
+    candidates,
+    scope: { id: `project:${scopeRoot}`, root: scopeRoot },
+    ensureClaude: false,
+  });
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  assert.equal(planned.result.plan.kind, 'adopt');
+
+  const applied = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  });
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  const ledger = JSON.parse(await readFile(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'), 'utf8'));
+  assert.equal(ledger.entries[0].name, 'fixture');
+  assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), '---\nname: fixture\n---\n');
 });
 
 function complete(digest) {

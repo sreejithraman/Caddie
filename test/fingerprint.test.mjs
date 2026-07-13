@@ -7,7 +7,7 @@ import test from 'node:test';
 import {
   classifyFingerprints,
   fingerprintDirectory,
-} from '../src/fingerprint/index.mjs';
+} from '../.agents/skills/caddie/tool/src/fingerprint/index.mjs';
 
 async function fixture(files) {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-fingerprint-'));

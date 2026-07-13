@@ -5,6 +5,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { verifyApprovedPlan } = require('../plans');
 const { copyDirectory, exists, fingerprint, fingerprintIfPresent, writeJsonAtomic } = require('./filesystem');
+const { validateJournal } = require('../recovery/journal');
+const { parseSkillMetadata } = require('../skill-metadata');
 
 class ApplyError extends Error {
   constructor(message, code = 'apply-failed', details) {
@@ -18,25 +20,79 @@ class ApplyError extends Error {
 async function acquireScopeLock(scopeRoot) {
   const lockPath = path.join(scopeRoot, '.agents', '.caddie', 'mutation.lock');
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
-  try {
-    await fs.mkdir(lockPath);
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    let owner;
-    try { owner = JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf8')); } catch (_) {}
-    if (!owner || !Number.isInteger(owner.pid) || processIsRunning(owner.pid)) {
-      throw new ApplyError('another mutation is active for this scope', 'scope-locked', owner);
-    }
-    await fs.rm(lockPath, { recursive: true });
-    await fs.mkdir(lockPath);
-  }
-  await fs.writeFile(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }), { flag: 'wx' });
+  const owner = { pid: process.pid, nonce: crypto.randomUUID(), acquiredAt: new Date().toISOString() };
+  await createOwnerFile(lockPath, owner, 0);
   let released = false;
   return async () => {
     if (released) return;
     released = true;
-    await fs.rm(lockPath, { recursive: true, force: true });
+    await releaseOwnerFile(lockPath, owner.nonce);
   };
+}
+
+async function createOwnerFile(lockPath, owner, attempt) {
+  if (attempt > 4) throw new ApplyError('scope lock changed repeatedly during stale-owner recovery', 'scope-locked');
+  try {
+    await fs.writeFile(lockPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
+    return;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  let raw;
+  let existing;
+  try {
+    raw = await fs.readFile(lockPath, 'utf8');
+    existing = JSON.parse(raw);
+  } catch (_) {
+    throw new ApplyError('scope lock owner is incomplete or unreadable', 'scope-locked');
+  }
+  if (!Number.isInteger(existing.pid) || typeof existing.nonce !== 'string' || processIsRunning(existing.pid)) {
+    throw new ApplyError('another mutation is active for this scope', 'scope-locked', existing);
+  }
+  return reclaimStaleOwner(lockPath, raw, owner, attempt);
+}
+
+async function reclaimStaleOwner(lockPath, staleRaw, owner, attempt) {
+  const claimPath = `${lockPath}.reclaim`;
+  const claim = { pid: process.pid, nonce: crypto.randomUUID() };
+  try {
+    await fs.writeFile(claimPath, JSON.stringify(claim), { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    let existingClaim;
+    try { existingClaim = JSON.parse(await fs.readFile(claimPath, 'utf8')); } catch (_) {
+      throw new ApplyError('stale-owner recovery is already in progress', 'scope-locked');
+    }
+    if (!Number.isInteger(existingClaim.pid) || processIsRunning(existingClaim.pid)) {
+      throw new ApplyError('stale-owner recovery is already in progress', 'scope-locked', existingClaim);
+    }
+    await fs.unlink(claimPath).catch((unlinkError) => { if (unlinkError.code !== 'ENOENT') throw unlinkError; });
+    return reclaimStaleOwner(lockPath, staleRaw, owner, attempt + 1);
+  }
+  try {
+    // The reclaim claim serializes stale readers. A normal acquirer may still
+    // win the unlink/create gap; wx then makes that owner authoritative.
+    if (await fs.readFile(lockPath, 'utf8').catch(() => null) !== staleRaw) return createOwnerFile(lockPath, owner, attempt + 1);
+    await fs.unlink(lockPath).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+    return await createOwnerFile(lockPath, owner, attempt + 1);
+  } finally {
+    await releaseOwnerFile(claimPath, claim.nonce);
+  }
+}
+
+async function releaseOwnerFile(lockPath, nonce) {
+  let handle;
+  try { handle = await fs.open(lockPath, 'r'); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  try {
+    const raw = await handle.readFile('utf8');
+    let current;
+    try { current = JSON.parse(raw); } catch (_) { return; }
+    if (current.nonce !== nonce) return;
+    const [heldStat, pathStat] = await Promise.all([handle.stat(), fs.lstat(lockPath).catch(() => null)]);
+    if (pathStat && heldStat.dev === pathStat.dev && heldStat.ino === pathStat.ino) await fs.unlink(lockPath);
+  } finally {
+    await handle.close();
+  }
 }
 
 function processIsRunning(pid) {
@@ -280,7 +336,12 @@ async function applyRecovery(plan, onBoundary) {
   const actual = await fingerprint(operation.journalPath);
   if (actual !== operation.journalFingerprint) throw new ApplyError('recovery journal changed', 'stale-plan');
   const journal = JSON.parse(await fs.readFile(operation.journalPath, 'utf8'));
-  if (operation.type === 'recover-finish') return finishJournal(operation.journalPath, journal, onBoundary);
+  try { await validateJournal(journal, plan.scope); } catch (error) { throw new ApplyError(error.message, 'recovery-invalid'); }
+  for (const condition of plan.preconditions || []) await verifyCondition(condition);
+  if (operation.type === 'recover-finish') {
+    if (journal.phase === 'rolling-back') throw new ApplyError('a rollback already started and can only be resumed', 'recovery-invalid');
+    return finishJournal(operation.journalPath, journal, onBoundary);
+  }
   await rollbackJournal(operation.journalPath, journal, onBoundary);
   return { status: 'rolled-back', planId: journal.planId, operationsRolledBack: journal.next };
 }
@@ -291,9 +352,13 @@ async function rollbackJournal(journalPath, journal, onBoundary) {
   const lastPossiblyStarted = Math.min(journal.next, journal.order.length - 1);
   for (let position = lastPossiblyStarted; position >= 0; position -= 1) {
     const record = journal.records[journal.order[position]];
-    await rollbackRecord(record, onBoundary, journal, journal.order[position]);
-    journal.next = position;
     journal.phase = 'rolling-back';
+    journal.rollbackPosition = position;
+    await writeJsonAtomic(journalPath, journal);
+    await rollbackRecord(record, onBoundary, journal, journal.order[position]);
+    record.completed = false;
+    journal.next = position;
+    delete journal.rollbackPosition;
     await writeJsonAtomic(journalPath, journal);
     await boundary(onBoundary, `rollback:${journal.order[position]}`, journal);
   }
@@ -365,10 +430,9 @@ async function readSkillName(skillDirectory) {
   try { content = await fs.readFile(path.join(skillDirectory, 'SKILL.md'), 'utf8'); } catch (error) {
     throw new ApplyError('selected directory does not contain a readable SKILL.md', 'invalid-source', { path: skillDirectory, cause: error.code });
   }
-  const frontmatter = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
-  const name = frontmatter && frontmatter[1].match(/^name:\s*["']?([^\s"']+)["']?\s*$/m);
-  if (!name) throw new ApplyError('SKILL.md does not declare a top-level name', 'invalid-source', { path: skillDirectory });
-  return name[1];
+  const metadata = parseSkillMetadata(content);
+  if (!metadata.name) throw new ApplyError('SKILL.md does not declare a top-level name', 'invalid-source', { path: skillDirectory });
+  return metadata.name;
 }
 
 async function boundary(hook, name, journal) {

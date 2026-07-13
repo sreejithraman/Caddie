@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createPlan } = require('../plans');
 const { fingerprint } = require('../apply/filesystem');
+const { snapshotLivePreconditions, validateJournal } = require('./journal');
 
 class RecoveryError extends Error {
   constructor(message, code = 'recovery-invalid') {
@@ -24,16 +25,14 @@ async function recover({ scope }) {
   }
   let journal;
   try { journal = JSON.parse(raw); } catch (_) { throw new RecoveryError('operation journal is not valid JSON'); }
-  if (journal.version !== 1 || journal.scopeId !== scope.id || !Array.isArray(journal.records) || !Array.isArray(journal.order)) {
-    throw new RecoveryError('operation journal shape or scope does not match');
-  }
+  try { await validateJournal(journal, scope); } catch (error) { throw new RecoveryError(error.message); }
   const journalFingerprint = await fingerprint(journalPath);
-  const base = { scope, preconditions: [] };
-  const finishPlan = createPlan({
-    ...base,
-    kind: 'recovery',
-    operations: [{ type: 'recover-finish', journalPath, journalFingerprint }],
-  });
+  const base = { scope, preconditions: await snapshotLivePreconditions(journal) };
+  const finishPlan = journal.phase === 'rolling-back' ? null : createPlan({
+      ...base,
+      kind: 'recovery',
+      operations: [{ type: 'recover-finish', journalPath, journalFingerprint }],
+    });
   const rollbackPlan = createPlan({
     ...base,
     kind: 'recovery',
