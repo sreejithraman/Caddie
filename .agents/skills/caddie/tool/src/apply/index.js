@@ -276,7 +276,7 @@ async function verifyPreconditions(plan, ledger) {
       const plannedMaterialization = plan.operations.find((candidate) => candidate.type === 'materialize-skill'
         && path.resolve(candidate.destinationPath) === path.resolve(operation.targetPath)
         && candidate.sourceFingerprint === operation.targetFingerprint);
-      if (targetFingerprint !== operation.targetFingerprint && !(!targetFingerprint && plannedMaterialization)) {
+      if (targetFingerprint !== operation.targetFingerprint && !plannedMaterialization) {
         throw new ApplyError('harness exposure target changed after approval', 'stale-plan', { path: operation.targetPath });
       }
     }

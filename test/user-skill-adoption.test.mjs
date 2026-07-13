@@ -68,6 +68,33 @@ test('public reconciliation adopts an existing Codex User Skill and preserves it
   const ledger = JSON.parse(await readFile(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'), 'utf8'));
   assert.deepEqual(ledger.harnessLinks, [installed]);
   assert.equal(ledger.entries[0].fingerprint, digest);
+
+  const authored = path.join(fixture, 'authored', 'shared');
+  await skill(authored, 'authored bytes');
+  const authoredEvidence = invoke('inspect-source', {
+    type: 'local', root: path.dirname(authored), selectionPath: 'shared',
+  }, env);
+  const authoredDigest = authoredEvidence.result.fingerprint.digest;
+  const update = invoke('plan', {
+    kind: 'reconcile', scope: { id: 'user', root: scopeRoot }, operations: [{
+      type: 'materialize-skill', name: 'shared', sourcePath: authored,
+      destinationPath: canonical, sourceFingerprint: authoredDigest,
+      expectedDestination: { state: 'fingerprint', fingerprint: digest },
+    }],
+  }, env);
+  assert.equal(update.ok, true, JSON.stringify(update));
+  assert.equal(update.result.plan.operations.filter(({ type }) => type === 'ensure-harness-exposure').length, 1);
+  assert.equal(update.result.plan.operations.find(({ type }) => type === 'ensure-harness-exposure').harness, 'codex');
+  const updated = invoke('apply-plan', {
+    plan: update.result.plan,
+    approval: { version: 1, planId: update.result.plan.id, approval: 'explicit' },
+  }, env);
+  assert.equal(updated.ok, true, JSON.stringify(updated));
+  assert.equal(await fingerprint(canonical), authoredDigest);
+  assert.equal(await readlink(claudeLink), '../../.agents/skills/shared');
+  assert.equal(await realpath(claudeLink), await realpath(canonical));
+  const updatedLedger = JSON.parse(await readFile(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'), 'utf8'));
+  assert.deepEqual(updatedLedger.harnessLinks, [installed]);
 });
 
 test('rollback of an interrupted User Skill Adoption restores the exact original directory', async (t) => {
@@ -326,6 +353,85 @@ test('a non-harness user journal never creates an orphaned harness reservation',
   const applied = await applyPlan({ plan: harnessPlan, approval: approvePlan(harnessPlan) });
   assert.equal(applied.status, 'applied');
   assert.equal(await realpath(linkPath), await realpath(target));
+});
+
+test('reconciliation updates an owned canonical User Skill without breaking existing harness links', async (t) => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-owned-update-'));
+  const home = path.join(fixture, 'home');
+  const scopeRoot = path.join(fixture, 'UserSkills');
+  const source = path.join(fixture, 'source', 'shared');
+  const canonical = path.join(scopeRoot, '.agents', 'skills', 'shared');
+  const links = [
+    path.join(home, '.agents', 'skills', 'shared'),
+    path.join(home, '.claude', 'skills', 'shared'),
+  ];
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await skill(source, 'new source bytes');
+  await skill(canonical, 'old canonical bytes');
+  for (const link of links) {
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(path.relative(path.dirname(link), canonical), link, 'dir');
+  }
+  const oldDigest = await fingerprint(canonical);
+  const ledgerPath = path.join(scopeRoot, '.agents', '.caddie', 'ledger.json');
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  await writeFile(ledgerPath, `${JSON.stringify({
+    version: 1,
+    scopeId: 'user',
+    harnessLinks: links,
+    entries: [{ name: 'shared', path: canonical, fingerprint: oldDigest }],
+  }, null, 2)}\n`);
+  const env = { HOME: home, XDG_CONFIG_HOME: path.join(fixture, 'config') };
+  const evidence = invoke('inspect-source', {
+    type: 'local', root: path.dirname(source), selectionPath: 'shared',
+  }, env);
+  const newDigest = evidence.result.fingerprint.digest;
+  const planned = invoke('plan', {
+    kind: 'reconcile', scope: { id: 'user', root: scopeRoot }, operations: [{
+      type: 'materialize-skill', name: 'shared', sourcePath: source,
+      destinationPath: canonical, sourceFingerprint: newDigest,
+      expectedDestination: { state: 'fingerprint', fingerprint: oldDigest },
+    }],
+  }, env);
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  const applied = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  }, env);
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  assert.equal(await fingerprint(canonical), newDigest);
+  for (const link of links) assert.equal(await realpath(link), await realpath(canonical));
+});
+
+test('reconciliation rejects an unowned Claude passthrough even when Codex points at canonical', async (t) => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-unowned-passthrough-'));
+  const home = path.join(fixture, 'home');
+  const scopeRoot = path.join(fixture, 'UserSkills');
+  const source = path.join(fixture, 'source', 'shared');
+  const canonical = path.join(scopeRoot, '.agents', 'skills', 'shared');
+  const codexLink = path.join(home, '.agents', 'skills', 'shared');
+  const claudeLink = path.join(home, '.claude', 'skills', 'shared');
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await skill(source, 'new source bytes');
+  await skill(canonical, 'old canonical bytes');
+  await mkdir(path.dirname(codexLink), { recursive: true });
+  await symlink(path.relative(path.dirname(codexLink), canonical), codexLink, 'dir');
+  await mkdir(path.dirname(claudeLink), { recursive: true });
+  await symlink('../../.agents/skills/shared', claudeLink, 'dir');
+  const env = { HOME: home, XDG_CONFIG_HOME: path.join(fixture, 'config') };
+  const evidence = invoke('inspect-source', {
+    type: 'local', root: path.dirname(source), selectionPath: 'shared',
+  }, env);
+  const planned = invoke('plan', {
+    kind: 'reconcile', scope: { id: 'user', root: scopeRoot }, operations: [{
+      type: 'materialize-skill', name: 'shared', sourcePath: source,
+      destinationPath: canonical, sourceFingerprint: evidence.result.fingerprint.digest,
+      expectedDestination: { state: 'fingerprint', fingerprint: await fingerprint(canonical) },
+    }],
+  }, env);
+  assert.equal(planned.ok, false, JSON.stringify(planned));
+  assert.equal(planned.error.code, 'harness-exposure-collision');
+  assert.equal(await readlink(claudeLink), '../../.agents/skills/shared');
 });
 
 function adoptionPlan({ scopeRoot, installed, canonical, digest }) {
