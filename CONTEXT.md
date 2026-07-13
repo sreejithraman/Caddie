@@ -28,7 +28,7 @@ _Avoid_: Stack Repository, package registry, skills folder
 
 **Registered Project**:
 A project Caddie knows about and can include in focused or bird's-eye inspection. Registration does not imply that the project declares Project Skills.
-_Avoid_: Skills Repository, portfolio entry, tracked repository
+_Avoid_: Portfolio entry, tracked repository
 
 **User Skills**:
 The skills a user makes available across projects through a user-scoped Caddie Manifest.
@@ -70,24 +70,20 @@ _Avoid_: Copy history, fork metadata
 
 ## Installation and ownership
 
-**Canonical Installation**:
-The complete skill directories for a scope that Caddie exposes to agent harnesses.
+**Canonical Skills Directory**:
+The complete skill directories for a scope that Caddie makes available to supported agents.
 _Avoid_: Source repository, skill cache
 
 **In-place Skill**:
-A project-owned skill whose authoring location is also its location in the project's Canonical Installation.
+A project-owned skill whose authoring location is also its location in the project's Canonical Skills Directory.
 _Avoid_: Materialized Skill, unmanaged skill
 
 **Materialized Skill**:
-A complete skill directory Caddie copies from a Skill Source into a Canonical Installation and owns there.
+A complete skill directory Caddie copies from a Skill Source into a Canonical Skills Directory and owns there.
 _Avoid_: In-place Skill, vendored skill, symlinked skill
 
-**Harness Exposure**:
-A Caddie-managed connection that makes a Canonical Installation visible to an agent harness.
-_Avoid_: Skill copy, source link
-
 **Caddie Ledger**:
-The machine-local record of Materialized Skills and Harness Exposures Caddie owns, including their last reconciled state.
+The machine-local record of Materialized Skills and agent links Caddie owns, including their last reconciled state.
 _Avoid_: Caddie Lock, manifest, inventory
 
 **Adoption**:
@@ -95,7 +91,7 @@ The preservation-first process of bringing an existing skill installation under 
 _Avoid_: Import, reinstall, takeover
 
 **Unmanagement**:
-The process of ending Caddie ownership while preserving installed skills and working Harness Exposures by default.
+The process of ending Caddie ownership while preserving installed skills and agent access by default.
 _Avoid_: Uninstall, delete, cleanup
 
 ## Change interpretation
