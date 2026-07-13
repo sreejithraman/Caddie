@@ -161,7 +161,7 @@ async function localGitProvenance(skillPath) {
     const [{ stdout: root }, { stdout: commit }, { stdout: status }] = await Promise.all([
       execFileAsync('git', ['-C', skillPath, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }),
       execFileAsync('git', ['-C', skillPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
-      execFileAsync('git', ['-C', skillPath, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }),
+      execFileAsync('git', ['-C', skillPath, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' }),
     ]);
     return {
       repositoryRoot: root.trim(),

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   buildPublicationPlan,
+  applyPublicationPlan,
   applyChangeSandbox,
   parsePullRequestMarkers,
   prepareChangeSandbox,
@@ -57,6 +58,7 @@ test('refuses an approved base that moved and detects later remote movement', as
     repository: fixture.primary,
     slug: 'remote-race',
     workspaceRoot: path.join(fixture.root, 'race'),
+    expectedBaseCommit: fixture.base,
     author: async ({ directory }) => writeFile(path.join(directory, 'skill.txt'), 'ours\n'),
     validate: async () => {},
   });
@@ -65,6 +67,20 @@ test('refuses an approved base that moved and detects later remote movement', as
   await commit(fixture.other, 'human change');
   await git(fixture.other, ['push', 'origin', 'main']);
   await assert.rejects(verifyGitPreparation(prepared), { code: 'remote-head-moved', disposition: 'replan' });
+});
+
+test('refuses Git preparation without an approved exact base commit', async () => {
+  const fixture = await gitFixture();
+  await assert.rejects(
+    prepareGitChange({
+      repository: fixture.primary,
+      slug: 'moving-base',
+      workspaceRoot: path.join(fixture.root, 'moving'),
+      author: async () => {},
+      validate: async () => {},
+    }),
+    { code: 'expected-base-commit-required', disposition: 'invalid' },
+  );
 });
 
 test('prepares a non-Git Change Sandbox with a reviewable apply plan', async () => {
@@ -146,6 +162,8 @@ test('builds dependency waves and reconstructable GitHub draft markers with hone
   });
 
   assert.equal(plan.publicationAllowed, false);
+  assert.equal(plan.kind, 'publication');
+  assert.match(plan.id, /^[0-9a-f]{64}$/);
   assert.ok(plan.waves[0].some(({ id }) => id === 'source'));
   const consumer = plan.waves[1].find(({ id }) => id === 'consumer');
   assert.equal(consumer.workflow, 'github-draft-pr');
@@ -158,8 +176,117 @@ test('builds dependency waves and reconstructable GitHub draft markers with hone
   assert.equal(plan.waves.flat().find(({ id }) => id === 'sandbox').workflow, 'review-apply-plan');
 });
 
+test('publishes an immutable exactly approved GitHub plan to its bound destination', async () => {
+  const preparation = gitPreparation('source', 'git@github.com:owner/source.git');
+  const plan = buildPublicationPlan({ changeSetId: 'change-set-42', preparations: [preparation] });
+  const calls = [];
+  const result = await applyPublicationPlan(plan, {
+    version: 1, approval: 'explicit', planId: plan.id,
+  }, {
+    verifyGitPreparation: async (received) => assert.deepEqual(received, preparation),
+    execFile: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'git' && args.includes('get-url')) return { stdout: `${preparation.remotePushUrl}\n` };
+      if (command === 'git' && args.at(-1) === 'HEAD') return { stdout: `${preparation.headCommit}\n` };
+      if (command === 'gh') return { stdout: 'https://github.com/owner/source/pull/1\n' };
+      return { stdout: '' };
+    },
+  });
+  assert.equal(result.applied, true);
+  assert.equal(result.published[0].pullRequestUrl, 'https://github.com/owner/source/pull/1');
+  assert.deepEqual(calls[2], ['git', [
+    '-C', preparation.worktree, 'push', 'origin',
+    `${preparation.headCommit}:refs/heads/${preparation.branch}`,
+    `--force-with-lease=refs/heads/${preparation.branch}:`,
+  ]]);
+  assert.deepEqual(calls[3][1].slice(0, 6), ['pr', 'create', '--draft', '--repo', 'owner/source', '--base']);
+  await assert.rejects(applyPublicationPlan(plan, { version: 1, approval: 'explicit', planId: 'wrong' }), {
+    code: 'unapproved-plan',
+  });
+  const altered = structuredClone(plan);
+  altered.waves[0][0].headCommit = 'different';
+  await assert.rejects(applyPublicationPlan(altered, { version: 1, approval: 'explicit', planId: plan.id }), {
+    code: 'altered-plan',
+  });
+});
+
+test('publication rejects a repointed remote and stops before dependent waves', async () => {
+  const source = gitPreparation('source', 'git@github.com:owner/source.git');
+  const consumer = gitPreparation('consumer', 'git@github.com:owner/consumer.git');
+  const plan = buildPublicationPlan({
+    changeSetId: 'change-set-43',
+    preparations: [source, consumer],
+    dependencies: [{ from: 'source', to: 'consumer' }],
+  });
+  const approval = { version: 1, approval: 'explicit', planId: plan.id };
+  const commands = [];
+  const runtime = {
+    verifyGitPreparation: async () => true,
+    execFile: async (command, args) => {
+      commands.push([command, args]);
+      if (args.includes('get-url')) return { stdout: `${source.remotePushUrl}\n` };
+      if (args.at(-1) === 'HEAD') return { stdout: `${source.headCommit}\n` };
+      if (command === 'gh') return { stdout: 'https://github.com/owner/source/pull/2\n' };
+      return { stdout: '' };
+    },
+  };
+  const result = await applyPublicationPlan(plan, approval, runtime);
+  assert.deepEqual(result.published.map(({ id }) => id), ['source']);
+  assert.equal(result.remainingWaves, 1);
+  assert.equal(result.requiresReplan, true);
+  assert.equal(commands.some(([, args]) => args.includes(consumer.worktree)), false);
+
+  await assert.rejects(applyPublicationPlan(plan, approval, {
+    verifyGitPreparation: async () => true,
+    execFile: async () => ({ stdout: 'git@github.com:attacker/redirect.git\n' }),
+  }), { code: 'remote-destination-moved', disposition: 'replan' });
+  await assert.rejects(applyPublicationPlan(plan, approval, {
+    verifyGitPreparation: async () => true,
+    execFile: async () => ({ stdout: `${source.remotePushUrl}\ngit@github.com:attacker/extra.git\n` }),
+  }), { code: 'remote-destination-moved', disposition: 'replan' });
+});
+
+test('publication continues a Change Set only with exact merged dependency evidence', () => {
+  const mergedCommit = 'a'.repeat(40);
+  const consumer = { ...gitPreparation('consumer', 'git@github.com:owner/consumer.git'), dependencyCommits: { source: mergedCommit } };
+  const plan = buildPublicationPlan({
+    changeSetId: 'change-set-45',
+    preparations: [consumer],
+    completedChanges: [{ id: 'source', mergedCommit }],
+    dependencies: [{ from: 'source', to: 'consumer' }],
+  });
+  assert.equal(plan.waves[0][0].id, 'consumer');
+  assert.deepEqual(parsePullRequestMarkers(plan.waves[0][0].bodyMarkers).dependencies, ['source']);
+  assert.throws(() => buildPublicationPlan({
+    changeSetId: 'change-set-45',
+    preparations: [{ ...consumer, dependencyCommits: {} }],
+    completedChanges: [{ id: 'source', mergedCommit }],
+    dependencies: [{ from: 'source', to: 'consumer' }],
+  }), { code: 'merged-dependency-commit-required' });
+});
+
+test('publication never treats a GitHub lookalike host as GitHub', () => {
+  const preparation = gitPreparation('lookalike', 'https://notgithub.com/owner/repo.git');
+  const plan = buildPublicationPlan({ changeSetId: 'change-set-44', preparations: [preparation] });
+  assert.equal(plan.waves[0][0].workflow, 'branch-push');
+  assert.equal(plan.waves[0][0].destination.repositorySlug, undefined);
+});
+
 function gitPreparation(id, remoteUrl) {
-  return { id, kind: 'git', branch: `caddie/${id}`, headCommit: `${id}-head`, remoteUrl };
+  return {
+    id,
+    kind: 'git',
+    repository: `/repos/${id}`,
+    worktree: `/worktrees/${id}`,
+    branch: `caddie/${id}`,
+    baseRef: 'origin/main',
+    baseCommit: `${id}-base`,
+    headCommit: `${id}-head`,
+    remote: true,
+    remoteUrl,
+    remotePushUrl: remoteUrl,
+    ...(remoteUrl ? { expectedRemoteBranchCommit: null } : {}),
+  };
 }
 
 async function sandboxFixture() {

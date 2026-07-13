@@ -30,4 +30,3 @@ function nonEmpty(value) {
 }
 
 module.exports = { parseSkillMetadata };
-

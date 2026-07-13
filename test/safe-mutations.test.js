@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { createPlan, approvePlan } = require('../.agents/skills/caddie/tool/src/plans');
 const { applyPlan, acquireScopeLock } = require('../.agents/skills/caddie/tool/src/apply');
 const { fingerprint, exists } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
@@ -199,6 +200,50 @@ test('recovery rejects tampered embedded plans, order, and operation paths witho
   }
 });
 
+test('recovery rejects symlink ancestors introduced beneath an approved embedded plan', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-recovery-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const plan = await reconcilePlan(fx);
+  await assert.rejects(applyPlan({
+    plan,
+    approval: approvePlan(plan),
+    onBoundary(name) { if (name === 'journal-created') throw new Error('stop'); },
+  }), /stop/);
+  await fs.symlink(outside, path.join(fx.root, '.agents', 'skills'));
+
+  await assert.rejects(recover({ scope: fx.scope }), (error) => error.code === 'recovery-invalid');
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test('recovery rejects a changed backup before offering rollback', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const manifestPath = path.join(fx.root, 'caddie.json');
+  await fs.writeFile(manifestPath, '{"before":true}\n');
+  const plan = createPlan({
+    kind: 'reconcile',
+    scope: fx.scope,
+    operations: [{
+      type: 'write-manifest',
+      path: manifestPath,
+      content: '{"after":true}\n',
+      expected: { state: 'file', fingerprint: await fingerprint(manifestPath) },
+    }],
+  });
+  await assert.rejects(applyPlan({
+    plan,
+    approval: approvePlan(plan),
+    onBoundary(name) { if (name === 'mutation:0:backed-up') throw new Error('stop'); },
+  }), /stop/);
+  const journal = JSON.parse(await fs.readFile(journalPathFor(fx), 'utf8'));
+  await fs.writeFile(journal.records[0].backupPath, 'tampered backup\n');
+
+  await assert.rejects(recover({ scope: fx.scope }), (error) => error.code === 'recovery-invalid');
+  assert.equal(await exists(manifestPath), false);
+});
+
 test('approved recovery rejects live state changed after recovery planning', async (t) => {
   const fx = await fixture();
   t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
@@ -215,6 +260,89 @@ test('approved recovery rejects live state changed after recovery planning', asy
     (error) => ['stale-plan', 'recovery-invalid'].includes(error.code),
   );
   assert.equal(await exists(fx.ledgerPath), false);
+});
+
+test('recovery finishes after an ephemeral Git source was cleaned before journal removal', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const checkoutRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-source-'));
+  const source = path.join(checkoutRoot, 'skill');
+  await fs.mkdir(source);
+  await fs.cp(fx.source, source, { recursive: true });
+  const token = crypto.randomUUID();
+  await fs.writeFile(path.join(checkoutRoot, '.caddie-materialization.json'), `${JSON.stringify({ version: 1, token, sourcePath: source })}\n`);
+  const sourceFingerprint = await fingerprint(source);
+  const plan = createPlan({
+    kind: 'reconcile',
+    scope: fx.scope,
+    operations: [{
+      type: 'materialize-skill', name: 'chosen', sourcePath: source,
+      sourceCleanup: { root: checkoutRoot, token }, destinationPath: fx.destination,
+      sourceFingerprint, expectedDestination: { state: 'absent' },
+    }],
+  });
+  await assert.rejects(applyPlan({
+    plan,
+    approval: approvePlan(plan),
+    onBoundary(name) { if (name === 'sources-cleaned') throw new Error('stop'); },
+  }), /stop/);
+  assert.equal(await exists(checkoutRoot), false);
+
+  const recovery = await recover({ scope: fx.scope });
+  await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
+  assert.equal((await recover({ scope: fx.scope })).status, 'clean');
+  assert.equal(await fs.readFile(path.join(fx.destination, 'SKILL.md'), 'utf8').then(Boolean), true);
+});
+
+test('recovery finalizes after terminal operation storage was already removed', async (t) => {
+  for (const mode of ['finish', 'rollback']) {
+    const fx = await fixture();
+    t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+    let plan = await reconcilePlan(fx);
+    if (mode === 'rollback') {
+      const checkoutRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-source-'));
+      const leasedSource = path.join(checkoutRoot, 'skill');
+      await fs.cp(fx.source, leasedSource, { recursive: true });
+      const token = crypto.randomUUID();
+      await fs.writeFile(path.join(checkoutRoot, '.caddie-materialization.json'), `${JSON.stringify({ version: 1, token, sourcePath: leasedSource })}\n`);
+      plan = createPlan({
+        kind: 'reconcile',
+        scope: fx.scope,
+        operations: [{
+          type: 'materialize-skill', name: 'chosen', sourcePath: leasedSource,
+          sourceCleanup: { root: checkoutRoot, token }, destinationPath: fx.destination,
+          sourceFingerprint: await fingerprint(leasedSource), expectedDestination: { state: 'absent' },
+        }],
+      });
+    }
+    if (mode === 'finish') {
+      await assert.rejects(applyPlan({
+        plan,
+        approval: approvePlan(plan),
+        onBoundary(name) { if (name === 'storage-cleaned') throw new Error('stop terminal cleanup'); },
+      }), /stop terminal cleanup/);
+      const recovery = await recover({ scope: fx.scope });
+      await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
+      assert.equal(await exists(fx.ledgerPath), true);
+    } else {
+      await assert.rejects(applyPlan({
+        plan,
+        approval: approvePlan(plan),
+        onBoundary(name) { if (name === 'operation:0') throw new Error('stop apply'); },
+      }), /stop apply/);
+      const first = await recover({ scope: fx.scope });
+      await assert.rejects(applyPlan({
+        plan: first.rollbackPlan,
+        approval: approvePlan(first.rollbackPlan),
+        onBoundary(name) { if (name === 'rollback-storage-cleaned') throw new Error('stop rollback cleanup'); },
+      }), /stop rollback cleanup/);
+      const recovery = await recover({ scope: fx.scope });
+      assert.equal(recovery.finishPlan, null);
+      await applyPlan({ plan: recovery.rollbackPlan, approval: approvePlan(recovery.rollbackPlan) });
+      assert.equal(await exists(fx.destination), false);
+    }
+    assert.equal((await recover({ scope: fx.scope })).status, 'clean');
+  }
 });
 
 test('adoption is read-only, preselects exact matches, and treats legacy data as evidence', async (t) => {
@@ -267,6 +395,22 @@ test('adoption ledger extras cannot override canonical ownership fields', async 
   assert.equal(ledger.scopeId, fx.scope.id);
   assert.deepEqual(ledger.entries.map((entry) => entry.name), ['chosen']);
   assert.equal(ledger.harmlessExtra, true);
+});
+
+test('adoption never accepts a caller-supplied candidate fingerprint as evidence', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  await fs.mkdir(path.dirname(fx.destination), { recursive: true });
+  await fs.cp(fx.source, fx.destination, { recursive: true });
+  const installedFingerprint = await fingerprint(fx.destination);
+
+  const proposal = await inspectAdoption({
+    scopeRoot: fx.root,
+    candidates: [{ name: 'chosen', sourceFingerprint: installedFingerprint }],
+  });
+
+  assert.equal(proposal.entries[0].classification, 'modified');
+  assert.equal(proposal.entries[0].preselected, false);
 });
 
 test('unmanagement removes ownership and registration while preserving skills and exposure', async (t) => {

@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { GitClient } from './git-client.mjs';
@@ -80,6 +81,8 @@ async function inspectResolvedGitSource({
     selectionPath,
   });
   let evidence;
+  let sourceCleanup;
+  let retained = false;
   try {
     evidence = await inspectSelectedDirectory({
       root: checkoutRoot,
@@ -87,8 +90,17 @@ async function inspectResolvedGitSource({
       source: { type: 'git', sourceId, url, commit: resolution.commit },
       ...limits,
     });
+    if (retainCheckout) {
+      sourceCleanup = { root: path.resolve(checkoutRoot), token: randomUUID() };
+      await writeFile(
+        path.join(checkoutRoot, '.caddie-materialization.json'),
+        `${JSON.stringify({ version: 1, token: sourceCleanup.token, sourcePath: path.resolve(checkoutRoot, selectionPath) })}\n`,
+        { flag: 'wx', mode: 0o600 },
+      );
+      retained = true;
+    }
   } finally {
-    if (!retainCheckout) await rm(checkoutRoot, { recursive: true, force: true });
+    if (!retained) await rm(checkoutRoot, { recursive: true, force: true });
   }
   return {
     resolution,
@@ -101,6 +113,7 @@ async function inspectResolvedGitSource({
     ...(retainCheckout ? {
       sourcePath: path.resolve(checkoutRoot, selectionPath),
       checkoutRoot,
+      sourceCleanup,
     } : {}),
   };
 }

@@ -18,18 +18,16 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if [ -z "$source_dir" ]; then
-  temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/caddie-bootstrap.XXXXXX")
-  git clone --quiet --no-checkout "$repository" "$temp_dir/repository"
-  git -C "$temp_dir/repository" checkout --quiet --detach "$commit"
-  resolved=$(git -C "$temp_dir/repository" rev-parse HEAD)
-  if [ "$resolved" != "$commit" ]; then
-    echo 'The fetched release did not resolve to CADDIE_COMMIT.' >&2
-    exit 3
-  fi
-  source_dir=$temp_dir/repository
+clone_source=${source_dir:-$repository}
+temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/caddie-bootstrap.XXXXXX")
+git clone --quiet --no-checkout "$clone_source" "$temp_dir/repository"
+git -C "$temp_dir/repository" checkout --quiet --detach "$commit"
+resolved=$(git -C "$temp_dir/repository" rev-parse HEAD)
+if [ "$resolved" != "$commit" ]; then
+  echo 'The fetched release did not resolve to CADDIE_COMMIT.' >&2
+  exit 3
 fi
+source_dir=$temp_dir/repository
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 node "$script_dir/bootstrap.cjs" "$source_dir" "$commit" "$repository"
-

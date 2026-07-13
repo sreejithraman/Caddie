@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { prepareChangeSandbox, prepareGitChange } from '../changeset/index.mjs';
+import { invalid } from './errors.mjs';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -14,10 +16,16 @@ const KINDS = new Set(['prepare-git-change', 'prepare-change-sandbox']);
 export function createPreparationWorkflowPlan(input) {
   const kind = input.workflow;
   if (!KINDS.has(kind)) throw new TypeError(`Unsupported preparation workflow: ${kind}`);
+  if (kind === 'prepare-git-change' && !isExactCommit(input.expectedBaseCommit)) {
+    throw invalid(
+      'expected-base-commit-required',
+      'Git preparation requires an exact expectedBaseCommit before approval',
+    );
+  }
   const changes = validateChanges(input.changes);
   const validationCommands = validateCommands(input.validationCommands);
   const request = kind === 'prepare-git-change'
-    ? pick(input, ['repository', 'slug', 'baseRef', 'expectedBaseCommit', 'workspaceRoot', 'message', 'authorName', 'authorEmail'])
+    ? pick(input, ['repository', 'slug', 'baseRef', 'expectedBaseCommit', 'workspaceRoot', 'message', 'authorName', 'authorEmail', 'dependencyCommits'])
     : pick(input, ['source', 'slug', 'workspaceRoot']);
   const payload = { version: 1, kind, request, changes, validationCommands };
   return Object.freeze({ ...payload, id: hashValue(payload) });
@@ -52,10 +60,21 @@ async function applyChanges(root, changes) {
   for (const change of changes) {
     const destination = path.join(root, change.path);
     await assertNoSymlinkParent(root, path.dirname(destination));
+    const existing = await lstat(destination).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (existing?.isSymbolicLink()) throw new TypeError('Change path is a final-component symlink');
     if (change.delete === true) await rm(destination, { recursive: true, force: true });
     else {
       await mkdir(path.dirname(destination), { recursive: true });
-      await writeFile(destination, change.content, change.mode ? { mode: change.mode } : undefined);
+      await assertNoSymlinkParent(root, path.dirname(destination));
+      const temporary = path.join(path.dirname(destination), `.caddie-write-${randomUUID()}`);
+      try {
+        await writeFile(temporary, change.content, { flag: 'wx', ...(change.mode ? { mode: change.mode } : {}) });
+        // Rename replaces a final component instead of following it, so even a
+        // last-moment final-component symlink cannot redirect written bytes.
+        await rename(temporary, destination);
+      } finally {
+        await rm(temporary, { force: true });
+      }
     }
   }
 }
@@ -94,6 +113,10 @@ function pick(input, keys) {
   return result;
 }
 
+function isExactCommit(value) {
+  return typeof value === 'string' && /^[0-9a-f]{40,64}$/i.test(value);
+}
+
 async function assertNoSymlinkParent(root, parent) {
   const relative = path.relative(root, parent);
   if (relative.startsWith('..') || path.isAbsolute(relative)) throw new TypeError('Change path escapes preparation root');
@@ -105,4 +128,3 @@ async function assertNoSymlinkParent(root, parent) {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new TypeError('Change path has a symlink or non-directory parent');
   }
 }
-

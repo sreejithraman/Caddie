@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -200,6 +200,75 @@ test('JSON workflow prepares and applies a non-Git Change Sandbox after exact ap
   });
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal(await readFile(path.join(source, 'value.txt'), 'utf8'), 'after\n');
+});
+
+test('JSON preparation rejects a final-component symlink without writing through it', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-symlink-write-'));
+  const source = path.join(root, 'source');
+  const outside = path.join(root, 'outside.txt');
+  await mkdir(source);
+  await writeFile(outside, 'preserve\n');
+  await symlink(outside, path.join(source, 'value.txt'));
+  const planned = invoke('plan', {
+    workflow: 'prepare-change-sandbox',
+    source,
+    slug: 'reject-symlink',
+    workspaceRoot: path.join(root, 'sandboxes'),
+    changes: [{ path: 'value.txt', content: 'escape\n' }],
+    validationCommands: [[process.execPath, '-e', 'process.exit(0)']],
+  });
+  const prepared = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  });
+
+  assert.equal(prepared.ok, false);
+  assert.match(prepared.error.message, /final-component symlink/);
+  assert.equal(await readFile(outside, 'utf8'), 'preserve\n');
+});
+
+test('publication is reachable as an immutable approval-bound JSON workflow', () => {
+  const planned = invoke('plan', {
+    workflow: 'publication',
+    changeSetId: 'json-change-set',
+    preparations: [{
+      id: 'source',
+      kind: 'git',
+      repository: '/tmp/source-repository',
+      worktree: '/tmp/source-worktree',
+      branch: 'caddie/source',
+      baseRef: 'origin/main',
+      baseCommit: 'base-commit',
+      headCommit: 'head-commit',
+      remote: true,
+      remoteUrl: 'git@github.com:owner/source.git',
+      expectedRemoteBranchCommit: null,
+    }],
+  });
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  assert.equal(planned.result.publicationPlan.kind, 'publication');
+  assert.match(planned.result.publicationPlan.id, /^[0-9a-f]{64}$/);
+
+  const rejected = invoke('apply-plan', {
+    plan: planned.result.publicationPlan,
+    approval: { version: 1, approval: 'explicit', planId: 'not-the-plan' },
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'unapproved-plan');
+});
+
+test('public Git preparation planning rejects a moving base before approval', () => {
+  const planned = invoke('plan', {
+    workflow: 'prepare-git-change',
+    repository: '/unused',
+    slug: 'moving-base',
+    changes: [{ path: 'value.txt', content: 'after\n' }],
+    validationCommands: [[process.execPath, '-e', 'process.exit(0)']],
+  });
+
+  assert.equal(planned.ok, false);
+  assert.equal(planned.error.code, 'expected-base-commit-required');
+  assert.equal(planned.error.disposition, 'invalid');
 });
 
 function complete(digest) {

@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { access, mkdir, mkdtemp, readFile, readlink, stat, symlink } = require('node:fs/promises');
+const { access, cp, mkdir, mkdtemp, readFile, readlink, stat, symlink, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -8,21 +8,9 @@ const test = require('node:test');
 const repoRoot = path.resolve(__dirname, '..');
 
 test('bootstrap creates a self-managed User Skills home and shared Claude exposure', async () => {
-  const home = await mkdtemp(path.join(tmpdir(), 'caddie-bootstrap-'));
-  const configHome = path.join(home, 'config');
-  const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
-  const result = spawnSync('sh', [path.join(repoRoot, 'scripts/bootstrap.sh')], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: home,
-      XDG_CONFIG_HOME: configHome,
-      CADDIE_SOURCE_DIR: repoRoot,
-      CADDIE_COMMIT: commit,
-      CADDIE_REPOSITORY: repoRoot,
-    },
-  });
+  const fixture = await bootstrapFixture();
+  const { home, configHome, commit } = fixture;
+  const result = runBootstrap(fixture);
 
   assert.equal(result.status, 0, result.stderr);
   const userHome = path.join(configHome, 'caddie', 'user');
@@ -131,14 +119,68 @@ test('bootstrap recovers exact partial publication after process termination', a
   );
 });
 
+test('a concurrent bootstrap loser preserves the active owner journal', async () => {
+  const fixture = await bootstrapFixture();
+  const caddieHome = path.join(fixture.configHome, 'caddie');
+  await mkdir(caddieHome, { recursive: true });
+  const owner = { pid: process.pid, nonce: 'active-owner', acquiredAt: new Date().toISOString() };
+  const journal = { version: 2, owner, expected: {} };
+  await writeFile(path.join(caddieHome, '.bootstrap.lock'), JSON.stringify(owner));
+  await writeFile(path.join(caddieHome, '.bootstrap-journal.json'), JSON.stringify(journal));
+
+  const result = runBootstrap(fixture);
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /Another bootstrap is active/);
+  assert.deepEqual(JSON.parse(await readFile(path.join(caddieHome, '.bootstrap-journal.json'), 'utf8')), journal);
+});
+
+test('bootstrap rejects a symlinked state home before writing a lock or journal', async () => {
+  const fixture = await bootstrapFixture();
+  const outside = await mkdtemp(path.join(tmpdir(), 'caddie-bootstrap-outside-'));
+  await mkdir(fixture.configHome, { recursive: true });
+  await symlink(outside, path.join(fixture.configHome, 'caddie'));
+
+  const result = runBootstrap(fixture);
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /real directory parent/);
+  assert.deepEqual(await require('node:fs/promises').readdir(outside), []);
+});
+
+test('bootstrap rejects final-component lock and journal symlinks without touching their targets', async () => {
+  for (const name of ['.bootstrap.lock', '.bootstrap-journal.json']) {
+    const fixture = await bootstrapFixture();
+    const caddieHome = path.join(fixture.configHome, 'caddie');
+    const outside = path.join(fixture.home, `${name.slice(1)}-outside.json`);
+    await mkdir(caddieHome, { recursive: true });
+    await writeFile(outside, '{"preserve":true}\n');
+    await symlink(outside, path.join(caddieHome, name));
+
+    const result = runBootstrap(fixture);
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /real regular file/);
+    assert.equal(await readFile(outside, 'utf8'), '{"preserve":true}\n');
+  }
+});
+
 async function bootstrapFixture() {
   const home = await mkdtemp(path.join(tmpdir(), 'caddie-bootstrap-failure-'));
   const configHome = path.join(home, 'config');
+  const sourceRoot = path.join(home, 'source');
+  await mkdir(path.join(sourceRoot, '.agents', 'skills'), { recursive: true });
+  await cp(path.join(repoRoot, '.agents', 'skills', 'caddie'), path.join(sourceRoot, '.agents', 'skills', 'caddie'), { recursive: true });
+  runGit(sourceRoot, ['init', '--initial-branch=main']);
+  runGit(sourceRoot, ['add', '--all']);
+  runGit(sourceRoot, ['-c', 'user.name=Caddie Fixture', '-c', 'user.email=caddie@example.test', 'commit', '-m', 'fixture']);
+  const commit = runGit(sourceRoot, ['rev-parse', 'HEAD']).stdout.trim();
   return {
     home,
     configHome,
+    sourceRoot,
     userHome: path.join(configHome, 'caddie', 'user'),
-    commit: '0123456789abcdef0123456789abcdef01234567',
+    commit,
   };
 }
 
@@ -150,10 +192,16 @@ function runBootstrap(fixture, extraEnv = {}) {
       ...process.env,
       HOME: fixture.home,
       XDG_CONFIG_HOME: fixture.configHome,
-      CADDIE_SOURCE_DIR: repoRoot,
+      CADDIE_SOURCE_DIR: fixture.sourceRoot,
       CADDIE_COMMIT: fixture.commit,
-      CADDIE_REPOSITORY: 'https://example.test/caddie.git',
+      CADDIE_REPOSITORY: fixture.sourceRoot,
       ...extraEnv,
     },
   });
+}
+
+function runGit(directory, args) {
+  const result = spawnSync('git', ['-C', directory, ...args], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result;
 }

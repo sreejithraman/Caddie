@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, rename, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -121,6 +121,26 @@ test('missing Git lock produces bounded partial evidence without resolving the m
   });
   assert.deepEqual(unsupported.skills, []);
   assert.equal(unsupported.coverage.findings[0].code, 'unsupported-lock-version');
+});
+
+test('local Git provenance treats untracked files as dirty evidence', async () => {
+  const fixture = await gitFixture();
+  await commitSkill(fixture.working, 'local-skill', 'tracked skill');
+  await writeFile(path.join(fixture.working, 'untracked.txt'), 'not committed\n');
+  const manifest = {
+    manifestPath: path.join(fixture.root, 'caddie.json'),
+    manifestVersion: 1,
+    scope: 'project',
+    sources: { local: { name: 'local', type: 'local', path: fixture.working } },
+    skills: [{ source: 'local', path: 'skills/alpha' }],
+  };
+
+  const [resolved] = await resolveSelections(manifest);
+
+  assert.equal(resolved.name, 'local-skill');
+  assert.equal(resolved.repositoryRoot, await realpath(fixture.working));
+  assert.equal(resolved.repositoryDirty, true);
+  assert.match(resolved.resolvedCommit, /^[0-9a-f]{40,64}$/);
 });
 
 function manifestWith(source) {

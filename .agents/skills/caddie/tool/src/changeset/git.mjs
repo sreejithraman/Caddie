@@ -10,11 +10,12 @@ const execFileAsync = promisify(execFile);
 export async function prepareGitChange(options) {
   const repository = path.resolve(required(options.repository, 'repository'));
   const slug = validateSlug(options.slug);
+  const expectedBaseCommit = validateExpectedBaseCommit(options.expectedBaseCommit);
   if (typeof options.author !== 'function') throw invalid('author-required', 'A focused author function is required');
   if (typeof options.validate !== 'function') throw invalid('validation-required', 'A parent-owned validation function is required');
 
   const branch = `caddie/${slug}`;
-  const base = await resolveExactBase(repository, options);
+  const base = await resolveExactBase(repository, { ...options, expectedBaseCommit });
   const workspaceRoot = options.workspaceRoot
     ? path.resolve(options.workspaceRoot)
     : await mkdtemp(path.join(tmpdir(), 'caddie-worktrees-'));
@@ -47,7 +48,15 @@ export async function prepareGitChange(options) {
     const headCommit = (await git(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
     const commitCount = Number((await git(worktree, ['rev-list', '--count', `${base.commit}..${headCommit}`])).stdout.trim());
     if (commitCount !== 1) throw replan('non-focused-history', 'Prepared branch must contain exactly one focused commit', { commitCount });
-    const remoteUrl = await optionalGit(repository, ['remote', 'get-url', 'origin']);
+    const remoteName = /^([^/]+)\/(.+)$/.exec(base.ref)?.[1] ?? 'origin';
+    const remoteUrl = await optionalGit(worktree, ['remote', 'get-url', remoteName]);
+    const remotePushResult = await optionalGit(worktree, ['remote', 'get-url', '--push', '--all', remoteName]);
+    const remotePushUrls = remotePushResult?.stdout.trim().split('\n').filter(Boolean) ?? [];
+    if (remotePushUrls.length > 1) throw invalid('multiple-push-destinations', 'Publication requires exactly one bound push destination');
+    const remotePushUrl = remotePushUrls[0] ?? null;
+    const expectedRemoteBranchCommit = remotePushUrl
+      ? await readOptionalRemoteBranch(repository, remotePushUrl, branch)
+      : undefined;
     return {
       kind: 'git',
       repository,
@@ -59,6 +68,9 @@ export async function prepareGitChange(options) {
       changedFiles: staged.stdout.trim().split('\n'),
       remote: base.remote,
       remoteUrl: remoteUrl?.stdout.trim() || null,
+      remotePushUrl,
+      ...(remotePushUrl ? { expectedRemoteBranchCommit } : {}),
+      ...(options.dependencyCommits ? { dependencyCommits: validateDependencyCommits(options.dependencyCommits) } : {}),
     };
   } catch (error) {
     // Failed authoring or validation may itself contain valuable local work. Preserve
@@ -103,7 +115,7 @@ async function resolveExactBase(repository, options) {
       throw replan('base-unavailable', `Cannot fetch required base ${ref}`, { ref, cause: error.message });
     }
     const commit = (await git(repository, ['rev-parse', 'FETCH_HEAD^{commit}'])).stdout.trim();
-    if (options.expectedBaseCommit && commit !== options.expectedBaseCommit) {
+    if (commit !== options.expectedBaseCommit) {
       throw replan('base-moved', 'Fetched base does not match the approved exact commit', {
         ref, expected: options.expectedBaseCommit, received: commit,
       });
@@ -117,7 +129,7 @@ async function resolveExactBase(repository, options) {
   } catch (error) {
     throw replan('base-unavailable', `Explicit base is unavailable: ${ref}`, { ref, cause: error.message });
   }
-  if (options.expectedBaseCommit && commit !== options.expectedBaseCommit) {
+  if (commit !== options.expectedBaseCommit) {
     throw replan('base-moved', 'Explicit base does not match the approved exact commit', {
       ref, expected: options.expectedBaseCommit, received: commit,
     });
@@ -132,6 +144,12 @@ async function readRemoteHead(repository, baseRef) {
   const line = result.stdout.trim();
   if (!line) throw replan('remote-base-unavailable', `Remote base disappeared: ${baseRef}`, { baseRef });
   return line.split(/\s+/)[0];
+}
+
+async function readOptionalRemoteBranch(repository, remotePushUrl, branch) {
+  const result = await git(repository, ['ls-remote', '--', remotePushUrl, `refs/heads/${branch}`]);
+  const line = result.stdout.trim();
+  return line ? line.split(/\s+/)[0] : null;
 }
 
 async function git(directory, args) {
@@ -158,4 +176,26 @@ function validateSlug(value) {
     throw invalid('invalid-slug', 'Slug must contain lowercase letters, numbers, and single hyphens');
   }
   return slug;
+}
+
+function validateExpectedBaseCommit(value) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{40,64}$/i.test(value)) {
+    throw invalid(
+      'expected-base-commit-required',
+      'An exact expectedBaseCommit is required before Git preparation can be approved',
+    );
+  }
+  return value.toLowerCase();
+}
+
+function validateDependencyCommits(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid('invalid-dependency-commits', 'dependencyCommits must be an id-to-commit object');
+  const result = {};
+  for (const [id, commit] of Object.entries(value)) {
+    if (!id || typeof commit !== 'string' || !/^[0-9a-f]{40,64}$/i.test(commit)) {
+      throw invalid('invalid-dependency-commits', 'Every dependency must bind an exact merged commit');
+    }
+    result[id] = commit.toLowerCase();
+  }
+  return result;
 }

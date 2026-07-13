@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { compareSkillEvidence } from '../compare/index.mjs';
 import { inspect as inspectAvailableSkills } from '../context/inspect.mjs';
-import { applyChangeSandbox, buildPublicationPlan } from '../changeset/index.mjs';
+import { applyChangeSandbox, applyPublicationPlan, buildPublicationPlan } from '../changeset/index.mjs';
 import {
   inspectGitSource,
   inspectLocalSource,
@@ -94,6 +94,9 @@ async function planOperation(input) {
 
 async function applyPlanOperation(input) {
   try {
+    if (input.plan?.kind === 'publication') {
+      return { ...(await applyPublicationPlan(input.plan, input.approval)), coverage: completeCoverage() };
+    }
     if (['prepare-git-change', 'prepare-change-sandbox'].includes(input.plan?.kind)) {
       return { preparation: await applyPreparationWorkflow(input.plan, input.approval), coverage: completeCoverage() };
     }

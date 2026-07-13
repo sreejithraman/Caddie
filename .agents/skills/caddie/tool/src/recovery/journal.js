@@ -2,12 +2,13 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { canonicalize, verifyPlanIntegrity } = require('../plans');
 const { exists, fingerprint } = require('../apply/filesystem');
 
 const WRITE_TYPES = new Set(['write-manifest', 'write-lock', 'write-registry', 'write-ledger']);
 const REMOVE_TYPES = new Set(['remove-ledger', 'remove-legacy-lock', 'cleanup-preserved-skill', 'cleanup-exposure']);
-const PHASES = new Set(['staged', 'applying', 'verified', 'rolling-back']);
+const PHASES = new Set(['staged', 'applying', 'verified', 'rolling-back', 'rolled-back']);
 
 class JournalValidationError extends Error {
   constructor(message) {
@@ -37,8 +38,38 @@ async function validateJournal(journal, scope) {
   const stateRoot = path.join(path.resolve(scope.root), '.agents', '.caddie');
   const operationRoot = path.join(stateRoot, 'operations', journal.plan.id);
   failUnless(path.resolve(journal.operationRoot) === operationRoot, 'journal operation root is not the fixed plan operation directory');
+  await requireRealAncestors(path.resolve(scope.root), path.dirname(operationRoot), 'journal operation root');
   const operationRootStat = await fs.lstat(operationRoot).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-  failUnless(operationRootStat && operationRootStat.isDirectory(), 'journal operation root is missing or not a directory');
+  const terminalCleanup = !operationRootStat && ['verified', 'rolled-back'].includes(journal.phase);
+  failUnless(terminalCleanup || (operationRootStat && operationRootStat.isDirectory() && !operationRootStat.isSymbolicLink()), 'journal operation root is missing or not a real directory');
+  if (!terminalCleanup) {
+    for (const directory of ['staged', 'backups']) {
+      const storagePath = path.join(operationRoot, directory);
+      const storageStat = await fs.lstat(storagePath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      failUnless(storageStat && storageStat.isDirectory() && !storageStat.isSymbolicLink(), `journal ${directory} storage is missing or not a real directory`);
+    }
+  }
+  for (const operation of journal.plan.operations) {
+    for (const candidate of [operation.destinationPath, operation.linkPath, operation.targetPath, operation.path].filter(Boolean)) {
+      const resolved = path.resolve(candidate);
+      const scopeRoot = path.resolve(scope.root);
+      const configRoot = scope.configRoot && path.resolve(scope.configRoot);
+      const anchor = isInside(scopeRoot, resolved) ? scopeRoot : configRoot && isInside(configRoot, resolved) ? configRoot : null;
+      failUnless(anchor, 'embedded plan mutation path is outside its approved scope');
+      await requireRealAncestors(anchor, path.dirname(resolved), 'embedded plan mutation path');
+    }
+    if (operation.sourceCleanup) {
+      const cleanupRoot = path.resolve(operation.sourceCleanup.root);
+      failUnless(path.dirname(cleanupRoot) === path.resolve(os.tmpdir())
+        && path.basename(cleanupRoot).startsWith('caddie-source-'), 'embedded source cleanup root is outside Caddie temporary storage');
+      const cleanupStat = await fs.lstat(cleanupRoot).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      failUnless(
+        (cleanupStat && cleanupStat.isDirectory() && !cleanupStat.isSymbolicLink())
+          || (!cleanupStat && ['verified', 'rolled-back'].includes(journal.phase)),
+        'embedded source cleanup root is missing or not a real directory',
+      );
+    }
+  }
   failUnless(Array.isArray(journal.records) && journal.records.length === journal.plan.operations.length, 'journal record count does not match embedded plan');
   failUnless(Array.isArray(journal.order) && canonicalize(journal.order) === canonicalize(expectedOrder(journal.records)), 'journal execution order is invalid');
   failUnless(Number.isInteger(journal.next) && journal.next >= 0 && journal.next <= journal.records.length, 'journal next position is invalid');
@@ -46,7 +77,7 @@ async function validateJournal(journal, scope) {
   failUnless(journal.rollbackPosition === undefined || (journal.phase === 'rolling-back' && Number.isInteger(journal.rollbackPosition) && journal.rollbackPosition >= 0 && journal.rollbackPosition < journal.records.length), 'journal rollback position is invalid');
 
   for (let index = 0; index < journal.records.length; index += 1) {
-    await validateRecord(journal.records[index], journal.plan.operations[index], operationRoot, index, journal);
+    await validateRecord(journal.records[index], journal.plan.operations[index], operationRoot, index, journal, terminalCleanup);
   }
   for (let position = 0; position < journal.order.length; position += 1) {
     const record = journal.records[journal.order[position]];
@@ -54,7 +85,19 @@ async function validateJournal(journal, scope) {
     failUnless(completed === (position < journal.next), 'journal completed flags do not match next position');
     if (completed && position !== journal.rollbackPosition) await validateCompletedState(record, journal.order[position]);
   }
+  if (journal.phase === 'rolled-back') {
+    for (let index = 0; index < journal.records.length; index += 1) await validateRolledBackState(journal.records[index], index);
+  }
   return journal;
+}
+
+async function validateRolledBackState(record, index) {
+  const operation = record.operation;
+  const target = operation.destinationPath || operation.path || operation.linkPath;
+  const expected = operation.expectedDestination || operation.expected;
+  if (!target || !expected) return;
+  const actual = await snapshotPath(target);
+  failUnless(canonicalize(actual) === canonicalize(expected), `rolled-back record ${index} does not match its approved pre-state`);
 }
 
 async function validateCompletedState(record, index) {
@@ -81,9 +124,16 @@ async function validateCompletedState(record, index) {
   if (REMOVE_TYPES.has(operation.type)) failUnless(!await exists(operation.path), `completed record ${index} removed path returned`);
 }
 
-async function validateRecord(record, operation, operationRoot, index, journal) {
+async function validateRecord(record, operation, operationRoot, index, journal, terminalCleanup) {
   failUnless(record && record.type === operation.type, `journal record ${index} type is invalid`);
   failUnless(canonicalize(record.operation) === canonicalize(operation), `journal record ${index} operation differs from embedded plan`);
+  if (terminalCleanup) return;
+  if (!terminalCleanup) {
+    for (const candidate of [record.stagedPath, record.backupPath].filter(Boolean)) {
+      await requireRealAncestors(operationRoot, path.dirname(candidate), `record ${index} operation storage`);
+    }
+    await validateBackupState(record, operation, index);
+  }
   if (operation.type === 'materialize-skill') {
     requirePath(record.stagedPath, path.join(operationRoot, 'staged', `${index}-skill`), `record ${index} staged path`);
     requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-skill`), `record ${index} backup path`);
@@ -116,6 +166,19 @@ async function validateRecord(record, operation, operationRoot, index, journal) 
   throw new JournalValidationError(`record ${index} has an unsupported operation`);
 }
 
+async function validateBackupState(record, operation, index) {
+  if (!record.backupPath) return;
+  const stat = await fs.lstat(record.backupPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat) return;
+  const expected = operation.expectedDestination || operation.expected;
+  failUnless(expected && expected.state !== 'absent', `record ${index} has an unexpected backup`);
+  if (expected.state === 'symlink') {
+    failUnless(stat.isSymbolicLink() && await fs.readlink(record.backupPath) === expected.target, `record ${index} backup symlink changed`);
+    return;
+  }
+  failUnless(!stat.isSymbolicLink() && await fingerprint(record.backupPath) === expected.fingerprint, `record ${index} backup content changed`);
+}
+
 async function snapshotLivePreconditions(journal) {
   const paths = new Set([journal.operationRoot]);
   for (const record of journal.records) {
@@ -143,6 +206,25 @@ async function snapshotPath(candidate) {
 
 function requirePath(actual, expected, label) {
   failUnless(typeof actual === 'string' && path.resolve(actual) === path.resolve(expected), `${label} is outside the fixed operation directory`);
+}
+
+async function requireRealAncestors(anchor, parent, label) {
+  const anchorStat = await fs.lstat(anchor).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  failUnless(anchorStat && anchorStat.isDirectory() && !anchorStat.isSymbolicLink(), `${label} anchor is not a real directory`);
+  const relative = path.relative(anchor, parent);
+  failUnless(!relative.startsWith('..') && !path.isAbsolute(relative), `${label} escapes its anchor`);
+  let current = anchor;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!stat) return;
+    failUnless(stat.isDirectory() && !stat.isSymbolicLink(), `${label} has a symlink or non-directory ancestor`);
+  }
+}
+
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function failUnless(condition, message) {

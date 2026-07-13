@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -20,6 +22,7 @@ async function main() {
   }
 
   const sourceSkill = path.join(path.resolve(sourceRoot), '.agents', 'skills', 'caddie');
+  verifyExactSource(path.resolve(sourceRoot), commit);
   const skillFile = path.join(sourceSkill, 'SKILL.md');
   if (!fs.existsSync(skillFile) || !/^---[\s\S]*?\nname:\s*caddie\s*$/m.test(fs.readFileSync(skillFile, 'utf8'))) {
     fail('The pinned source does not contain a valid Caddie Skill.');
@@ -39,8 +42,15 @@ async function main() {
     config: path.join(caddieHome, 'config.json'),
   };
   const journalPath = path.join(caddieHome, '.bootstrap-journal.json');
+  const lockPath = path.join(caddieHome, '.bootstrap.lock');
   const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
-  await recoverBootstrap(journalPath, outputs, fingerprintDirectory);
+  preflightParents(lockPath);
+  preflightParents(journalPath);
+  requireRealStateFileIfPresent(lockPath, 'Bootstrap lock');
+  requireRealStateFileIfPresent(journalPath, 'Bootstrap recovery journal');
+  const owner = acquireBootstrapLock(lockPath);
+  try {
+    await recoverBootstrap(journalPath, outputs, fingerprintDirectory);
 
   // Preflight every final path and all existing ancestors before staging or
   // creating any destination directory.
@@ -92,7 +102,7 @@ async function main() {
       expected[name] = evidence.digest;
     }
     ensureParents(journalPath, createdDirectories);
-    writeJson(journalPath, { version: 1, expected });
+    writeJson(journalPath, { version: 2, owner, expected });
 
     for (const name of ['destination', 'exposure', 'manifest', 'lock', 'ledger', 'config']) {
       ensureParents(outputs[name], createdDirectories);
@@ -101,11 +111,11 @@ async function main() {
       maybeInjectFailure(published.length);
       maybeCrash(published.length);
     }
-    fs.rmSync(journalPath, { force: true });
+    releaseOwnedFile(journalPath, owner.nonce);
     process.stdout.write(`${userHome}\n`);
   } catch (error) {
     for (const candidate of published.reverse()) fs.rmSync(candidate, { recursive: true, force: true });
-    fs.rmSync(journalPath, { force: true });
+    releaseOwnedFile(journalPath, owner.nonce);
     for (const directory of createdDirectories.reverse()) {
       try { fs.rmdirSync(directory); } catch {}
     }
@@ -113,15 +123,36 @@ async function main() {
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
   }
+  } finally {
+    releaseOwnedFile(lockPath, owner.nonce);
+  }
+}
+
+function verifyExactSource(sourceRoot, commit) {
+  let repositoryRoot;
+  let head;
+  let status;
+  try {
+    repositoryRoot = execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+    head = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD^{commit}'], { encoding: 'utf8' }).trim();
+    status = execFileSync('git', ['-C', sourceRoot, 'status', '--porcelain=v1', '--untracked-files=all'], { encoding: 'utf8' });
+  } catch {
+    fail('Bootstrap source must be an exact clean Git checkout.');
+  }
+  if (fs.realpathSync(repositoryRoot) !== fs.realpathSync(sourceRoot) || head !== commit || status.trim()) {
+    fail('Bootstrap source does not match the exact clean CADDIE_COMMIT checkout.');
+  }
 }
 
 async function recoverBootstrap(journalPath, outputs, fingerprintDirectory) {
   if (!fs.existsSync(journalPath)) return;
+  requireRealStateFileIfPresent(journalPath, 'Bootstrap recovery journal');
   let journal;
   try { journal = JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch { fail('Bootstrap recovery journal is invalid.'); }
-  if (journal.version !== 1 || !journal.expected || typeof journal.expected !== 'object') {
+  if (journal.version !== 2 || !validOwner(journal.owner) || !journal.expected || typeof journal.expected !== 'object') {
     fail('Bootstrap recovery journal has an unsupported shape.');
   }
+  if (processIsRunning(journal.owner.pid)) fail('Another bootstrap still owns the recovery journal.');
   for (const [name, candidate] of Object.entries(outputs)) {
     if (!fs.lstatSync(candidate, { throwIfNoEntry: false })) continue;
     const evidence = await fingerprintDirectory(candidate);
@@ -130,7 +161,54 @@ async function recoverBootstrap(journalPath, outputs, fingerprintDirectory) {
     }
     fs.rmSync(candidate, { recursive: true, force: true });
   }
-  fs.rmSync(journalPath, { force: true });
+  releaseOwnedFile(journalPath, journal.owner.nonce);
+}
+
+function requireRealStateFileIfPresent(candidate, label) {
+  const stat = fs.lstatSync(candidate, { throwIfNoEntry: false });
+  if (stat && (!stat.isFile() || stat.isSymbolicLink())) fail(`${label} must be a real regular file.`);
+}
+
+function acquireBootstrapLock(lockPath, attempt = 0) {
+  if (attempt > 4) fail('Bootstrap lock changed repeatedly during stale-owner recovery.');
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const owner = { pid: process.pid, nonce: crypto.randomUUID(), acquiredAt: new Date().toISOString() };
+  try {
+    fs.writeFileSync(lockPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
+    return owner;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  let existing;
+  try { existing = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch { fail('Bootstrap lock owner is incomplete or unreadable.'); }
+  if (!validOwner(existing) || processIsRunning(existing.pid)) fail('Another bootstrap is active.');
+  releaseOwnedFile(lockPath, existing.nonce);
+  return acquireBootstrapLock(lockPath, attempt + 1);
+}
+
+function releaseOwnedFile(file, nonce) {
+  let descriptor;
+  try { descriptor = fs.openSync(file, 'r'); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  try {
+    let current;
+    try { current = JSON.parse(fs.readFileSync(descriptor, 'utf8')); } catch { return false; }
+    if (current.nonce !== nonce && current.owner?.nonce !== nonce) return false;
+    const held = fs.fstatSync(descriptor);
+    const atPath = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (!atPath || held.dev !== atPath.dev || held.ino !== atPath.ino) return false;
+    fs.unlinkSync(file);
+    return true;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function validOwner(owner) {
+  return owner && Number.isInteger(owner.pid) && typeof owner.nonce === 'string';
+}
+
+function processIsRunning(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 }
 
 function preflightParents(candidate) {

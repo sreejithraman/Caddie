@@ -28,7 +28,7 @@ async function recover({ scope }) {
   try { await validateJournal(journal, scope); } catch (error) { throw new RecoveryError(error.message); }
   const journalFingerprint = await fingerprint(journalPath);
   const base = { scope, preconditions: await snapshotLivePreconditions(journal) };
-  const finishPlan = journal.phase === 'rolling-back' ? null : createPlan({
+  const finishPlan = ['rolling-back', 'rolled-back'].includes(journal.phase) ? null : createPlan({
       ...base,
       kind: 'recovery',
       operations: [{

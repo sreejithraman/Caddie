@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const { canonicalize, verifyApprovedPlan } = require('../plans');
 const { copyDirectory, exists, fingerprint, fingerprintIfPresent, writeJsonAtomic } = require('./filesystem');
 const { validateJournal } = require('../recovery/journal');
@@ -73,7 +74,9 @@ async function reclaimStaleOwner(lockPath, staleRaw, owner, attempt) {
     // The reclaim claim serializes stale readers. A normal acquirer may still
     // win the unlink/create gap; wx then makes that owner authoritative.
     if (await fs.readFile(lockPath, 'utf8').catch(() => null) !== staleRaw) return createOwnerFile(lockPath, owner, attempt + 1);
-    await fs.unlink(lockPath).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+    let stale;
+    try { stale = JSON.parse(staleRaw); } catch { return createOwnerFile(lockPath, owner, attempt + 1); }
+    await releaseOwnerFile(lockPath, stale.nonce);
     return await createOwnerFile(lockPath, owner, attempt + 1);
   } finally {
     await releaseOwnerFile(claimPath, claim.nonce);
@@ -88,8 +91,24 @@ async function releaseOwnerFile(lockPath, nonce) {
     let current;
     try { current = JSON.parse(raw); } catch (_) { return; }
     if (current.nonce !== nonce) return;
-    const [heldStat, pathStat] = await Promise.all([handle.stat(), fs.lstat(lockPath).catch(() => null)]);
-    if (pathStat && heldStat.dev === pathStat.dev && heldStat.ino === pathStat.ino) await fs.unlink(lockPath);
+    const heldStat = await handle.stat();
+    const proofPath = `${lockPath}.release-${nonce}`;
+    try {
+      // A hard-link is an atomic proof of which inode occupied lockPath. The
+      // second inode check narrows unlink to the same owner; cooperating lock
+      // acquirers cannot replace the path while it exists.
+      await fs.link(lockPath, proofPath);
+      const [proofStat, pathStat] = await Promise.all([fs.lstat(proofPath), fs.lstat(lockPath).catch(() => null)]);
+      if (pathStat
+        && heldStat.dev === proofStat.dev && heldStat.ino === proofStat.ino
+        && heldStat.dev === pathStat.dev && heldStat.ino === pathStat.ino) {
+        await fs.unlink(lockPath);
+      }
+    } catch (error) {
+      if (!['ENOENT', 'EEXIST', 'EPERM', 'EACCES'].includes(error.code)) throw error;
+    } finally {
+      await fs.rm(proofPath, { force: true });
+    }
   } finally {
     await handle.close();
   }
@@ -251,7 +270,10 @@ async function finishJournal(journalPath, journal, onBoundary) {
   journal.phase = 'verified';
   await writeJsonAtomic(journalPath, journal);
   await boundary(onBoundary, 'verified', journal);
+  await cleanupEphemeralSources(journal.plan);
+  await boundary(onBoundary, 'sources-cleaned', journal);
   await fs.rm(journal.operationRoot, { recursive: true, force: true });
+  await boundary(onBoundary, 'storage-cleaned', journal);
   await fs.rm(journalPath, { force: true });
   return { status: 'applied', planId: journal.planId, operationsApplied: journal.records.length };
 }
@@ -372,7 +394,12 @@ async function rollbackJournal(journalPath, journal, onBoundary) {
     await writeJsonAtomic(journalPath, journal);
     await boundary(onBoundary, `rollback:${journal.order[position]}`, journal);
   }
+  journal.phase = 'rolled-back';
+  delete journal.rollbackPosition;
+  await writeJsonAtomic(journalPath, journal);
+  await cleanupEphemeralSources(journal.plan);
   await fs.rm(journal.operationRoot, { recursive: true, force: true });
+  await boundary(onBoundary, 'rollback-storage-cleaned', journal);
   await fs.rm(journalPath, { force: true });
 }
 
@@ -429,7 +456,15 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
 async function assertMutationAncestors(plan) {
   const scopeRoot = path.resolve(plan.scope.root);
   await assertRealDirectory(scopeRoot, 'scope root');
+  const operations = plan.operations.map((operation) => ({ operation, interrupted: false }));
   for (const operation of plan.operations) {
+    if (operation.interruptedPlan?.operations) {
+      operations.push(...operation.interruptedPlan.operations.map((nested) => ({ operation: nested, interrupted: true })));
+    }
+  }
+  for (const entry of operations) {
+    const { operation } = entry;
+    if (operation.sourceCleanup && !entry.interrupted) await assertEphemeralSourceRoot(operation.sourceCleanup.root);
     const candidates = [
       operation.destinationPath,
       operation.linkPath,
@@ -447,6 +482,47 @@ async function assertMutationAncestors(plan) {
       await assertNoSymlinkAncestors(anchor, path.dirname(resolved));
     }
   }
+}
+
+async function cleanupEphemeralSources(plan) {
+  const removed = new Set();
+  for (const operation of plan.operations) {
+    const lease = operation.sourceCleanup;
+    if (!lease) continue;
+    const root = path.resolve(lease.root);
+    if (removed.has(root)) continue;
+    const rootStat = await fs.lstat(root).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!rootStat) {
+      removed.add(root);
+      continue;
+    }
+    await assertEphemeralSourceRoot(root);
+    const markerPath = path.join(root, '.caddie-materialization.json');
+    let marker;
+    try {
+      const markerStat = await fs.lstat(markerPath);
+      if (!markerStat.isFile() || markerStat.isSymbolicLink()) throw new Error('not a regular marker');
+      marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+    } catch (error) {
+      throw new ApplyError('ephemeral source lease is missing or unreadable', 'invalid-source', { path: markerPath });
+    }
+    if (marker.version !== 1 || marker.token !== lease.token
+      || path.resolve(marker.sourcePath) !== path.resolve(operation.sourcePath)
+      || !isInside(root, path.resolve(operation.sourcePath))) {
+      throw new ApplyError('ephemeral source lease does not authorize cleanup', 'invalid-source', { path: root });
+    }
+    await fs.rm(root, { recursive: true, force: true });
+    removed.add(root);
+  }
+}
+
+async function assertEphemeralSourceRoot(candidate) {
+  const root = path.resolve(candidate);
+  if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('caddie-source-')) {
+    throw new ApplyError('ephemeral source root is outside Caddie temporary storage', 'invalid-plan', { path: root });
+  }
+  await assertRealDirectory(path.resolve(os.tmpdir()), 'temporary source anchor');
+  await assertRealDirectory(root, 'ephemeral source root');
 }
 
 async function assertRealDirectory(candidate, label) {

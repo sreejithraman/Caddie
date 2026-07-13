@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ import {
   createGitLockEntry,
   inspectGitSource,
   inspectLocalSource,
+  materializeLockedGitSource,
   resolveGitSource,
 } from '../.agents/skills/caddie/tool/src/sources/index.mjs';
 
@@ -133,6 +134,7 @@ test('public exact Git materialization remains available for approved plan/apply
       type: 'materialize-skill',
       name: 'alpha',
       sourcePath: materialized.result.sourcePath,
+      sourceCleanup: materialized.result.sourceCleanup,
       destinationPath: destination,
       sourceFingerprint: materialized.result.evidence.fingerprint.digest,
       expectedDestination: { state: 'absent' },
@@ -144,6 +146,29 @@ test('public exact Git materialization remains available for approved plan/apply
   });
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal((await readFile(path.join(destination, 'SKILL.md'), 'utf8')).includes('name: alpha'), true);
+  await assert.rejects(access(materialized.result.checkoutRoot));
+});
+
+test('failed exact Git materialization removes its temporary checkout', async () => {
+  const checkoutRoot = await mkdtemp(path.join(tmpdir(), 'caddie-source-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'caddie-source-outside-'));
+  await symlink(outside, path.join(checkoutRoot, 'invalid'));
+  const gitClient = {
+    async resolveExact() {
+      return {
+        commit: '0123456789abcdef0123456789abcdef01234567', repositoryDir: '/unused',
+        coverage: { complete: true }, findings: [],
+      };
+    },
+    async checkoutSelection() { return checkoutRoot; },
+  };
+
+  await assert.rejects(materializeLockedGitSource({
+    sourceId: 'fixture', url: 'https://example.test/repo.git',
+    commit: '0123456789abcdef0123456789abcdef01234567',
+    selectionPath: 'invalid', cacheDir: path.join(checkoutRoot, 'cache'), gitClient,
+  }));
+  await assert.rejects(access(checkoutRoot));
 });
 
 test('Git unavailability is labeled partial evidence when stale cache is usable', async () => {

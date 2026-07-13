@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const path = require('node:path');
+const os = require('node:os');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([
@@ -84,6 +85,22 @@ function validateOperation(operation, scope, kind) {
       throw new PlanError('materialization must bind a safe skill name matching its destination');
     }
     if (typeof operation.sourceFingerprint !== 'string') throw new PlanError('materialization must bind sourceFingerprint');
+    if (looksEphemeralSource(operation.sourcePath) && operation.sourceCleanup === undefined) {
+      throw new PlanError('ephemeral materialization must bind sourceCleanup');
+    }
+    if (operation.sourceCleanup !== undefined) {
+      assertAbsolute(operation.sourceCleanup.root, 'sourceCleanup.root');
+      if (typeof operation.sourceCleanup.token !== 'string' || !/^[0-9a-f-]{36}$/i.test(operation.sourceCleanup.token)) {
+        throw new PlanError('sourceCleanup must bind its lease token');
+      }
+      if (!isInside(operation.sourceCleanup.root, operation.sourcePath)) {
+        throw new PlanError('sourceCleanup root must contain sourcePath');
+      }
+      if (path.dirname(path.resolve(operation.sourceCleanup.root)) !== path.resolve(os.tmpdir())
+        || !path.basename(operation.sourceCleanup.root).startsWith('caddie-source-')) {
+        throw new PlanError('sourceCleanup is limited to a Caddie temporary checkout');
+      }
+    }
     validateExpected(operation.expectedDestination, 'expectedDestination');
     return;
   }
@@ -160,6 +177,12 @@ function validateOperation(operation, scope, kind) {
       throw new PlanError('interrupted plan scope does not match recovery scope');
     }
   }
+}
+
+function looksEphemeralSource(sourcePath) {
+  const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(sourcePath));
+  return !relative.startsWith('..') && !path.isAbsolute(relative)
+    && relative.split(path.sep)[0].startsWith('caddie-source-');
 }
 
 function createPlan(input) {

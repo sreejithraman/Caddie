@@ -21,4 +21,3 @@ test('one metadata parser handles LF, CRLF, and quoted values consistently', () 
     description: null,
   });
 });
-

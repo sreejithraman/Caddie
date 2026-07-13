@@ -37,8 +37,11 @@ async function inspectAdoption({ scopeRoot, candidates = [], legacyLockPath = pa
       entries.push({ name, installedPath, installedFingerprint, classification: 'unknown', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
       continue;
     }
-    let sourceFingerprint = candidate.sourceFingerprint;
-    if (!sourceFingerprint && candidate.sourcePath) {
+    // Candidate metadata is only a hint about where evidence can be read. A
+    // caller-supplied digest is not independent evidence and must never make a
+    // skill adoptable.
+    let sourceFingerprint;
+    if (candidate.sourcePath) {
       try { sourceFingerprint = await fingerprint(candidate.sourcePath); } catch (error) {
         if (['EACCES', 'EPERM', 'ENOENT'].includes(error.code)) {
           entries.push({ name, installedPath, installedFingerprint, classification: 'permission-blocked', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });

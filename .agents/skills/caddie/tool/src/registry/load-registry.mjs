@@ -53,4 +53,3 @@ export async function loadRegistry(input, configHome) {
     registeredProjects: [...new Set(value.registeredProjects.map((item) => path.resolve(item)))],
   };
 }
-
