@@ -16,6 +16,10 @@ _Avoid_: Operator, meta skill, manager skill
 The deterministic engine the Caddie Skill uses to gather evidence and execute exact operations.
 _Avoid_: Installer, package manager, CLI
 
+**Agent Harness**:
+An application or runtime that discovers skills and hosts agent work, such as Codex or Claude Code.
+_Avoid_: Agent, model, skill
+
 **Bootstrap**:
 The one-time action that makes the Caddie Skill available and hands its installation into normal Caddie self-management.
 _Avoid_: Setup wizard, installation workflow
@@ -71,7 +75,7 @@ _Avoid_: Copy history, fork metadata
 ## Installation and ownership
 
 **Canonical Skills Directory**:
-The complete skill directories for a scope that Caddie makes available to supported agents.
+The complete skill directories for a scope that Caddie makes available to supported Agent Harnesses.
 _Avoid_: Source repository, skill cache
 
 **In-place Skill**:
@@ -83,7 +87,7 @@ A complete skill directory Caddie copies from a Skill Source into a Canonical Sk
 _Avoid_: In-place Skill, vendored skill, symlinked skill
 
 **Caddie Ledger**:
-The machine-local record of Materialized Skills and agent links Caddie owns, including their last reconciled state.
+The machine-local record of Materialized Skills and harness-specific links Caddie owns, including their last reconciled state.
 _Avoid_: Caddie Lock, manifest, inventory
 
 **Adoption**:
@@ -91,7 +95,7 @@ The preservation-first process of bringing an existing skill installation under 
 _Avoid_: Import, reinstall, takeover
 
 **Unmanagement**:
-The process of ending Caddie ownership while preserving installed skills and agent access by default.
+The process of ending Caddie ownership while preserving installed skills and harness access by default.
 _Avoid_: Uninstall, delete, cleanup
 
 ## Change interpretation

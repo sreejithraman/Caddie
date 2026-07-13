@@ -1,6 +1,6 @@
 # Caddie
 
-Caddie is an agent-first manager for skills across user and project scopes, made available to multiple agents.
+Caddie is an agent-first manager for skills across user and project scopes, made available to multiple agent harnesses.
 
 It is designed to give an agent a bird's-eye view of a user's skill environment: where skills come from, which exact revisions are selected, what is installed, what has drifted, and which projects need attention. Caddie combines a conversational agent skill with deterministic tooling for inspection, reconciliation, and safe change planning.
 
@@ -30,7 +30,7 @@ Caddie is an Agent App, not a human-facing package-manager CLI. Its scripts are 
 
 - Preserve authored and installed content unless the user explicitly approves its removal.
 - Separate deterministic evidence, agent interpretation, user choice, and durable state.
-- Store complete skill copies in canonical skill directories; use agent-specific links only when an agent cannot read the canonical directory directly.
+- Store complete skill copies in canonical skill directories; use harness-specific links only when a harness cannot read the canonical directory directly.
 - Recommend Git without requiring it.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
