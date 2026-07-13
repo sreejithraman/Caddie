@@ -6,10 +6,16 @@
     "caddie-tool": "./bin/caddie-tool.mjs"
   },
   "scripts": {
-    "test": "node --test",
-    "test:release": "CADDIE_REQUIRE_CLAUDE=1 CADDIE_REQUIRE_CODEX=1 node --test test/claude-harness.test.cjs test/v1-acceptance.test.mjs"
+    "test": "npm run vendor:yaml:check && node --test",
+    "test:release": "npm run vendor:yaml:check && CADDIE_REQUIRE_CLAUDE=1 CADDIE_REQUIRE_CODEX=1 node --test test/claude-harness.test.cjs test/v1-acceptance.test.mjs",
+    "vendor:yaml": "node scripts/vendor-yaml.mjs",
+    "vendor:yaml:check": "node scripts/vendor-yaml.mjs --check"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "yaml": "2.9.0"
   }
 }

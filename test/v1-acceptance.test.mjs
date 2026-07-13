@@ -9,9 +9,9 @@ import { createRequire } from 'node:module';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
-const { applyPlan } = require('../.agents/skills/caddie/tool/src/apply');
-const { fingerprint } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
-const { approvePlan, createPlan } = require('../.agents/skills/caddie/tool/src/plans');
+const { applyPlan } = require('../skills/caddie/tool/src/apply');
+const { fingerprint } = require('../skills/caddie/tool/src/apply/filesystem');
+const { approvePlan, createPlan } = require('../skills/caddie/tool/src/plans');
 
 test('v1 lifecycle works end to end with SreeStack as the User Skills repository', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-v1-acceptance-'));
@@ -19,8 +19,8 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
   const configHome = path.join(root, 'config');
   const sourceRepository = path.join(root, 'caddie-source');
   await mkdir(home);
-  await mkdir(path.join(sourceRepository, '.agents', 'skills'), { recursive: true });
-  await cp(path.join(repositoryRoot, '.agents', 'skills', 'caddie'), path.join(sourceRepository, '.agents', 'skills', 'caddie'), { recursive: true });
+  await mkdir(path.join(sourceRepository, 'skills'), { recursive: true });
+  await cp(path.join(repositoryRoot, 'skills', 'caddie'), path.join(sourceRepository, 'skills', 'caddie'), { recursive: true });
   git(sourceRepository, ['init', '--initial-branch=main']);
   git(sourceRepository, ['add', '.']);
   git(sourceRepository, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'fixture source']);
@@ -32,16 +32,16 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
   });
   assert.equal(bootstrap.status, 0, bootstrap.stderr);
   const userHome = bootstrap.stdout.trim();
-  let tool = path.join(userHome, '.agents', 'skills', 'caddie', 'tool', 'caddie.mjs');
-  const canonicalCaddie = path.join(userHome, '.agents', 'skills', 'caddie');
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'caddie')), await realpath(canonicalCaddie));
+  const canonicalCaddie = path.join(home, '.agents', 'skills', 'caddie');
+  let tool = path.join(canonicalCaddie, 'tool', 'caddie.mjs');
   assert.equal(await realpath(path.join(home, '.claude', 'skills', 'caddie')), await realpath(canonicalCaddie));
 
   const sreeStack = path.join(root, 'SreeStack');
   const authoredSkill = path.join(sreeStack, '.agents', 'skills', 'review-sweep');
-  const nextCaddie = path.join(sreeStack, '.agents', 'skills', 'caddie');
+  const nextCaddie = canonicalCaddie;
+  const installedReviewSweep = path.join(home, '.agents', 'skills', 'review-sweep');
   await mkdir(authoredSkill, { recursive: true });
-  await writeFile(path.join(authoredSkill, 'SKILL.md'), '---\nname: review-sweep\n---\nauthored in SreeStack\n');
+  await writeFile(path.join(authoredSkill, 'SKILL.md'), '---\nname: review-sweep\ndescription: Test fixture.\n---\nauthored in SreeStack\n');
   const manifestPath = path.join(sreeStack, 'caddie.json');
   const lockPath = path.join(sreeStack, 'caddie.lock');
   const configPath = path.join(configHome, 'caddie', 'config.json');
@@ -53,7 +53,7 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
       authored: { type: 'local', path: './.agents/skills' },
     },
     selections: [
-      { source: 'caddie', path: '.agents/skills/caddie' },
+      { source: 'caddie', path: 'skills/caddie' },
       { source: 'authored', path: 'review-sweep' },
     ],
   }, null, 2)}\n`;
@@ -67,11 +67,10 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     workflow: 'adoption', configHome, scopeRoot: sreeStack,
     scope: { id: 'user', root: sreeStack },
     candidates: [{
-      name: 'review-sweep', sourcePath: authoredSkill, sourceId: 'authored', selectedPath: 'review-sweep',
+      name: 'caddie', sourcePath: canonicalCaddie, sourceId: 'caddie', selectedPath: 'skills/caddie',
     }],
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
   assert.equal(adoption.ok, true, JSON.stringify(adoption));
-  assert.equal(adoption.result.plan.kind, 'adopt');
   const adopted = invoke(tool, 'apply-plan', {
     plan: adoption.result.plan, approval: approve(adoption.result.plan),
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
@@ -88,6 +87,11 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
       {
         type: 'materialize-skill', name: 'caddie', sourcePath: canonicalCaddie,
         destinationPath: nextCaddie, sourceFingerprint: await fingerprint(canonicalCaddie),
+        expectedDestination: { state: 'fingerprint', fingerprint: await fingerprint(canonicalCaddie) },
+      },
+      {
+        type: 'materialize-skill', name: 'review-sweep', sourcePath: authoredSkill,
+        destinationPath: installedReviewSweep, sourceFingerprint: await fingerprint(authoredSkill),
         expectedDestination: { state: 'absent' },
       },
       { type: 'write-manifest', path: manifestPath, content: manifestContent, expected: { state: 'absent' } },
@@ -104,11 +108,9 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     approval: approve(transfer.result.plan),
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
   assert.equal(transferred.ok, true, JSON.stringify(transferred));
-  tool = path.join(nextCaddie, 'tool', 'caddie.mjs');
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'caddie')), await realpath(nextCaddie));
   assert.equal(await realpath(path.join(home, '.claude', 'skills', 'caddie')), await realpath(nextCaddie));
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'review-sweep')), await realpath(authoredSkill));
-  assert.equal((await readFile(path.join(canonicalCaddie, 'SKILL.md'), 'utf8')).includes('name: caddie'), true);
+  assert.equal(await fingerprint(installedReviewSweep), await fingerprint(authoredSkill));
+  assert.equal(await realpath(path.join(home, '.claude', 'skills', 'review-sweep')), await realpath(installedReviewSweep));
 
   const companion = await projectFixture(root, 'Companion', 'project-helper');
   for (const project of [companion]) {
@@ -133,12 +135,12 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     ['caddie', 'user'], ['review-sweep', 'user'], ['project-helper', 'project'],
   ]);
   const authoredInspection = composed.result.scopes.user.skills.find(({ name }) => name === 'review-sweep');
-  assert.equal(authoredInspection.reconciliation.kind, 'in-place', JSON.stringify(authoredInspection));
+  assert.equal(authoredInspection.reconciliation.kind, 'unchanged', JSON.stringify(authoredInspection));
   assert.equal(await fingerprint(companion.source), await fingerprint(companion.installed));
   const exposure = path.join(companion.root, '.claude', 'skills', companion.skillName);
   assert.equal(await realpath(exposure), await realpath(companion.installed));
 
-  await writeFile(path.join(companion.installed, 'SKILL.md'), '---\nname: project-helper\n---\nlocally changed\n');
+  await writeFile(path.join(companion.installed, 'SKILL.md'), '---\nname: project-helper\ndescription: Test fixture.\n---\nlocally changed\n');
   const drifted = invoke(tool, 'inspect', { cwd: companion.root, configHome, cacheHome: path.join(root, 'cache') }, companion.root, {
     HOME: home, XDG_CONFIG_HOME: configHome,
   });
@@ -148,12 +150,12 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
   const oldUpstream = path.join(upstreamRoot, 'skills', 'to-prd');
   const newUpstream = path.join(upstreamRoot, 'skills', 'to-spec');
   await mkdir(oldUpstream, { recursive: true });
-  await writeFile(path.join(oldUpstream, 'SKILL.md'), '---\nname: to-prd\n---\nCreate a product requirements document.\n');
+  await writeFile(path.join(oldUpstream, 'SKILL.md'), '---\nname: to-prd\ndescription: Test fixture.\n---\nCreate a product requirements document.\n');
   const beforeRename = invoke(tool, 'inspect-source', { type: 'local', root: upstreamRoot, selectionPath: 'skills/to-prd' }, sreeStack, {
     HOME: home, XDG_CONFIG_HOME: configHome,
   });
   await rename(oldUpstream, newUpstream);
-  await writeFile(path.join(newUpstream, 'SKILL.md'), '---\nname: to-spec\n---\nCreate a product requirements document.\n');
+  await writeFile(path.join(newUpstream, 'SKILL.md'), '---\nname: to-spec\ndescription: Test fixture.\n---\nCreate a product requirements document.\n');
   const afterRename = invoke(tool, 'inspect-source', { type: 'local', root: upstreamRoot, selectionPath: 'skills/to-spec' }, sreeStack, {
     HOME: home, XDG_CONFIG_HOME: configHome,
   });
@@ -184,7 +186,7 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
   const recoverySource = path.join(recoveryRoot, 'source', 'recoverable');
   const recoveryDestination = path.join(recoveryRoot, '.agents', 'skills', 'recoverable');
   await mkdir(recoverySource, { recursive: true });
-  await writeFile(path.join(recoverySource, 'SKILL.md'), '---\nname: recoverable\n---\n');
+  await writeFile(path.join(recoverySource, 'SKILL.md'), '---\nname: recoverable\ndescription: Test fixture.\n---\n');
   const recoveryPlan = createPlan({
     kind: 'reconcile', scope: { id: `project:${recoveryRoot}`, root: recoveryRoot },
     operations: [{
@@ -207,7 +209,7 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     approval: approve(recovery.result.finishPlan),
   }, recoveryRoot, { HOME: home, XDG_CONFIG_HOME: configHome });
   assert.equal(finished.ok, true, JSON.stringify(finished));
-  assert.equal(await readFile(path.join(recoveryDestination, 'SKILL.md'), 'utf8'), '---\nname: recoverable\n---\n');
+  assert.equal(await readFile(path.join(recoveryDestination, 'SKILL.md'), 'utf8'), '---\nname: recoverable\ndescription: Test fixture.\n---\n');
 
   const birdseye = invoke(tool, 'inspect', { cwd: companion.root, configHome, birdseye: true, cacheHome: path.join(root, 'cache') }, companion.root, {
     HOME: home, XDG_CONFIG_HOME: configHome,
@@ -236,7 +238,7 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     HOME: home, XDG_CONFIG_HOME: configHome,
   });
   assert.equal(unmanaged.ok, true, JSON.stringify(unmanaged));
-  assert.equal(await readFile(path.join(companion.installed, 'SKILL.md'), 'utf8'), `---\nname: ${companion.skillName}\n---\nlocally changed\n`);
+  assert.equal(await readFile(path.join(companion.installed, 'SKILL.md'), 'utf8'), `---\nname: ${companion.skillName}\ndescription: Test fixture.\n---\nlocally changed\n`);
   assert.equal(await realpath(path.join(companion.root, '.claude', 'skills', companion.skillName)), await realpath(companion.installed));
 });
 
@@ -245,7 +247,7 @@ async function projectFixture(root, name, skillName) {
   const source = path.join(projectRoot, 'skills', skillName);
   const installed = path.join(projectRoot, '.agents', 'skills', skillName);
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), `---\nname: ${skillName}\n---\nfixture\n`);
+  await writeFile(path.join(source, 'SKILL.md'), `---\nname: ${skillName}\ndescription: Test fixture.\n---\nfixture\n`);
   await cp(source, installed, { recursive: true });
   await writeFile(path.join(projectRoot, 'caddie.json'), `${JSON.stringify({
     version: 1, scope: 'project', sources: { authored: { type: 'local', path: './skills' } },

@@ -1,3 +1,3 @@
 #!/usr/bin/env node
 
-import '../.agents/skills/caddie/tool/caddie.mjs';
+import '../skills/caddie/tool/caddie.mjs';

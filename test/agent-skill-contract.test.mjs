@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const skillPath = path.join(repositoryRoot, '.agents', 'skills', 'caddie', 'SKILL.md');
+const skillPath = path.join(repositoryRoot, 'skills', 'caddie', 'SKILL.md');
 
 test('agent skill contract covers every semantic reconciliation scenario', async () => {
   const skill = await readFile(skillPath, 'utf8');

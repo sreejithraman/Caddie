@@ -4,7 +4,7 @@ All Caddie v1 persisted JSON formats use `version: 1`.
 
 - `caddie.json` is the Caddie Manifest and desired-state authority. It declares a `user` or `project` scope, deduplicated local or Git Skill Sources, and explicit Skill Selections.
 - `caddie.lock` is the deterministic Caddie Lock. It pins external Git selections to exact commits and contains no timestamps, absolute paths, transient installation metadata, or local-content hashes.
-- `.agents/.caddie/ledger.json` is the scope-local Caddie Ledger. It records only Materialized Skills and harness-specific links Caddie owns, their source identity and selected path, and the last reconciled fingerprint.
+- `.agents/.caddie/ledger.json` is the manifest-scope Caddie Ledger. It records Materialized Skills at the canonical cross-client root and only the Claude compatibility links Caddie owns, with source identity, selected path, and last reconciled fingerprint.
 - `.agents/.caddie/journal.json` is transient recovery state for an interrupted mutation.
 - Machine configuration uses the operating system's conventional user configuration directory. It stores the User Skills manifest location and Registered Projects; disposable evidence belongs in the conventional cache directory.
 

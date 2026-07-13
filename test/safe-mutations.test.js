@@ -6,11 +6,11 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createPlan, approvePlan } = require('../.agents/skills/caddie/tool/src/plans');
-const { MUTATION_OPERATION_TYPES, strategyFor } = require('../.agents/skills/caddie/tool/src/mutations/strategies');
-const { applyPlan, acquireScopeLock } = require('../.agents/skills/caddie/tool/src/apply');
-const { fingerprint, exists, writeJsonAtomic } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
-const { recover } = require('../.agents/skills/caddie/tool/src/recovery');
+const { createPlan, approvePlan } = require('../skills/caddie/tool/src/plans');
+const { MUTATION_OPERATION_TYPES, strategyFor } = require('../skills/caddie/tool/src/mutations/strategies');
+const { applyPlan, acquireScopeLock } = require('../skills/caddie/tool/src/apply');
+const { fingerprint, exists, writeJsonAtomic } = require('../skills/caddie/tool/src/apply/filesystem');
+const { recover } = require('../skills/caddie/tool/src/recovery');
 
 test('every planned mutation operation has one canonical filesystem strategy', () => {
   assert.deepEqual(new Set(MUTATION_OPERATION_TYPES.map((type) => strategyFor(type).strategy)), new Set([
@@ -31,7 +31,7 @@ test('atomic JSON writes clean their temporary file when publication fails', asy
   await assert.rejects(writeJsonAtomic(destination, { version: 1 }));
   assert.deepEqual(await fs.readdir(root), ['occupied']);
 });
-const { createAdoptionPlan, createCleanupPlan, createUnmanagementPlan, inspectAdoption } = require('../.agents/skills/caddie/tool/src/adoption');
+const { createAdoptionPlan, createCleanupPlan, createUnmanagementPlan, inspectAdoption } = require('../skills/caddie/tool/src/adoption');
 
 const journalPathFor = (fx) => path.join(fx.root, '.agents', '.caddie', 'operation-journal.json');
 const lockPathFor = (fx) => path.join(fx.root, '.agents', '.caddie', 'mutation.lock');
@@ -40,7 +40,7 @@ async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-safe-'));
   const source = path.join(root, 'source', 'chosen');
   await fs.mkdir(path.join(source, 'scripts'), { recursive: true });
-  await fs.writeFile(path.join(source, 'SKILL.md'), '---\nname: chosen\n---\nComplete skill.\n');
+  await fs.writeFile(path.join(source, 'SKILL.md'), '---\nname: chosen\ndescription: Test fixture.\n---\nComplete skill.\n');
   await fs.writeFile(path.join(source, 'scripts', 'run.js'), 'console.log("ok")\n');
   return {
     root,
@@ -94,6 +94,31 @@ test('unapproved, altered, stale, and colliding plans do not mutate content', as
   await assert.rejects(applyPlan({ plan, approval: approvePlan(plan) }), (error) => error.code === 'stale-plan');
   assert.equal(await fs.readFile(path.join(fx.destination, 'keep.txt'), 'utf8'), 'unknown');
   assert.equal(await exists(fx.ledgerPath), false);
+});
+
+test('materialization rejects a SKILL.md name that differs from its source directory', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const mismatched = path.join(fx.root, 'source', 'wrong-directory');
+  await fs.cp(fx.source, mismatched, { recursive: true });
+  const plan = createPlan({
+    kind: 'reconcile',
+    scope: fx.scope,
+    operations: [{
+      type: 'materialize-skill',
+      name: 'chosen',
+      sourcePath: mismatched,
+      destinationPath: fx.destination,
+      sourceFingerprint: await fingerprint(mismatched),
+      expectedDestination: { state: 'absent' },
+    }],
+  });
+
+  await assert.rejects(
+    applyPlan({ plan, approval: approvePlan(plan) }),
+    (error) => error.code === 'invalid-source',
+  );
+  assert.equal(await exists(fx.destination), false);
 });
 
 test('mutation rejects symlinked scope ancestors before writing outside the scope', async (t) => {
@@ -163,11 +188,11 @@ test('interrupted user harness exposure can be recovered at the fixed runtime HO
   const home = path.join(base, 'home');
   const root = path.join(base, 'config', 'caddie', 'user');
   const source = path.join(base, 'source', 'chosen');
-  const destination = path.join(root, '.agents', 'skills', 'chosen');
+  const destination = path.join(home, '.agents', 'skills', 'chosen');
   await fs.mkdir(home, { recursive: true });
   await fs.mkdir(root, { recursive: true });
   await fs.mkdir(source, { recursive: true });
-  await fs.writeFile(path.join(source, 'SKILL.md'), '---\nname: chosen\n---\n');
+  await fs.writeFile(path.join(source, 'SKILL.md'), '---\nname: chosen\ndescription: Test fixture.\n---\n');
   process.env.HOME = home;
   t.after(async () => {
     if (previousHome === undefined) delete process.env.HOME;
@@ -175,10 +200,7 @@ test('interrupted user harness exposure can be recovered at the fixed runtime HO
     await fs.rm(base, { recursive: true, force: true });
   });
   const sourceFingerprint = await fingerprint(source);
-  const links = [
-    { harness: 'codex', linkPath: path.join(home, '.agents', 'skills', 'chosen') },
-    { harness: 'claude', linkPath: path.join(home, '.claude', 'skills', 'chosen') },
-  ];
+  const links = [{ harness: 'claude', linkPath: path.join(home, '.claude', 'skills', 'chosen') }];
   const scope = { id: 'user', root };
   const plan = createPlan({
     kind: 'reconcile',
@@ -206,7 +228,6 @@ test('interrupted user harness exposure can be recovered at the fixed runtime HO
   assert.equal(recovery.status, 'interrupted');
   await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
   assert.equal(await fs.realpath(links[0].linkPath), await fs.realpath(destination));
-  assert.equal(await fs.realpath(links[1].linkPath), await fs.realpath(destination));
 });
 
 test('rollback restores the exact pre-mutation state', async (t) => {
@@ -339,7 +360,7 @@ test('recovery finishes after an ephemeral Git source was cleaned before journal
   const fx = await fixture();
   t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
   const checkoutRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-source-'));
-  const source = path.join(checkoutRoot, 'skill');
+  const source = path.join(checkoutRoot, 'chosen');
   await fs.mkdir(source);
   await fs.cp(fx.source, source, { recursive: true });
   const token = crypto.randomUUID();
@@ -374,7 +395,7 @@ test('recovery finalizes after terminal operation storage was already removed', 
     let plan = await reconcilePlan(fx);
     if (mode === 'rollback') {
       const checkoutRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-source-'));
-      const leasedSource = path.join(checkoutRoot, 'skill');
+      const leasedSource = path.join(checkoutRoot, 'chosen');
       await fs.cp(fx.source, leasedSource, { recursive: true });
       const token = crypto.randomUUID();
       await fs.writeFile(path.join(checkoutRoot, '.caddie-materialization.json'), `${JSON.stringify({ version: 1, token, sourcePath: leasedSource })}\n`);
@@ -439,7 +460,7 @@ test('adoption is read-only, preselects exact matches, and treats legacy data as
     ],
   });
   assert.deepEqual(proposal.entries.map(({ name, classification, preselected }) => [name, classification, preselected]), [
-    ['chosen', 'exact', true], ['modified', 'modified', false], ['unknown', 'unknown', false],
+    ['chosen', 'exact', true], ['modified', 'invalid-skill', false], ['unknown', 'invalid-skill', false],
   ]);
   assert.equal(proposal.legacy.evidenceOnly, true);
   assert.equal(proposal.legacy.removalRecommended, true);

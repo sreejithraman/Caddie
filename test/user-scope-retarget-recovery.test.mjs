@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { applyPlan } = require('../.agents/skills/caddie/tool/src/apply');
-const { fingerprint } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
-const { approvePlan, createPlan } = require('../.agents/skills/caddie/tool/src/plans');
-const { recover } = require('../.agents/skills/caddie/tool/src/recovery');
+const { applyPlan } = require('../skills/caddie/tool/src/apply');
+const { fingerprint } = require('../skills/caddie/tool/src/apply/filesystem');
+const { approvePlan, createPlan } = require('../skills/caddie/tool/src/plans');
+const { recover } = require('../skills/caddie/tool/src/recovery');
 
 test('rollback of an interrupted User Skills retarget restores the previous owned link', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-retarget-recovery-'));
@@ -17,8 +17,8 @@ test('rollback of an interrupted User Skills retarget restores the previous owne
   const home = path.join(root, 'home');
   const scopeRoot = path.join(root, 'SreeStack');
   const oldTarget = path.join(root, 'old-user', '.agents', 'skills', 'shared');
-  const nextTarget = path.join(scopeRoot, '.agents', 'skills', 'shared');
-  const linkPath = path.join(home, '.agents', 'skills', 'shared');
+  const nextTarget = path.join(home, '.agents', 'skills', 'shared');
+  const linkPath = path.join(home, '.claude', 'skills', 'shared');
   process.env.HOME = home;
   t.after(async () => {
     if (previousHome === undefined) delete process.env.HOME;
@@ -27,6 +27,7 @@ test('rollback of an interrupted User Skills retarget restores the previous owne
   });
   await skill(oldTarget, 'old');
   await skill(nextTarget, 'new');
+  await mkdir(scopeRoot, { recursive: true });
   await mkdir(path.dirname(linkPath), { recursive: true });
   const oldRelativeTarget = path.relative(path.dirname(linkPath), oldTarget);
   await symlink(oldRelativeTarget, linkPath, 'dir');
@@ -34,7 +35,7 @@ test('rollback of an interrupted User Skills retarget restores the previous owne
     kind: 'reconcile',
     scope: { id: 'user', root: scopeRoot },
     operations: [{
-      type: 'ensure-harness-exposure', harness: 'codex', linkPath, targetPath: nextTarget,
+      type: 'ensure-harness-exposure', harness: 'claude', linkPath, targetPath: nextTarget,
       targetFingerprint: await fingerprint(nextTarget),
       expected: { state: 'symlink', target: oldRelativeTarget },
     }],
@@ -58,8 +59,8 @@ test('rollback reports replan when an interrupted exposure becomes regular conte
   const home = path.join(root, 'home');
   const scopeRoot = path.join(root, 'SreeStack');
   const oldTarget = path.join(root, 'old-user', '.agents', 'skills', 'shared');
-  const nextTarget = path.join(scopeRoot, '.agents', 'skills', 'shared');
-  const linkPath = path.join(home, '.agents', 'skills', 'shared');
+  const nextTarget = path.join(home, '.agents', 'skills', 'shared');
+  const linkPath = path.join(home, '.claude', 'skills', 'shared');
   process.env.HOME = home;
   t.after(async () => {
     if (previousHome === undefined) delete process.env.HOME;
@@ -68,6 +69,7 @@ test('rollback reports replan when an interrupted exposure becomes regular conte
   });
   await skill(oldTarget, 'old');
   await skill(nextTarget, 'new');
+  await mkdir(scopeRoot, { recursive: true });
   await mkdir(path.dirname(linkPath), { recursive: true });
   const oldRelativeTarget = path.relative(path.dirname(linkPath), oldTarget);
   await symlink(oldRelativeTarget, linkPath, 'dir');
@@ -75,7 +77,7 @@ test('rollback reports replan when an interrupted exposure becomes regular conte
     kind: 'reconcile',
     scope: { id: 'user', root: scopeRoot },
     operations: [{
-      type: 'ensure-harness-exposure', harness: 'codex', linkPath, targetPath: nextTarget,
+      type: 'ensure-harness-exposure', harness: 'claude', linkPath, targetPath: nextTarget,
       targetFingerprint: await fingerprint(nextTarget),
       expected: { state: 'symlink', target: oldRelativeTarget },
     }],
@@ -97,5 +99,5 @@ test('rollback reports replan when an interrupted exposure becomes regular conte
 
 async function skill(directory, body) {
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, 'SKILL.md'), `---\nname: shared\n---\n${body}\n`);
+  await writeFile(path.join(directory, 'SKILL.md'), `---\nname: shared\ndescription: Test fixture.\n---\n${body}\n`);
 }

@@ -28,8 +28,8 @@ test('inspect surfaces single- and multi-origin declared Lineage with its Migrat
   const source = path.join(root, 'skills');
   await mkdir(path.join(source, 'derived-one'), { recursive: true });
   await mkdir(path.join(source, 'derived-many'), { recursive: true });
-  await writeFile(path.join(source, 'derived-one', 'SKILL.md'), '---\nname: derived-one\n---\n');
-  await writeFile(path.join(source, 'derived-many', 'SKILL.md'), '---\nname: derived-many\n---\n');
+  await writeFile(path.join(source, 'derived-one', 'SKILL.md'), '---\nname: derived-one\ndescription: Test fixture.\n---\n');
+  await writeFile(path.join(source, 'derived-many', 'SKILL.md'), '---\nname: derived-many\ndescription: Test fixture.\n---\n');
   await writeFile(path.join(root, 'caddie.json'), `${JSON.stringify({
     version: 1,
     scope: 'project',
@@ -73,7 +73,7 @@ test('inspect rejects malformed declared Lineage through the public tool', async
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-lineage-invalid-'));
   const source = path.join(root, 'skills', 'derived');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: derived\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: derived\ndescription: Test fixture.\n---\n');
   await writeFile(path.join(root, 'caddie.json'), `${JSON.stringify({
     version: 1,
     scope: 'project',
@@ -143,7 +143,7 @@ test('evidence fingerprint flows through exact plan approval into complete mater
   const destination = path.join(scopeRoot, '.agents', 'skills', 'fixture');
   const ledgerPath = path.join(scopeRoot, '.agents', '.caddie', 'ledger.json');
   await mkdir(path.join(source, 'assets'), { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n\nFixture.\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n\nFixture.\n');
   await writeFile(path.join(source, 'assets', 'complete.txt'), 'complete\n');
 
   const evidence = invoke('inspect-source', { type: 'local', root: sourceRoot, selectionPath: 'fixture' });
@@ -200,7 +200,7 @@ test('adoption inspection and preservation-first planning are reachable through 
   const source = path.join(scopeRoot, 'source', 'fixture');
   const installed = path.join(scopeRoot, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   await cp(source, installed, { recursive: true });
   const candidates = [{
     name: 'fixture',
@@ -232,7 +232,7 @@ test('adoption inspection and preservation-first planning are reachable through 
   assert.equal(applied.ok, true, JSON.stringify(applied));
   const ledger = JSON.parse(await readFile(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'), 'utf8'));
   assert.equal(ledger.entries[0].name, 'fixture');
-  assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), '---\nname: fixture\n---\n');
+  assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
 });
 
 test('adoption planning recomputes live evidence instead of trusting a caller proposal', async () => {
@@ -307,14 +307,14 @@ test('user-scope reconciliation never registers the User Skills home as a projec
   const source = path.join(root, 'source', 'fixture');
   await mkdir(home, { recursive: true });
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   const planned = invoke('plan', {
     kind: 'reconcile',
     configHome: path.join(root, 'config'),
     scope: { id: 'user', root },
     operations: [{
       type: 'materialize-skill', name: 'fixture', sourcePath: source,
-      destinationPath: path.join(root, '.agents', 'skills', 'fixture'),
+      destinationPath: path.join(home, '.agents', 'skills', 'fixture'),
       sourceFingerprint: complete('fixture').digest,
       expectedDestination: { state: 'absent' },
     }],
@@ -323,27 +323,27 @@ test('user-scope reconciliation never registers the User Skills home as a projec
   assert.equal(planned.result.plan.operations.some(({ type }) => type === 'write-machine-config'), false);
   assert.deepEqual(
     planned.result.plan.operations.filter(({ type }) => type === 'ensure-harness-exposure').map(({ harness }) => harness).sort(),
-    ['claude', 'codex'],
+    ['claude'],
   );
   const ledger = JSON.parse(planned.result.plan.operations.find(({ type }) => type === 'write-ledger').content);
   assert.deepEqual(ledger.entries.map(({ name }) => name), ['fixture']);
-  assert.equal(ledger.harnessLinks.length, 2);
+  assert.equal(ledger.harnessLinks.length, 1);
 });
 
 test('user reconciliation preserves unchanged harness ownership in its complete ledger update', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-operation-user-ledger-'));
   const home = path.join(fixture, 'home');
   const scopeRoot = path.join(fixture, 'config', 'caddie', 'user');
-  const oldSkill = path.join(scopeRoot, '.agents', 'skills', 'old');
+  const oldSkill = path.join(home, '.agents', 'skills', 'old');
   const sourceRoot = path.join(fixture, 'source');
   const source = path.join(sourceRoot, 'new');
-  const destination = path.join(scopeRoot, '.agents', 'skills', 'new');
-  const oldLinks = [path.join(home, '.agents', 'skills', 'old'), path.join(home, '.claude', 'skills', 'old')];
+  const destination = path.join(home, '.agents', 'skills', 'new');
+  const oldLinks = [path.join(home, '.claude', 'skills', 'old')];
   await mkdir(home, { recursive: true });
   await mkdir(oldSkill, { recursive: true });
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(oldSkill, 'SKILL.md'), '---\nname: old\n---\n');
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: new\n---\n');
+  await writeFile(path.join(oldSkill, 'SKILL.md'), '---\nname: old\ndescription: Test fixture.\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: new\ndescription: Test fixture.\n---\n');
   for (const linkPath of oldLinks) {
     await mkdir(path.dirname(linkPath), { recursive: true });
     await symlink(oldSkill, linkPath, 'dir');
@@ -371,7 +371,6 @@ test('user reconciliation preserves unchanged harness ownership in its complete 
   assert.deepEqual(nextLedger.entries.map(({ name }) => name).sort(), ['new', 'old']);
   assert.deepEqual(nextLedger.harnessLinks.sort(), [
     ...oldLinks,
-    path.join(home, '.agents', 'skills', 'new'),
     path.join(home, '.claude', 'skills', 'new'),
   ].sort());
 
@@ -384,15 +383,16 @@ test('user reconciliation preserves unchanged harness ownership in its complete 
   assert.equal(await realpath(oldLinks[0]), await realpath(oldSkill));
 });
 
-test('user-scope adoption exposes each skill to the actual Codex and Claude homes', async () => {
+test('user-scope adoption keeps the standard installation and adds Claude compatibility', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-operation-user-exposure-'));
   const home = path.join(fixture, 'home');
   const scopeRoot = path.join(fixture, 'config', 'caddie', 'user');
   const source = path.join(fixture, 'source', 'fixture');
-  const installed = path.join(scopeRoot, '.agents', 'skills', 'fixture');
+  const installed = path.join(home, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
   await mkdir(home, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await mkdir(scopeRoot, { recursive: true });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   await cp(source, installed, { recursive: true });
   const env = { HOME: home };
 
@@ -411,7 +411,6 @@ test('user-scope adoption exposes each skill to the actual Codex and Claude home
   }, env);
   assert.equal(applied.ok, true, JSON.stringify(applied));
   const canonicalInstalled = await realpath(installed);
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'fixture')), canonicalInstalled);
   assert.equal(await realpath(path.join(home, '.claude', 'skills', 'fixture')), canonicalInstalled);
 
   const cleanup = invoke('plan', {
@@ -427,7 +426,6 @@ test('user-scope adoption exposes each skill to the actual Codex and Claude home
   }, env);
   assert.equal(cleaned.ok, true, JSON.stringify(cleaned));
   assert.equal(spawnSync('test', ['-e', installed]).status, 1);
-  assert.equal(spawnSync('test', ['-e', path.join(home, '.agents', 'skills', 'fixture')]).status, 1);
   assert.equal(spawnSync('test', ['-e', path.join(home, '.claude', 'skills', 'fixture')]).status, 1);
 });
 

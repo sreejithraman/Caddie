@@ -5,6 +5,11 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
+const { parseSkillMetadata } = require('../skills/caddie/tool/src/skill-metadata');
+const { createBootstrapLayout } = require('./bootstrap/artifacts.cjs');
+const { createLegacyMigration } = require('./bootstrap/legacy-migration.cjs');
+const { assertSafeAncestorChain } = require('./bootstrap/safe-path.cjs');
+const { stageArtifactSet } = require('./bootstrap/stage-artifact-set.cjs');
 
 function fail(message) {
   throw new Error(message);
@@ -21,98 +26,70 @@ async function main() {
     fail('Usage: bootstrap.cjs <source-root> <exact-commit> <repository>');
   }
 
-  const sourceSkill = path.join(path.resolve(sourceRoot), '.agents', 'skills', 'caddie');
+  const sourceSkill = path.join(path.resolve(sourceRoot), 'skills', 'caddie');
   verifyExactSource(path.resolve(sourceRoot), commit);
   const skillFile = path.join(sourceSkill, 'SKILL.md');
-  if (!fs.existsSync(skillFile) || !/^---[\s\S]*?\nname:\s*caddie\s*$/m.test(fs.readFileSync(skillFile, 'utf8'))) {
+  const metadata = fs.existsSync(skillFile) ? parseSkillMetadata(fs.readFileSync(skillFile, 'utf8')) : null;
+  if (metadata?.name !== 'caddie' || metadata.standardFindings.length > 0) {
     fail('The pinned source does not contain a valid Caddie Skill.');
   }
 
   const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-  const caddieHome = path.join(configHome, 'caddie');
-  const userHome = path.join(caddieHome, 'user');
-  const destination = path.join(userHome, '.agents', 'skills', 'caddie');
-  const codexExposure = path.join(os.homedir(), '.agents', 'skills', 'caddie');
-  const claudeExposure = path.join(os.homedir(), '.claude', 'skills', 'caddie');
-  const outputs = {
-    destination,
-    codexExposure,
-    claudeExposure,
-    manifest: path.join(userHome, 'caddie.json'),
-    lock: path.join(userHome, 'caddie.lock'),
-    ledger: path.join(userHome, '.agents', '.caddie', 'ledger.json'),
-    config: path.join(caddieHome, 'config.json'),
-  };
-  const journalPath = path.join(caddieHome, '.bootstrap-journal.json');
-  const lockPath = path.join(caddieHome, '.bootstrap.lock');
-  const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
-  preflightParents(lockPath);
-  preflightParents(journalPath);
+  const layout = createBootstrapLayout({ home: os.homedir(), configHome });
+  const { caddieHome, userHome, outputs, journalPath, lockPath } = layout;
+  const { fingerprintDirectory } = await import('../skills/caddie/tool/src/fingerprint/index.mjs');
+  const legacyMigration = createLegacyMigration({
+    fingerprintDirectory,
+    writeJson,
+    releaseOwnedFile,
+    ensureParents,
+    maybeInjectFailure,
+    maybeCrash,
+    validOwner,
+  });
+  assertSafeAncestorChain(layout.anchors.state, lockPath);
+  assertSafeAncestorChain(layout.anchors.state, journalPath);
   requireRealStateFileIfPresent(lockPath, 'Bootstrap lock');
   requireRealStateFileIfPresent(journalPath, 'Bootstrap recovery journal');
   const owner = acquireBootstrapLock(lockPath);
   try {
-    await recoverBootstrap(journalPath, outputs, fingerprintDirectory);
+    await recoverBootstrap(layout, fingerprintDirectory, legacyMigration);
+    if (await legacyMigration.tryMigrate({ sourceSkill, commit, repository, layout, owner })) {
+      process.stdout.write(`${userHome}\n`);
+      return;
+    }
 
   // Preflight every final path and all existing ancestors before staging or
   // creating any destination directory.
-  for (const candidate of Object.values(outputs)) {
+  for (const artifact of layout.artifacts) {
+    const candidate = artifact.path;
     if (fs.lstatSync(candidate, { throwIfNoEntry: false }) || fs.lstatSync(path.dirname(candidate), { throwIfNoEntry: false })?.isSymbolicLink()) {
       fail(`Bootstrap preserves existing state: ${candidate}`);
     }
-    preflightParents(candidate);
+    assertSafeAncestorChain(artifact.anchor, candidate);
   }
 
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'caddie-bootstrap-stage-'));
-  const staged = Object.fromEntries(Object.keys(outputs).map((name) => [name, path.join(stage, name)]));
   const published = [];
   const createdDirectories = [];
   try {
-    fs.cpSync(sourceSkill, staged.destination, { recursive: true, errorOnExist: true, force: false });
-    for (const name of ['codexExposure', 'claudeExposure']) {
-      fs.mkdirSync(path.dirname(staged[name]), { recursive: true });
-      fs.symlinkSync(path.relative(path.dirname(outputs[name]), destination), staged[name], 'dir');
-    }
-
-    const fingerprint = await fingerprintDirectory(staged.destination);
-    if (!fingerprint.complete) fail('The staged Caddie Skill could not be fingerprinted completely.');
-    const source = { type: 'git', url: repository, ref: commit };
-    writeJson(staged.manifest, {
-      version: 1, scope: 'user', sources: { caddie: source },
-      selections: [{ source: 'caddie', path: '.agents/skills/caddie' }],
+    const { staged, expected } = await stageArtifactSet({
+      stageRoot: stage,
+      sourceSkill,
+      artifacts: layout.artifacts,
+      outputs,
+      repository,
+      commit,
+      fingerprintDirectory,
+      writeJson,
     });
-    writeJson(staged.lock, { version: 1, sources: { caddie: { type: 'git', url: repository, commit } } });
-    writeJson(staged.ledger, {
-      version: 1,
-      scopeId: 'user',
-      harnessLinks: [codexExposure, claudeExposure],
-      entries: [{
-        name: 'caddie',
-        path: destination,
-        source: 'caddie',
-        selectedPath: '.agents/skills/caddie',
-        fingerprint: fingerprint.digest,
-      }],
-    });
-    writeJson(staged.config, {
-      version: 1,
-      userManifest: outputs.manifest,
-      registeredProjects: [],
-    });
-
-    const expected = {};
-    for (const [name, candidate] of Object.entries(staged)) {
-      const evidence = await fingerprintDirectory(candidate);
-      if (!evidence.complete) fail(`Bootstrap could not bind staged artifact: ${name}`);
-      expected[name] = evidence.digest;
-    }
     ensureParents(journalPath, createdDirectories);
     writeJson(journalPath, { version: 2, owner, expected });
 
-    for (const name of ['destination', 'codexExposure', 'claudeExposure', 'manifest', 'lock', 'ledger', 'config']) {
-      ensureParents(outputs[name], createdDirectories);
-      fs.renameSync(staged[name], outputs[name]);
-      published.push(outputs[name]);
+    for (const artifact of layout.artifacts) {
+      ensureParents(artifact.path, createdDirectories);
+      fs.renameSync(staged[artifact.name], artifact.path);
+      published.push(artifact.path);
       maybeInjectFailure(published.length);
       maybeCrash(published.length);
     }
@@ -149,16 +126,26 @@ function verifyExactSource(sourceRoot, commit) {
   }
 }
 
-async function recoverBootstrap(journalPath, outputs, fingerprintDirectory) {
+async function recoverBootstrap(layout, fingerprintDirectory, legacyMigration) {
+  const { journalPath } = layout;
   if (!fs.existsSync(journalPath)) return;
   requireRealStateFileIfPresent(journalPath, 'Bootstrap recovery journal');
   let journal;
   try { journal = JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch { fail('Bootstrap recovery journal is invalid.'); }
-  if (journal.version !== 2 || !validOwner(journal.owner) || !journal.expected || typeof journal.expected !== 'object') {
+  if (legacyMigration.recognizesJournal(journal)) {
+    await legacyMigration.recover(journalPath, journal, layout);
+    return;
+  }
+  const artifactNames = layout.artifacts.map(({ name }) => name);
+  if (journal.version !== 2 || !validOwner(journal.owner)
+    || !hasExactKeys(journal.expected, artifactNames)) {
     fail('Bootstrap recovery journal has an unsupported shape.');
   }
   if (processIsRunning(journal.owner.pid)) fail('Another bootstrap still owns the recovery journal.');
-  for (const [name, candidate] of Object.entries(outputs)) {
+  for (const artifact of layout.artifacts) {
+    assertSafeAncestorChain(artifact.anchor, artifact.path);
+  }
+  for (const { name, path: candidate } of layout.artifacts) {
     if (!fs.lstatSync(candidate, { throwIfNoEntry: false })) continue;
     const evidence = await fingerprintDirectory(candidate);
     if (!evidence.complete || evidence.digest !== journal.expected[name]) {
@@ -167,6 +154,11 @@ async function recoverBootstrap(journalPath, outputs, fingerprintDirectory) {
     fs.rmSync(candidate, { recursive: true, force: true });
   }
   releaseOwnedFile(journalPath, journal.owner.nonce);
+}
+
+function hasExactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 }
 
 function requireRealStateFileIfPresent(candidate, label) {
@@ -214,20 +206,6 @@ function validOwner(owner) {
 
 function processIsRunning(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
-}
-
-function preflightParents(candidate) {
-  let current = path.dirname(candidate);
-  while (true) {
-    const stat = fs.lstatSync(current, { throwIfNoEntry: false });
-    if (stat) {
-      if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`Bootstrap requires a real directory parent: ${current}`);
-      return;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) fail(`Bootstrap cannot resolve destination parent: ${candidate}`);
-    current = parent;
-  }
 }
 
 function ensureParents(candidate, created) {

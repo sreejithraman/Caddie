@@ -67,7 +67,7 @@ test('inspection reports live Upstream Change from ledger, source, and installat
   const source = path.join(project, 'source', 'fixture');
   const installed = path.join(project, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n\nBefore.\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n\nBefore.\n');
   await cp(source, installed, { recursive: true });
   await json(path.join(project, 'caddie.json'), {
     version: 1,
@@ -85,7 +85,7 @@ test('inspection reports live Upstream Change from ledger, source, and installat
     scopeId: `project:${project}`,
     entries: [{ name: 'fixture', sourceId: 'authored', selectedPath: 'fixture', fingerprint: baseline }],
   });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n\nAfter.\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n\nAfter.\n');
 
   const envelope = invoke({
     version: 1,

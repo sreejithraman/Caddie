@@ -17,7 +17,7 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 
 - Keep User Skills available across projects.
 - Add project-owned capabilities through Project Skills.
-- Expose each canonical User Skill to the actual Codex and Claude user harness roots without duplicating its content.
+- Install User Skills in the cross-client `~/.agents/skills` convention and add only the Claude compatibility links that are needed.
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
@@ -30,7 +30,7 @@ Caddie is an Agent App. Users interact through the Caddie Skill, which directs t
 
 - Preserve authored and installed content unless the user explicitly approves its removal.
 - Separate deterministic evidence, agent interpretation, user choice, and durable state.
-- Store complete skill copies in canonical skill directories; use harness-specific links only when a harness cannot read the canonical directory directly.
+- Store complete User Skills in `~/.agents/skills` and complete Project Skills in `<project>/.agents/skills`; use harness-specific links only for compatibility.
 - Recommend Git without requiring it.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
@@ -44,7 +44,7 @@ The deterministic tool accepts one versioned JSON request on standard input:
 printf '%s\n' '{"version":1,"operation":"locate","input":{"cwd":"/path/to/project"}}' | node bin/caddie-tool.mjs
 ```
 
-The Caddie Skill is in `.agents/skills/caddie`. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
+The self-contained Caddie Skill source is in `skills/caddie`. `.agents/skills` is reserved for installed User Skills and Project Skills, not source-repository organization. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
 
 See [the protocol](docs/protocol.md) and [persisted formats](docs/formats.md).
 

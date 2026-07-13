@@ -6,18 +6,18 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { runTool } from '../.agents/skills/caddie/tool/src/protocol/run-tool.mjs';
+import { runTool } from '../skills/caddie/tool/src/protocol/run-tool.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tool = path.join(repositoryRoot, 'bin', 'caddie-tool.mjs');
 const require = createRequire(import.meta.url);
-const { applyPlan } = require('../.agents/skills/caddie/tool/src/apply');
+const { applyPlan } = require('../skills/caddie/tool/src/apply');
 
 test('inspect-source paginates bounded evidence with a deterministic content-bound continuation', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-pagination-'));
   const selected = path.join(root, 'fixture');
   await mkdir(selected);
-  await writeFile(path.join(selected, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await writeFile(path.join(selected, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   await writeFile(path.join(selected, 'a.txt'), 'a\n');
   await writeFile(path.join(selected, 'b.txt'), 'b\n');
   const input = { type: 'local', root, selectionPath: 'fixture', maxEntries: 1, maxContentBytes: 1024 };
@@ -57,11 +57,11 @@ test('inspect-source paginates bounded evidence with a deterministic content-bou
 
 test('recover exposes interrupted finish and rollback plans through the public JSON contract', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-public-recover-'));
-  const source = path.join(root, 'source');
+  const source = path.join(root, 'fixture');
   const destination = path.join(root, '.agents', 'skills', 'fixture');
   await mkdir(source);
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
-  const evidence = invoke('inspect-source', { type: 'local', root, selectionPath: 'source' });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
+  const evidence = invoke('inspect-source', { type: 'local', root, selectionPath: 'fixture' });
   const planned = invoke('plan', {
     kind: 'reconcile',
     configHome: path.join(root, 'config'),
@@ -145,7 +145,7 @@ test('public inspection recognizes a project-owned In-place Skill', async () => 
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-in-place-'));
   const skill = path.join(root, '.agents', 'skills', 'project-helper');
   await mkdir(skill, { recursive: true });
-  await writeFile(path.join(skill, 'SKILL.md'), '---\nname: project-helper\n---\n');
+  await writeFile(path.join(skill, 'SKILL.md'), '---\nname: project-helper\ndescription: Test fixture.\n---\n');
   await writeJson(path.join(root, 'caddie.json'), {
     version: 1, scope: 'project',
     sources: { authored: { type: 'local', path: './.agents/skills' } },
@@ -163,7 +163,7 @@ test('public reconciliation preserves Divergence and reports ledger loss as insu
   const source = path.join(root, 'source', 'fixture');
   const installed = path.join(root, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\nbaseline\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nbaseline\n');
   await cp(source, installed, { recursive: true });
   await writeJson(path.join(root, 'caddie.json'), {
     version: 1, scope: 'project', sources: { authored: { type: 'local', path: './source' } },
@@ -175,8 +175,8 @@ test('public reconciliation preserves Divergence and reports ledger loss as insu
     version: 1, scopeId: `project:${root}`,
     entries: [{ name: 'fixture', sourceId: 'authored', selectedPath: 'fixture', fingerprint: baseline }],
   });
-  const sourceContent = '---\nname: fixture\n---\nupstream changed\n';
-  const installedContent = '---\nname: fixture\n---\nlocal work\n';
+  const sourceContent = '---\nname: fixture\ndescription: Test fixture.\n---\nupstream changed\n';
+  const installedContent = '---\nname: fixture\ndescription: Test fixture.\n---\nlocal work\n';
   await writeFile(path.join(source, 'SKILL.md'), sourceContent);
   await writeFile(path.join(installed, 'SKILL.md'), installedContent);
 
@@ -198,7 +198,7 @@ test('matching mtimes never conceal content Drift', async () => {
   const source = path.join(root, 'source', 'fixture');
   const installed = path.join(root, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
-  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\nbaseline\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nbaseline\n');
   await cp(source, installed, { recursive: true });
   await writeJson(path.join(root, 'caddie.json'), {
     version: 1, scope: 'project', sources: { authored: { type: 'local', path: './source' } },
@@ -210,7 +210,7 @@ test('matching mtimes never conceal content Drift', async () => {
     entries: [{ name: 'fixture', sourceId: 'authored', selectedPath: 'fixture', fingerprint: baseline }],
   });
   const sourceTimes = await stat(path.join(source, 'SKILL.md'));
-  await writeFile(path.join(installed, 'SKILL.md'), '---\nname: fixture\n---\nchanged at same time\n');
+  await writeFile(path.join(installed, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nchanged at same time\n');
   await utimes(path.join(installed, 'SKILL.md'), sourceTimes.atime, sourceTimes.mtime);
 
   const inspected = invoke('inspect', { cwd: root, userManifestPath: path.join(root, 'missing-user.json') });
@@ -227,10 +227,10 @@ test('public Adoption preserves colliding and permission-blocked installations',
   await mkdir(collidingInstalled, { recursive: true });
   await mkdir(sourceOne);
   await mkdir(sourceTwo);
-  const installedContent = '---\nname: fixture\n---\nkeep collision\n';
+  const installedContent = '---\nname: fixture\ndescription: Test fixture.\n---\nkeep collision\n';
   await writeFile(path.join(collidingInstalled, 'SKILL.md'), installedContent);
-  await writeFile(path.join(sourceOne, 'SKILL.md'), '---\nname: fixture\n---\none\n');
-  await writeFile(path.join(sourceTwo, 'SKILL.md'), '---\nname: fixture\n---\ntwo\n');
+  await writeFile(path.join(sourceOne, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\none\n');
+  await writeFile(path.join(sourceTwo, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\ntwo\n');
   const collidingCandidates = [
     { name: 'fixture', sourcePath: sourceOne, sourceId: 'one', selectedPath: 'fixture' },
     { name: 'fixture', sourcePath: sourceTwo, sourceId: 'two', selectedPath: 'fixture' },
@@ -250,9 +250,9 @@ test('public Adoption preserves colliding and permission-blocked installations',
   const blockedSource = path.join(fixture, 'blocked-source');
   await mkdir(blockedInstalled, { recursive: true });
   await mkdir(blockedSource);
-  const blockedContent = '---\nname: fixture\n---\nkeep permission block\n';
+  const blockedContent = '---\nname: fixture\ndescription: Test fixture.\n---\nkeep permission block\n';
   await writeFile(path.join(blockedInstalled, 'SKILL.md'), blockedContent);
-  await writeFile(path.join(blockedSource, 'SKILL.md'), '---\nname: fixture\n---\nsource\n');
+  await writeFile(path.join(blockedSource, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nsource\n');
   await chmod(blockedSource, 0o000);
   try {
     const candidates = [{ name: 'fixture', sourcePath: blockedSource, sourceId: 'blocked', selectedPath: 'fixture' }];
