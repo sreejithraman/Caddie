@@ -21,7 +21,6 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
-- Prepare repository changes in isolated worktrees and draft pull requests.
 - Inspect every registered project from one conversational bird's-eye view.
 
 Caddie is an Agent App. Users interact through the Caddie Skill, which directs the Caddie Tool; bootstrap is the only intended direct shell interaction.
@@ -32,6 +31,7 @@ Caddie is an Agent App. Users interact through the Caddie Skill, which directs t
 - Separate deterministic evidence, agent interpretation, user choice, and durable state.
 - Store complete User Skills in `~/.agents/skills` and complete Project Skills in `<project>/.agents/skills`; use harness-specific links only for compatibility.
 - Recommend Git without requiring it.
+- Leave ordinary repository authoring, worktrees, commits, and pull requests to the hosting agent.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
 The GitHub v1 specification is the normative implementation source.

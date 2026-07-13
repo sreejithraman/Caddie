@@ -45,7 +45,7 @@ For a Git reconciliation, call `inspect-source` with the exact locked `commit` a
 2. Present its identifier, operations, resolved commits, preconditions, preservation behavior, and recovery implications.
 3. Obtain approval bound to that exact plan. A changed plan requires fresh approval.
 
-When an approved outcome requires skill authoring, delegate a focused authoring task with the approved intent and bounded artifacts. The parent agent validates the result before requesting the mutation plan; plan approval authorizes the managed change.
+When an outcome requires skill authoring or repository changes, perform them directly with the editing, worktree, validation, commit, and pull-request capabilities provided by the Agent Harness. After those changes are final, inspect the resulting source and request a Caddie Plan only for the managed-state mutation.
 
 Planning is complete when the current plan and its exact approval binding are both present.
 
@@ -62,4 +62,4 @@ Application is complete when inspection verifies the approved effects or identif
 
 For a focused request, lead with the current repository and mention relevant findings elsewhere. For an explicit bird's-eye request, inspect User Skills and every Registered Project. Project registration may appear in the first approved project mutation.
 
-For Adoption, Unmanagement, cleanup, Change Sandboxes, or Git/Change Set publication, read the matching section of [references/workflows.md](references/workflows.md) before planning.
+For Adoption, Unmanagement, or cleanup, read the matching section of [references/workflows.md](references/workflows.md) before planning.

@@ -165,23 +165,6 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
   assert.equal(renamed.result.candidates[0].kind, 'likely-rename');
 
-  const update = await gitPublicationFixture(root);
-  const publication = invoke(tool, 'plan', {
-    workflow: 'publish-git-change', repository: update.repository, slug: 'acceptance-update',
-    workspaceRoot: path.join(root, 'worktrees'), expectedBaseCommit: update.base,
-    changes: [{ path: 'value.txt', content: 'after\n' }],
-    validationCommands: [[process.execPath, '-e', "require('node:fs').accessSync('value.txt')"]],
-    changeSetId: 'acceptance-change-set', changeId: 'fixture', remotePushUrl: update.remote,
-    expectedRemoteBranchCommit: null,
-  }, update.repository, { HOME: home, XDG_CONFIG_HOME: configHome });
-  assert.equal(publication.ok, true, JSON.stringify(publication));
-  assert.equal(git(root, ['--git-dir', update.remote, 'show-ref', '--verify', '--quiet', 'refs/heads/caddie/acceptance-update'], true).status, 1);
-  const published = invoke(tool, 'apply-plan', { plan: publication.result.plan, approval: approve(publication.result.plan) }, update.repository, {
-    HOME: home, XDG_CONFIG_HOME: configHome,
-  });
-  assert.equal(published.ok, true, JSON.stringify(published));
-  assert.equal(git(root, ['--git-dir', update.remote, 'show', 'refs/heads/caddie/acceptance-update:value.txt']).stdout, 'after\n');
-
   const recoveryRoot = path.join(root, 'recovery-project');
   const recoverySource = path.join(recoveryRoot, 'source', 'recoverable');
   const recoveryDestination = path.join(recoveryRoot, '.agents', 'skills', 'recoverable');
@@ -254,21 +237,6 @@ async function projectFixture(root, name, skillName) {
     selections: [{ source: 'authored', path: skillName }],
   }, null, 2)}\n`);
   return { root: projectRoot, source, installed, skillName };
-}
-
-async function gitPublicationFixture(root) {
-  const remote = path.join(root, 'update-remote.git');
-  const seed = path.join(root, 'update-seed');
-  const repository = path.join(root, 'update-repository');
-  git(root, ['init', '--bare', '--initial-branch=main', remote]);
-  git(root, ['init', '--initial-branch=main', seed]);
-  await writeFile(path.join(seed, 'value.txt'), 'before\n');
-  git(seed, ['add', '.']);
-  git(seed, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'base']);
-  git(seed, ['remote', 'add', 'origin', remote]);
-  git(seed, ['push', '-u', 'origin', 'main']);
-  git(root, ['clone', remote, repository]);
-  return { remote, repository, base: git(repository, ['rev-parse', 'HEAD']).stdout.trim() };
 }
 
 function invoke(tool, operation, input, cwd, env) {

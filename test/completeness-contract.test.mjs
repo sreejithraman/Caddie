@@ -270,56 +270,6 @@ test('public Adoption preserves colliding and permission-blocked installations',
   assert.equal(await readFile(path.join(blockedInstalled, 'SKILL.md'), 'utf8'), blockedContent);
 });
 
-test('publication refuses a collaborator-changed remote branch without force-pushing', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'caddie-remote-branch-'));
-  const remote = path.join(root, 'remote.git');
-  const seed = path.join(root, 'seed');
-  const repository = path.join(root, 'repository');
-  git(root, ['init', '--bare', '--initial-branch=main', remote]);
-  git(root, ['init', '--initial-branch=main', seed]);
-  await writeFile(path.join(seed, 'value.txt'), 'before\n');
-  git(seed, ['add', '.']);
-  git(seed, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'base']);
-  git(seed, ['remote', 'add', 'origin', remote]);
-  git(seed, ['push', '-u', 'origin', 'main']);
-  git(root, ['clone', remote, repository]);
-  const base = git(repository, ['rev-parse', 'HEAD']).stdout.trim();
-
-  const plannedPreparation = invoke('plan', {
-    workflow: 'prepare-git-change', repository, slug: 'remote-race',
-    workspaceRoot: path.join(root, 'worktrees'), expectedBaseCommit: base,
-    changes: [{ path: 'value.txt', content: 'ours\n' }],
-    validationCommands: [[process.execPath, '-e', "require('node:fs').accessSync('value.txt')"]],
-  });
-  const prepared = invoke('apply-plan', {
-    plan: plannedPreparation.result.plan, approval: approve(plannedPreparation.result.plan),
-  });
-  assert.equal(prepared.ok, true, JSON.stringify(prepared));
-  const preparation = {
-    ...prepared.result.preparation,
-    id: 'fixture', remote: true, remoteUrl: remote, remotePushUrl: remote,
-    expectedRemoteBranchCommit: null,
-  };
-
-  await writeFile(path.join(seed, 'human.txt'), 'collaborator\n');
-  git(seed, ['add', '.']);
-  git(seed, ['-c', 'user.name=Human', '-c', 'user.email=human@example.test', 'commit', '-m', 'human branch']);
-  git(seed, ['push', 'origin', 'HEAD:refs/heads/caddie/remote-race']);
-  const humanHead = git(root, ['--git-dir', remote, 'rev-parse', 'refs/heads/caddie/remote-race']).stdout.trim();
-
-  const publication = invoke('plan', {
-    workflow: 'publication', changeSetId: 'remote-race', preparations: [preparation],
-  });
-  const rejected = invoke('apply-plan', {
-    plan: publication.result.publicationPlan, approval: approve(publication.result.publicationPlan),
-  });
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.error.code, 'remote-branch-moved');
-  assert.equal(rejected.error.disposition, 'replan');
-  assert.equal(git(root, ['--git-dir', remote, 'rev-parse', 'refs/heads/caddie/remote-race']).stdout.trim(), humanHead);
-  assert.notEqual(humanHead, preparation.headCommit);
-});
-
 function invoke(operation, input) {
   const result = spawnSync(process.execPath, [tool], {
     cwd: repositoryRoot,
@@ -337,10 +287,4 @@ function approve(plan) {
 async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function git(cwd, args) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stderr);
-  return result;
 }

@@ -127,11 +127,3 @@ _Avoid_: Migration log, changelog entry
 **Caddie Plan**:
 An immutable proposal of exact effects and required conditions that can be approved for execution.
 _Avoid_: Migration Proposal, shell script, intent
-
-**Change Set**:
-One approved Caddie outcome coordinated across one or more owning repositories.
-_Avoid_: Caddie Plan, umbrella PR, batch update
-
-**Change Sandbox**:
-An isolated temporary copy used to prepare an approved content change when its owning location is not Git-backed.
-_Avoid_: Worktree, backup
