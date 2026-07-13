@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const { createPlan } = require('../plans');
 const { fingerprint, fingerprintIfPresent } = require('../apply/filesystem');
@@ -101,12 +102,32 @@ async function readLegacyEvidence(candidate) {
   return result;
 }
 
-function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state: 'absent' }, ensureClaude = true, removeLegacy = false }) {
+async function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state: 'absent' }, ensureClaude = true, removeLegacy = false, registration }) {
   const adopted = proposal.entries.filter((entry) => entry.preselected && entry.classification === 'exact');
+  const exposures = [];
+  if (ensureClaude) {
+    const harnesses = scope.id === 'user' ? ['codex', 'claude'] : ['claude'];
+    for (const entry of adopted) {
+      for (const harness of harnesses) {
+        const linkPath = scope.id === 'user'
+          ? path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills', entry.name)
+          : path.join(scope.root, '.claude', 'skills', entry.name);
+        exposures.push({
+          type: 'ensure-harness-exposure',
+          harness,
+          linkPath,
+          targetPath: entry.installedPath,
+          targetFingerprint: entry.installedFingerprint,
+          expected: await expectedExposure(linkPath, entry.installedPath),
+        });
+      }
+    }
+  }
   const content = `${JSON.stringify({
     ...(ledger || {}),
     version: 1,
     scopeId: scope.id,
+    harnessLinks: exposures.map(({ linkPath }) => linkPath),
     entries: adopted.map((entry) => ({
       name: entry.name,
       path: entry.installedPath,
@@ -117,12 +138,8 @@ function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state:
     })),
   }, null, 2)}\n`;
   const operations = [];
-  if (ensureClaude) operations.push({
-    type: 'ensure-claude-exposure',
-    linkPath: path.join(scope.root, '.claude', 'skills'),
-    targetPath: path.join(scope.root, '.agents', 'skills'),
-    expected: { state: 'absent' },
-  });
+  if (registration) operations.push(registration);
+  operations.push(...exposures);
   if (removeLegacy) {
     if (!proposal.legacy.removalRecommended) throw new Error('legacy state cannot be removed before independent verification');
     operations.push({ type: 'remove-legacy-lock', path: proposal.legacy.path, expected: { state: 'file', fingerprint: proposal.legacy.fingerprint } });
@@ -131,10 +148,21 @@ function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { state:
   return createPlan({ kind: 'adopt', scope, operations });
 }
 
+async function expectedExposure(linkPath, targetPath) {
+  const stat = await fs.lstat(linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat) return { state: 'absent' };
+  if (!stat.isSymbolicLink()) throw new Error(`harness exposure collides with existing content: ${linkPath}`);
+  const target = await fs.readlink(linkPath);
+  if (path.resolve(path.dirname(linkPath), target) !== path.resolve(targetPath)) {
+    throw new Error(`harness exposure points at a different skill: ${linkPath}`);
+  }
+  return { state: 'symlink', target };
+}
+
 function createUnmanagementPlan({ scope, ledgerFingerprint, registry }) {
   const operations = [];
   if (registry) operations.push({
-    type: 'write-registry',
+    type: 'write-machine-config',
     path: registry.path,
     content: registry.nextContent,
     expected: { state: 'file', fingerprint: registry.currentFingerprint },
@@ -147,7 +175,7 @@ function createUnmanagementPlan({ scope, ledgerFingerprint, registry }) {
   return createPlan({ kind: 'unmanage', scope, operations });
 }
 
-async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure = false }) {
+async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure = false, removeHarnessExposure = removeClaudeExposure }) {
   const canonicalRoot = path.join(scope.root, '.agents', 'skills');
   const operations = [];
   for (const skillPath of skillPaths) {
@@ -156,10 +184,21 @@ async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure 
     if (!current) throw new Error(`cleanup target is missing: ${skillPath}`);
     operations.push({ type: 'cleanup-preserved-skill', path: skillPath, expected: { state: 'fingerprint', fingerprint: current } });
   }
-  if (removeClaudeExposure) {
-    const exposurePath = path.join(scope.root, '.claude', 'skills');
-    const target = await fs.readlink(exposurePath);
-    operations.push({ type: 'cleanup-exposure', path: exposurePath, expected: { state: 'symlink', target } });
+  if (removeHarnessExposure) {
+    const harnesses = scope.id === 'user' ? ['codex', 'claude'] : ['claude'];
+    for (const harness of harnesses) {
+      const exposurePath = scope.id === 'user'
+        ? path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills')
+        : path.join(scope.root, '.claude', 'skills');
+      for (const skillPath of skillPaths) {
+        const linkPath = path.join(exposurePath, path.basename(skillPath));
+        const target = await fs.readlink(linkPath);
+        if (path.resolve(path.dirname(linkPath), target) !== path.resolve(skillPath)) {
+          throw new Error(`${harness} exposure is not the matching Caddie-managed skill: ${linkPath}`);
+        }
+        operations.push({ type: 'cleanup-exposure', harness, path: linkPath, expected: { state: 'symlink', target } });
+      }
+    }
   }
   return createPlan({ kind: 'cleanup', scope, operations });
 }

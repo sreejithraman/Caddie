@@ -39,8 +39,14 @@ async function fingerprintIfPresent(candidate) {
 async function writeJsonAtomic(candidate, value) {
   await fsp.mkdir(path.dirname(candidate), { recursive: true });
   const temporary = `${candidate}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
-  await fsp.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-  await fsp.rename(temporary, candidate);
+  let published = false;
+  try {
+    await fsp.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    await fsp.rename(temporary, candidate);
+    published = true;
+  } finally {
+    if (!published) await fsp.rm(temporary, { force: true });
+  }
 }
 
 async function copyDirectory(source, destination) {

@@ -17,7 +17,7 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 
 - Keep User Skills available across projects.
 - Add project-owned capabilities through Project Skills.
-- Expose one canonical `.agents/skills` installation to Codex and Claude.
+- Expose each canonical User Skill to the actual Codex and Claude user harness roots without duplicating its content.
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
@@ -36,7 +36,7 @@ Caddie is an Agent App. Users interact through the Caddie Skill, which directs t
 
 The GitHub v1 specification is the normative implementation source.
 
-## Agent Tool
+## Caddie Tool
 
 The deterministic tool accepts one versioned JSON request on standard input:
 

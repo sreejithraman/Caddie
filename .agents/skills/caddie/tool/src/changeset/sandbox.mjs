@@ -1,9 +1,13 @@
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fingerprintDirectory } from '../fingerprint/index.mjs';
 import { invalid, replan } from './errors.mjs';
+
+const require = createRequire(import.meta.url);
+const { hashValue, PLAN_VERSION } = require('../plans');
 
 export async function prepareChangeSandbox(options) {
   const source = path.resolve(required(options.source, 'source'));
@@ -24,14 +28,15 @@ export async function prepareChangeSandbox(options) {
   const operations = diffInventories(beforeFiles, afterFiles);
   if (!operations.length) throw invalid('empty-change', 'Authoring produced no focused change', { source });
   const unsigned = {
-    version: 1,
+    version: PLAN_VERSION,
+    kind: 'sandbox-apply',
     source,
     stageRoot: directory,
     precondition: { fingerprint: before },
     result: { fingerprint: after },
     operations,
   };
-  const applyPlan = { ...unsigned, id: hashJson(unsigned) };
+  const applyPlan = { ...unsigned, id: hashValue(unsigned) };
   return {
     kind: 'sandbox', source, directory,
     sourceFingerprint: before,
@@ -41,23 +46,11 @@ export async function prepareChangeSandbox(options) {
 }
 
 export async function applyChangeSandbox(plan, options = {}) {
-  validatePlan(plan);
-  if (options.approval !== plan.id) throw invalid('approval-mismatch', 'Approval must bind to the exact Change Sandbox plan');
-  const { id, ...unsigned } = plan;
-  if (hashJson(unsigned) !== id) throw invalid('plan-tampered', 'Change Sandbox plan content changed after approval');
-
-  const current = await completeFingerprint(plan.source);
-  if (current.digest !== plan.precondition.fingerprint.digest) {
-    throw replan('sandbox-destination-stale', 'Change Sandbox destination changed after preparation', {
-      expected: plan.precondition.fingerprint.digest, received: current.digest,
-    });
+  const approval = options.approval;
+  if (!approval || approval.version !== PLAN_VERSION || approval.planId !== plan.id || approval.approval !== 'explicit') {
+    throw invalid('unapproved-plan', 'Exact explicit approval is required');
   }
-  const staged = await completeFingerprint(plan.stageRoot);
-  if (staged.digest !== plan.result.fingerprint.digest) {
-    throw replan('sandbox-stage-tampered', 'Staged Change Sandbox content changed after approval', {
-      expected: plan.result.fingerprint.digest, received: staged.digest,
-    });
-  }
+  await verifyChangeSandboxPlan(plan);
 
   const parent = path.dirname(plan.source);
   const transaction = await mkdtemp(path.join(parent, '.caddie-apply-'));
@@ -87,6 +80,25 @@ export async function applyChangeSandbox(plan, options = {}) {
     await rm(transaction, { recursive: true, force: true });
     throw error;
   }
+}
+
+export async function verifyChangeSandboxPlan(plan) {
+  validatePlan(plan);
+  const { id, ...unsigned } = plan;
+  if (hashValue(unsigned) !== id) throw invalid('plan-tampered', 'Change Sandbox plan content changed after approval');
+  const current = await completeFingerprint(plan.source);
+  if (current.digest !== plan.precondition.fingerprint.digest) {
+    throw replan('sandbox-destination-stale', 'Change Sandbox destination changed after preparation', {
+      expected: plan.precondition.fingerprint.digest, received: current.digest,
+    });
+  }
+  const staged = await completeFingerprint(plan.stageRoot);
+  if (staged.digest !== plan.result.fingerprint.digest) {
+    throw replan('sandbox-stage-tampered', 'Staged Change Sandbox content changed after approval', {
+      expected: plan.result.fingerprint.digest, received: staged.digest,
+    });
+  }
+  return { current, staged };
 }
 
 async function completeFingerprint(root) {
@@ -133,7 +145,7 @@ function diffInventories(before, after) {
 }
 
 function validatePlan(plan) {
-  if (!plan || plan.version !== 1 || typeof plan.id !== 'string' || typeof plan.source !== 'string' || typeof plan.stageRoot !== 'string') {
+  if (!plan || plan.version !== PLAN_VERSION || plan.kind !== 'sandbox-apply' || typeof plan.id !== 'string' || typeof plan.source !== 'string' || typeof plan.stageRoot !== 'string') {
     throw invalid('invalid-sandbox-plan', 'Malformed Change Sandbox apply plan');
   }
   if (!plan.precondition?.fingerprint?.digest || !plan.result?.fingerprint?.digest || !Array.isArray(plan.operations)) {
@@ -144,16 +156,6 @@ function validatePlan(plan) {
       throw invalid('invalid-sandbox-operation', 'Change Sandbox operation escapes its destination');
     }
   }
-}
-
-function hashJson(value) {
-  return createHash('sha256').update(canonicalize(value)).digest('hex');
-}
-
-function canonicalize(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`).join(',')}}`;
-  return JSON.stringify(value);
 }
 
 async function boundary(callback, name) {

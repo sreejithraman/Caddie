@@ -53,14 +53,15 @@ For an explicit bird's-eye request, inspect User Skills and every Registered Pro
 
 Use `plan.workflow` to reach preservation-first workflows through the same approval boundary:
 
-- `adoption` builds a plan from exact-match Adoption evidence while preserving modified, unknown, colliding, and permission-blocked entries.
+- `adoption` builds a plan from exact-match Adoption evidence while preserving modified, unknown, colliding, and permission-blocked entries. User-scope plans expose each adopted canonical skill at the actual Codex and Claude user roots.
 - `unmanagement` removes registration and ownership state while keeping Materialized Skills and Agent Harness exposure.
 - `cleanup` is the separate destructive follow-up to Unmanagement.
 - `sandbox-apply` binds a prepared non-Git Change Sandbox.
-- `prepare-git-change` and `prepare-change-sandbox` bind exact file changes and parent validation commands before isolated preparation runs through `apply-plan`.
+- `publish-git-change` binds exact file changes, validation commands, base commit, push destination, remote branch state, and draft-PR metadata so one exact approval covers the focused commit, push, and draft PR. Retrying the same plan safely resumes its existing prepared branch.
+- `prepare-git-change` and `prepare-change-sandbox` bind exact file changes and parent validation commands when preparation must remain separate from publication.
 - `publication` orders a prepared Change Set into dependency waves and, after exact approval, publishes the dependency-free wave with GitHub draft-PR markers or honest non-GitHub fallbacks.
 
-For skill-content changes, obtain approval for the management outcome before preparation. Prepare every repository-local worktree or Change Sandbox, validate each result, then request the publication plan. Publish source waves before resolving consumer locks. Continue later waves with `completedChanges` and matching preparation `dependencyCommits` that bind each dependency's final merged commit. Reverify Git base, head, effective push URL, and remote branch state immediately before each external write; replan on movement.
+For one focused repository change, prefer `publish-git-change` so the user approves the listed commit, push, and draft-PR actions once. For a multi-repository Change Set, prepare every repository-local worktree or Change Sandbox, validate each result, then request the publication plan. Publish source waves before resolving consumer locks. Continue later waves with `completedChanges` and matching preparation `dependencyCommits` that bind each dependency's final merged commit. Reverify Git base, head, effective push URL, and remote branch state immediately before each external write; replan on movement.
 
 ## Preservation vocabulary
 

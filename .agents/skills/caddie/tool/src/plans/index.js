@@ -3,22 +3,10 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
+const { MUTATION_OPERATION_TYPES, RECOVERY_OPERATION_TYPES } = require('../mutations/strategies');
 
 const PLAN_VERSION = 1;
-const OPERATION_TYPES = Object.freeze([
-  'materialize-skill',
-  'ensure-claude-exposure',
-  'write-manifest',
-  'write-lock',
-  'write-registry',
-  'write-ledger',
-  'remove-ledger',
-  'remove-legacy-lock',
-  'cleanup-preserved-skill',
-  'cleanup-exposure',
-  'recover-finish',
-  'recover-rollback',
-]);
+const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
 
 const OPERATION_SET = new Set(OPERATION_TYPES);
 const PLAN_KINDS = new Set(['reconcile', 'adopt', 'unmanage', 'cleanup', 'recovery']);
@@ -105,11 +93,20 @@ function validateOperation(operation, scope, kind) {
     return;
   }
 
-  if (operation.type === 'ensure-claude-exposure') {
-    const expectedPath = path.join(root, '.claude', 'skills');
-    if (path.resolve(operation.linkPath) !== expectedPath || path.resolve(operation.targetPath) !== canonicalRoot) {
-      throw new PlanError('Claude exposure must link .claude/skills to .agents/skills');
+  if (operation.type === 'ensure-harness-exposure') {
+    if (!['codex', 'claude'].includes(operation.harness)) throw new PlanError('harness exposure must name Codex or Claude');
+    if (scope.id !== 'user' && operation.harness !== 'claude') {
+      throw new PlanError('project skills are canonical for Codex and only require Claude exposure');
     }
+    const exposureRoot = scope.id === 'user'
+      ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
+      : path.join(root, '.claude', 'skills');
+    if (path.dirname(path.resolve(operation.linkPath)) !== exposureRoot
+      || path.dirname(path.resolve(operation.targetPath)) !== canonicalRoot
+      || path.basename(operation.linkPath) !== path.basename(operation.targetPath)) {
+      throw new PlanError('harness exposure must link matching direct skill children at the fixed harness and canonical roots');
+    }
+    if (typeof operation.targetFingerprint !== 'string') throw new PlanError('harness exposure must bind the exact target fingerprint');
     validateExpected(operation.expected, 'exposure expected state');
     return;
   }
@@ -129,13 +126,16 @@ function validateOperation(operation, scope, kind) {
     return;
   }
 
-  if (operation.type === 'write-registry') {
+  if (operation.type === 'write-machine-config') {
     assertAbsolute(scope.configRoot, 'scope.configRoot');
-    if (!isInside(scope.configRoot, operation.path) || path.basename(operation.path) !== 'registry.json') {
-      throw new PlanError('registry writes must target registry.json under scope.configRoot');
+    const fixedPath = scope.machineConfigPath
+      ? path.resolve(scope.machineConfigPath)
+      : path.join(path.resolve(scope.configRoot), 'config.json');
+    if (!isInside(scope.configRoot, fixedPath) || path.resolve(operation.path) !== fixedPath) {
+      throw new PlanError('machine configuration writes must target the fixed machineConfigPath under scope.configRoot');
     }
-    validateExpected(operation.expected, 'registry expected state');
-    if (typeof operation.content !== 'string') throw new PlanError('write-registry requires exact content');
+    validateExpected(operation.expected, 'machine configuration expected state');
+    if (typeof operation.content !== 'string') throw new PlanError('write-machine-config requires exact content');
     return;
   }
 
@@ -156,8 +156,13 @@ function validateOperation(operation, scope, kind) {
   }
 
   if (operation.type === 'cleanup-exposure') {
-    if (kind !== 'cleanup' || path.resolve(operation.path) !== path.join(root, '.claude', 'skills')) {
-      throw new PlanError('exposure cleanup is limited to .claude/skills');
+    if (!['codex', 'claude'].includes(operation.harness)) throw new PlanError('cleanup exposure must name Codex or Claude');
+    if (scope.id !== 'user' && operation.harness !== 'claude') throw new PlanError('project cleanup can only remove Claude exposure');
+    const exposureRoot = scope.id === 'user'
+      ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
+      : path.join(root, '.claude', 'skills');
+    if (kind !== 'cleanup' || path.dirname(path.resolve(operation.path)) !== exposureRoot) {
+      throw new PlanError('exposure cleanup is limited to direct skill links under the fixed harness root');
     }
     validateExpected(operation.expected, 'cleanup exposure expected state');
     return;

@@ -1,4 +1,7 @@
 import { createRequire } from 'node:module';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { compareSkillEvidence } from '../compare/index.mjs';
 import { inspect as inspectAvailableSkills } from '../context/inspect.mjs';
 import { applyChangeSandbox, applyPublicationPlan, buildPublicationPlan } from '../changeset/index.mjs';
@@ -10,10 +13,12 @@ import {
 } from '../sources/index.mjs';
 import { ToolError, invalid } from './errors.mjs';
 import { applyPreparationWorkflow, createPreparationWorkflowPlan } from './preparation-workflows.mjs';
+import { planProjectRegistration } from '../registry/plan-registration.mjs';
 
 const require = createRequire(import.meta.url);
 const { createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
+const { fingerprint } = require('../apply/filesystem');
 const { recover } = require('../recovery');
 const {
   createAdoptionPlan,
@@ -66,12 +71,13 @@ async function compareOperation(input) {
   }
 }
 
-async function planOperation(input) {
+async function planOperation(input, runtime) {
   try {
     let plan;
     if (input.workflow === 'adoption') {
       const proposal = await inspectAdoption(input);
-      plan = createAdoptionPlan({ ...input, proposal });
+      const registration = await planProjectRegistration(input, runtime);
+      plan = await createAdoptionPlan({ ...input, scope: registration.scope, proposal, registration: registration.operation });
     } else if (input.workflow === 'unmanagement') {
       plan = createUnmanagementPlan(input);
     } else if (input.workflow === 'cleanup') {
@@ -81,10 +87,21 @@ async function planOperation(input) {
     } else if (input.workflow === 'sandbox-apply') {
       if (!input.preparation?.applyPlan) throw invalid('sandbox-preparation-required', 'A prepared Change Sandbox is required');
       plan = input.preparation.applyPlan;
-    } else if (['prepare-git-change', 'prepare-change-sandbox'].includes(input.workflow)) {
-      plan = createPreparationWorkflowPlan(input);
+    } else if (['prepare-git-change', 'prepare-change-sandbox', 'publish-git-change'].includes(input.workflow)) {
+      plan = await createPreparationWorkflowPlan(input, runtime);
     } else {
-      plan = createPlan(input);
+      if (input.kind === 'reconcile') {
+        const registration = await planProjectRegistration(input, runtime);
+        const operations = registration.operation ? [registration.operation, ...input.operations] : input.operations;
+        const exposedOperations = await withUserHarnessExposures(registration.scope, operations);
+        plan = createPlan({
+          ...input,
+          scope: registration.scope,
+          operations: await bindHarnessOwnershipInLedger(registration.scope, exposedOperations),
+        });
+      } else {
+        plan = createPlan(input);
+      }
     }
     return { plan, coverage: completeCoverage() };
   } catch (error) {
@@ -92,19 +109,114 @@ async function planOperation(input) {
   }
 }
 
+async function bindHarnessOwnershipInLedger(scope, operations) {
+  const plannedHarnessLinks = operations
+    .filter(({ type }) => type === 'ensure-harness-exposure')
+    .map(({ linkPath }) => linkPath);
+  if (plannedHarnessLinks.length === 0) return operations;
+  const ledgerPath = path.join(scope.root, '.agents', '.caddie', 'ledger.json');
+  const plannedLedger = operations.find(({ type }) => type === 'write-ledger');
+  let existingLedger = null;
+  let existingExpected = { state: 'absent' };
+  try {
+    existingLedger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
+    existingExpected = { state: 'file', fingerprint: await fingerprint(ledgerPath) };
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw invalid('invalid-ledger-content', `The existing reconciliation ledger is unreadable: ${ledgerPath}`);
+  }
+  let desiredLedger = existingLedger ?? { version: 1, scopeId: scope.id, entries: [] };
+  if (plannedLedger) {
+    try { desiredLedger = JSON.parse(plannedLedger.content); } catch (_) {
+      throw invalid('invalid-ledger-content', 'The reconciliation ledger content must be valid JSON');
+    }
+  }
+  const entries = [...(existingLedger?.entries ?? [])];
+  for (const desiredEntry of desiredLedger.entries ?? []) upsertLedgerEntry(entries, desiredEntry);
+  for (const materialization of operations.filter(({ type }) => type === 'materialize-skill')) {
+    const index = entries.findIndex((entry) => sameLedgerEntry(entry, materialization.name, materialization.destinationPath));
+    const current = index >= 0 ? entries[index] : {};
+    const next = {
+      ...current,
+      name: materialization.name,
+      path: materialization.destinationPath,
+      fingerprint: materialization.sourceFingerprint,
+    };
+    if (index >= 0) entries[index] = next;
+    else entries.push(next);
+  }
+  const harnessLinks = [...new Set([
+    ...(existingLedger?.harnessLinks ?? []),
+    ...(desiredLedger.harnessLinks ?? []),
+    ...plannedHarnessLinks,
+  ])].sort();
+  const content = `${JSON.stringify({ ...desiredLedger, version: 1, scopeId: scope.id, harnessLinks, entries }, null, 2)}\n`;
+  if (!plannedLedger) {
+    return [...operations, { type: 'write-ledger', path: ledgerPath, content, expected: existingExpected }];
+  }
+  return operations.map((operation) => operation === plannedLedger ? { ...operation, content } : operation);
+}
+
+function upsertLedgerEntry(entries, next) {
+  const index = entries.findIndex((entry) => sameLedgerEntry(entry, next?.name, next?.path));
+  if (index >= 0) entries[index] = next;
+  else entries.push(next);
+}
+
+function sameLedgerEntry(entry, name, candidatePath) {
+  return (typeof entry?.name === 'string' && typeof name === 'string' && entry.name === name)
+    || (typeof entry?.path === 'string' && typeof candidatePath === 'string'
+      && path.resolve(entry.path) === path.resolve(candidatePath));
+}
+
+async function withUserHarnessExposures(scope, operations) {
+  if (scope.id !== 'user') return operations;
+  const result = [...operations];
+  const existing = new Set(operations.filter(({ type }) => type === 'ensure-harness-exposure').map(({ linkPath }) => path.resolve(linkPath)));
+  for (const materialization of operations.filter(({ type }) => type === 'materialize-skill')) {
+    for (const harness of ['codex', 'claude']) {
+      const linkPath = path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills', materialization.name);
+      if (existing.has(path.resolve(linkPath))) continue;
+      result.push({
+        type: 'ensure-harness-exposure',
+        harness,
+        linkPath,
+        targetPath: materialization.destinationPath,
+        targetFingerprint: materialization.sourceFingerprint,
+        expected: await expectedExposure(linkPath, materialization.destinationPath),
+      });
+    }
+  }
+  return result;
+}
+
+async function expectedExposure(linkPath, targetPath) {
+  const stat = await fs.lstat(linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat) return { state: 'absent' };
+  if (!stat.isSymbolicLink()) throw invalid('harness-exposure-collision', `Harness exposure collides with existing content: ${linkPath}`);
+  const target = await fs.readlink(linkPath);
+  if (path.resolve(path.dirname(linkPath), target) !== path.resolve(targetPath)) {
+    throw invalid('harness-exposure-collision', `Harness exposure points at a different skill: ${linkPath}`);
+  }
+  return { state: 'symlink', target };
+}
+
 async function applyPlanOperation(input) {
   try {
-    if (input.plan?.kind === 'publication') {
-      return { ...(await applyPublicationPlan(input.plan, input.approval)), coverage: completeCoverage() };
-    }
-    if (['prepare-git-change', 'prepare-change-sandbox'].includes(input.plan?.kind)) {
+    const kind = input.plan?.kind;
+    if (kind === 'publication') return { ...(await applyPublicationPlan(input.plan, input.approval)), coverage: completeCoverage() };
+    if (kind === 'prepare-git-change' || kind === 'prepare-change-sandbox') {
       return { preparation: await applyPreparationWorkflow(input.plan, input.approval), coverage: completeCoverage() };
     }
-    if (input.plan?.stageRoot && input.plan?.precondition && input.plan?.result) {
-      const approval = typeof input.approval === 'string' ? input.approval : input.approval?.planId;
-      return { ...(await applyChangeSandbox(input.plan, { approval })), coverage: completeCoverage() };
+    if (kind === 'publish-git-change') {
+      return { ...(await applyPreparationWorkflow(input.plan, input.approval)), coverage: completeCoverage() };
     }
-    return { ...(await applyPlan(input)), coverage: completeCoverage() };
+    if (kind === 'sandbox-apply') {
+      return { ...(await applyChangeSandbox(input.plan, { approval: input.approval })), coverage: completeCoverage() };
+    }
+    if (['reconcile', 'adopt', 'unmanage', 'cleanup', 'recovery'].includes(kind)) {
+      return { ...(await applyPlan(input)), coverage: completeCoverage() };
+    }
+    throw invalid('unsupported-plan-kind', `Unsupported apply plan kind: ${kind ?? 'missing'}`);
   } catch (error) {
     throw normaliseOperationError(error);
   }

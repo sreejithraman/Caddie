@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { access, cp, mkdir, mkdtemp, readFile, readlink, stat, symlink, writeFile } = require('node:fs/promises');
+const { access, cp, mkdir, mkdtemp, readFile, readlink, realpath, stat, symlink, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -23,18 +23,18 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   assert.equal(manifest.scope, 'user');
   assert.equal(manifest.sources.caddie.type, 'git');
   assert.equal(lock.sources.caddie.commit, commit);
-  assert.deepEqual(Object.keys(ledger), ['version', 'scopeId', 'entries']);
+  assert.deepEqual(Object.keys(ledger), ['version', 'scopeId', 'harnessLinks', 'entries']);
   assert.equal(ledger.scopeId, 'user');
   assert.equal(ledger.entries[0].source, 'caddie');
-  assert.equal(ledger.entries[0].fingerprint.algorithm, 'sha256-tree-v1');
-  assert.equal(ledger.entries[0].fingerprint.complete, true);
+  assert.equal(typeof ledger.entries[0].fingerprint, 'string');
   const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
   const installedFingerprint = await fingerprintDirectory(path.join(userHome, '.agents/skills/caddie'));
-  assert.equal(ledger.entries[0].fingerprint.digest, installedFingerprint.digest);
+  assert.equal(ledger.entries[0].fingerprint, installedFingerprint.digest);
   assert.equal(
-    await readlink(path.join(userHome, '.claude/skills')),
-    '../.agents/skills',
+    await readlink(path.join(home, '.claude/skills/caddie')),
+    path.relative(path.join(home, '.claude', 'skills'), path.join(userHome, '.agents', 'skills', 'caddie')),
   );
+  assert.equal(await realpath(path.join(home, '.agents/skills/caddie')), await realpath(path.join(userHome, '.agents/skills/caddie')));
   assert.equal(
     (await stat(path.join(userHome, '.agents/skills/caddie/SKILL.md'))).isFile(),
     true,
@@ -69,11 +69,62 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   const inspected = JSON.parse(selfInspection.stdout);
   assert.equal(inspected.result.availableSkills[0].name, 'caddie');
   assert.equal(inspected.coverage.issues.some((issue) => issue.code === 'git-lock-invalid'), false);
+
+  const installedToolPath = path.join(userHome, '.agents/skills/caddie/tool/caddie.mjs');
+  const ledgerPath = path.join(userHome, '.agents/.caddie/ledger.json');
+  const { fingerprint } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
+  const planned = spawnSync(process.execPath, [installedToolPath], {
+    cwd: userHome,
+    encoding: 'utf8',
+    input: JSON.stringify({
+      version: 1,
+      operation: 'plan',
+      input: {
+        kind: 'reconcile',
+        scope: { id: 'user', root: userHome },
+        operations: [
+          {
+            type: 'materialize-skill',
+            name: 'caddie',
+            sourcePath: path.join(fixture.sourceRoot, '.agents/skills/caddie'),
+            destinationPath: path.join(userHome, '.agents/skills/caddie'),
+            sourceFingerprint: installedFingerprint.digest,
+            expectedDestination: { state: 'fingerprint', fingerprint: installedFingerprint.digest },
+          },
+          {
+            type: 'write-ledger',
+            path: ledgerPath,
+            content: await readFile(ledgerPath, 'utf8'),
+            expected: { state: 'file', fingerprint: await fingerprint(ledgerPath) },
+          },
+        ],
+      },
+    }),
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: configHome },
+  });
+  assert.equal(planned.status, 0, planned.stderr || planned.stdout);
+  const planEnvelope = JSON.parse(planned.stdout);
+  assert.equal(planEnvelope.ok, true, planned.stdout);
+  const applied = spawnSync(process.execPath, [installedToolPath], {
+    cwd: userHome,
+    encoding: 'utf8',
+    input: JSON.stringify({
+      version: 1,
+      operation: 'apply-plan',
+      input: {
+        plan: planEnvelope.result.plan,
+        approval: { version: 1, planId: planEnvelope.result.plan.id, approval: 'explicit' },
+      },
+    }),
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: configHome },
+  });
+  assert.equal(applied.status, 0, applied.stderr || applied.stdout);
+  assert.equal(JSON.parse(applied.stdout).result.status, 'applied');
 });
 
 test('bootstrap preflights every destination before mutating user state', async () => {
   const fixture = await bootstrapFixture();
-  const exposure = path.join(fixture.userHome, '.claude', 'skills');
+  const exposure = path.join(fixture.home, '.claude', 'skills', 'caddie');
   await mkdir(path.dirname(exposure), { recursive: true });
   await symlink('../existing-skills', exposure);
 
@@ -95,7 +146,8 @@ test('bootstrap rolls back every published artifact after an interrupted atomic 
       path.join(fixture.userHome, 'caddie.json'),
       path.join(fixture.userHome, 'caddie.lock'),
       path.join(fixture.userHome, '.agents', 'skills', 'caddie'),
-      path.join(fixture.userHome, '.claude', 'skills'),
+      path.join(fixture.home, '.agents', 'skills', 'caddie'),
+      path.join(fixture.home, '.claude', 'skills', 'caddie'),
       path.join(fixture.userHome, '.agents', '.caddie', 'ledger.json'),
       path.join(fixture.configHome, 'caddie', 'config.json'),
     ]) await assert.rejects(access(candidate));

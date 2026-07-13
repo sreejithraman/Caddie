@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
 import {
   buildPublicationPlan,
   applyPublicationPlan,
@@ -14,8 +15,14 @@ import {
   prepareGitChange,
   verifyGitPreparation,
 } from '../.agents/skills/caddie/tool/src/changeset/index.mjs';
+import {
+  applyPreparationWorkflow,
+  createPreparationWorkflowPlan,
+} from '../.agents/skills/caddie/tool/src/protocol/preparation-workflows.mjs';
 
 const exec = promisify(execFile);
+const require = createRequire(import.meta.url);
+const { hashValue } = require('../.agents/skills/caddie/tool/src/plans');
 
 test('prepares one validated focused commit from freshly fetched origin/main without touching primary files', async () => {
   const fixture = await gitFixture();
@@ -38,6 +45,55 @@ test('prepares one validated focused commit from freshly fetched origin/main wit
   assert.equal(await readFile(path.join(fixture.primary, 'local.txt'), 'utf8'), 'uncommitted primary work\n');
   assert.equal((await git(prepared.worktree, ['rev-list', '--count', `${fixture.base}..HEAD`])).stdout.trim(), '1');
   assert.equal(await verifyGitPreparation(prepared), true);
+});
+
+test('one exact approval covers focused commit preparation, push, and draft PR publication', async () => {
+  const remote = 'git@github.com:owner/source.git';
+  const plan = await createPreparationWorkflowPlan({
+    workflow: 'publish-git-change',
+    repository: '/repos/source',
+    slug: 'focused-change',
+    workspaceRoot: '/worktrees',
+    expectedBaseCommit: 'a'.repeat(40),
+    changes: [{ path: 'skill.txt', content: 'after\n' }],
+    validationCommands: [['node', '--test']],
+    changeSetId: 'change-set-one-approval',
+    changeId: 'source',
+    remotePushUrl: remote,
+    expectedRemoteBranchCommit: null,
+    title: 'Improve source skill',
+  }, {
+    previewGitChange: async () => ({ headCommit: 'b'.repeat(40) }),
+  });
+  assert.equal(plan.publication.headCommit, 'b'.repeat(40));
+  const approval = approvalFor(plan);
+  const calls = [];
+  const preparation = {
+    ...gitPreparation('source', remote),
+    repository: '/repos/source',
+    branch: 'caddie/focused-change',
+    baseCommit: 'a'.repeat(40),
+    headCommit: 'b'.repeat(40),
+  };
+
+  const result = await applyPreparationWorkflow(plan, approval, {
+    prepareGitChange: async () => preparation,
+    verifyGitPreparation: async () => true,
+    execFile: async (command, args) => {
+      calls.push([command, args]);
+      if (args.includes('get-url')) return { stdout: `${remote}\n` };
+      if (args.at(-1) === 'HEAD') return { stdout: `${preparation.headCommit}\n` };
+      if (command === 'gh' && args[1] === 'list') return { stdout: '[]\n' };
+      if (command === 'gh' && args[1] === 'create') return { stdout: 'https://github.com/owner/source/pull/1\n' };
+      return { stdout: '' };
+    },
+  });
+
+  assert.equal(result.preparation.headCommit, preparation.headCommit);
+  assert.equal(result.preparation.headCommit, plan.publication.headCommit);
+  assert.equal(result.publication.published[0].pullRequestUrl, 'https://github.com/owner/source/pull/1');
+  assert.equal(calls.some(([command, args]) => command === 'git' && args[2] === 'push'), true);
+  assert.equal(calls.some(([command, args]) => command === 'gh' && args[1] === 'create'), true);
 });
 
 test('refuses an approved base that moved and detects later remote movement', async () => {
@@ -102,7 +158,10 @@ test('prepares a non-Git Change Sandbox with a reviewable apply plan', async () 
 
   assert.equal(await readFile(path.join(source, 'SKILL.md'), 'utf8'), 'before\n');
   assert.equal(prepared.applyPlan.version, 1);
+  assert.equal(prepared.applyPlan.kind, 'sandbox-apply');
   assert.equal(typeof prepared.applyPlan.id, 'string');
+  const { id, ...payload } = prepared.applyPlan;
+  assert.equal(id, hashValue(payload));
   assert.equal(prepared.applyPlan.stageRoot, prepared.directory);
   assert.deepEqual(prepared.applyPlan.operations.map(({ type, path: file }) => [type, file]), [
     ['write', 'new.txt'],
@@ -112,14 +171,18 @@ test('prepares a non-Git Change Sandbox with a reviewable apply plan', async () 
 
 test('applies approved sandbox bytes atomically and rejects tampering or stale destinations', async () => {
   const prepared = await sandboxFixture();
-  const result = await applyChangeSandbox(prepared.applyPlan, { approval: prepared.applyPlan.id });
+  await assert.rejects(
+    applyChangeSandbox(prepared.applyPlan, { approval: prepared.applyPlan.id }),
+    { code: 'unapproved-plan', disposition: 'invalid' },
+  );
+  const result = await applyChangeSandbox(prepared.applyPlan, { approval: approvalFor(prepared.applyPlan) });
   assert.equal(result.applied, true);
   assert.equal(await readFile(path.join(prepared.source, 'SKILL.md'), 'utf8'), 'after\n');
 
   const tampered = await sandboxFixture();
   await writeFile(path.join(tampered.directory, 'SKILL.md'), 'tampered\n');
   await assert.rejects(
-    applyChangeSandbox(tampered.applyPlan, { approval: tampered.applyPlan.id }),
+    applyChangeSandbox(tampered.applyPlan, { approval: approvalFor(tampered.applyPlan) }),
     { code: 'sandbox-stage-tampered', disposition: 'replan' },
   );
   assert.equal(await readFile(path.join(tampered.source, 'SKILL.md'), 'utf8'), 'before\n');
@@ -127,7 +190,7 @@ test('applies approved sandbox bytes atomically and rejects tampering or stale d
   const stale = await sandboxFixture();
   await writeFile(path.join(stale.source, 'SKILL.md'), 'human work\n');
   await assert.rejects(
-    applyChangeSandbox(stale.applyPlan, { approval: stale.applyPlan.id }),
+    applyChangeSandbox(stale.applyPlan, { approval: approvalFor(stale.applyPlan) }),
     { code: 'sandbox-destination-stale', disposition: 'replan' },
   );
   assert.equal(await readFile(path.join(stale.source, 'SKILL.md'), 'utf8'), 'human work\n');
@@ -138,7 +201,7 @@ test('rolls back the entire sandbox destination when publication is interrupted'
     const prepared = await sandboxFixture();
     await assert.rejects(
       applyChangeSandbox(prepared.applyPlan, {
-        approval: prepared.applyPlan.id,
+        approval: approvalFor(prepared.applyPlan),
         onBoundary(name) { if (name === failurePoint) throw new Error(`interrupt ${name}`); },
       }),
       new RegExp(`interrupt ${failurePoint}`),
@@ -176,6 +239,29 @@ test('builds dependency waves and reconstructable GitHub draft markers with hone
   assert.equal(plan.waves.flat().find(({ id }) => id === 'sandbox').workflow, 'review-apply-plan');
 });
 
+test('validates local-only preparations, including local base refs, before reporting them ready', async () => {
+  const preparation = {
+    ...gitPreparation('local', null),
+    baseRef: 'main',
+  };
+  const plan = buildPublicationPlan({ changeSetId: 'change-set-local', preparations: [preparation] });
+  let verified = false;
+  const result = await applyPublicationPlan(plan, approvalFor(plan), {
+    verifyGitPreparation: async (received) => {
+      assert.deepEqual(received, preparation);
+      verified = true;
+    },
+    execFile: async (command, args) => {
+      assert.equal(command, 'git');
+      assert.deepEqual(args, ['-C', preparation.worktree, 'rev-parse', 'HEAD']);
+      return { stdout: `${preparation.headCommit}\n` };
+    },
+  });
+
+  assert.equal(verified, true);
+  assert.deepEqual(result.published, [{ id: 'local', workflow: 'local-branch', externalWrite: false }]);
+});
+
 test('publishes an immutable exactly approved GitHub plan to its bound destination', async () => {
   const preparation = gitPreparation('source', 'git@github.com:owner/source.git');
   const plan = buildPublicationPlan({ changeSetId: 'change-set-42', preparations: [preparation] });
@@ -188,18 +274,19 @@ test('publishes an immutable exactly approved GitHub plan to its bound destinati
       calls.push([command, args]);
       if (command === 'git' && args.includes('get-url')) return { stdout: `${preparation.remotePushUrl}\n` };
       if (command === 'git' && args.at(-1) === 'HEAD') return { stdout: `${preparation.headCommit}\n` };
+      if (command === 'gh' && args[1] === 'list') return { stdout: '[]\n' };
       if (command === 'gh') return { stdout: 'https://github.com/owner/source/pull/1\n' };
       return { stdout: '' };
     },
   });
   assert.equal(result.applied, true);
   assert.equal(result.published[0].pullRequestUrl, 'https://github.com/owner/source/pull/1');
-  assert.deepEqual(calls[2], ['git', [
-    '-C', preparation.worktree, 'push', 'origin',
+  assert.deepEqual(calls[4], ['git', [
+    '-C', preparation.worktree, 'push', preparation.remotePushUrl,
     `${preparation.headCommit}:refs/heads/${preparation.branch}`,
     `--force-with-lease=refs/heads/${preparation.branch}:`,
   ]]);
-  assert.deepEqual(calls[3][1].slice(0, 6), ['pr', 'create', '--draft', '--repo', 'owner/source', '--base']);
+  assert.deepEqual(calls[5][1].slice(0, 6), ['pr', 'create', '--draft', '--repo', 'owner/source', '--base']);
   await assert.rejects(applyPublicationPlan(plan, { version: 1, approval: 'explicit', planId: 'wrong' }), {
     code: 'unapproved-plan',
   });
@@ -224,8 +311,10 @@ test('publication rejects a repointed remote and stops before dependent waves', 
     verifyGitPreparation: async () => true,
     execFile: async (command, args) => {
       commands.push([command, args]);
-      if (args.includes('get-url')) return { stdout: `${source.remotePushUrl}\n` };
-      if (args.at(-1) === 'HEAD') return { stdout: `${source.headCommit}\n` };
+      const target = args.includes(consumer.worktree) ? consumer : source;
+      if (args.includes('get-url')) return { stdout: `${target.remotePushUrl}\n` };
+      if (args.at(-1) === 'HEAD') return { stdout: `${target.headCommit}\n` };
+      if (command === 'gh' && args[1] === 'list') return { stdout: '[]\n' };
       if (command === 'gh') return { stdout: 'https://github.com/owner/source/pull/2\n' };
       return { stdout: '' };
     },
@@ -234,7 +323,8 @@ test('publication rejects a repointed remote and stops before dependent waves', 
   assert.deepEqual(result.published.map(({ id }) => id), ['source']);
   assert.equal(result.remainingWaves, 1);
   assert.equal(result.requiresReplan, true);
-  assert.equal(commands.some(([, args]) => args.includes(consumer.worktree)), false);
+  assert.equal(commands.some(([, args]) => args.includes(consumer.worktree)), true);
+  assert.equal(commands.some(([, args]) => args[2] === 'push' && args.includes(consumer.worktree)), false);
 
   await assert.rejects(applyPublicationPlan(plan, approval, {
     verifyGitPreparation: async () => true,
@@ -244,6 +334,84 @@ test('publication rejects a repointed remote and stops before dependent waves', 
     verifyGitPreparation: async () => true,
     execFile: async () => ({ stdout: `${source.remotePushUrl}\ngit@github.com:attacker/extra.git\n` }),
   }), { code: 'remote-destination-moved', disposition: 'replan' });
+});
+
+test('publication resumes idempotently after a push succeeded before PR creation', async () => {
+  const preparation = gitPreparation('resume', 'git@github.com:owner/resume.git');
+  const plan = buildPublicationPlan({ changeSetId: 'change-set-resume', preparations: [preparation] });
+  const approval = { version: 1, approval: 'explicit', planId: plan.id };
+  let remoteHead = null;
+  let createAttempts = 0;
+  const runtime = {
+    verifyGitPreparation: async () => true,
+    execFile: async (command, args) => {
+      if (args.includes('get-url')) return { stdout: `${preparation.remotePushUrl}\n` };
+      if (args.at(-1) === 'HEAD') return { stdout: `${preparation.headCommit}\n` };
+      if (command === 'git' && args[0] === 'ls-remote') return { stdout: remoteHead ? `${remoteHead}\trefs/heads/${preparation.branch}\n` : '' };
+      if (command === 'git' && args[2] === 'push') { remoteHead = preparation.headCommit; return { stdout: '' }; }
+      if (command === 'gh' && args[1] === 'list') return { stdout: '[]\n' };
+      if (command === 'gh' && args[1] === 'create') {
+        createAttempts += 1;
+        if (createAttempts === 1) throw new Error('GitHub unavailable');
+        return { stdout: 'https://github.com/owner/resume/pull/1\n' };
+      }
+      return { stdout: '' };
+    },
+  };
+  await assert.rejects(applyPublicationPlan(plan, approval, runtime), { code: 'publication-interrupted' });
+  const result = await applyPublicationPlan(plan, approval, runtime);
+  assert.equal(result.published[0].pullRequestUrl, 'https://github.com/owner/resume/pull/1');
+  assert.equal(createAttempts, 2);
+});
+
+test('publication resumes an existing draft after humans add PR context around its exact markers', async () => {
+  const preparation = gitPreparation('edited-pr', 'git@github.com:owner/edited-pr.git');
+  const plan = buildPublicationPlan({ changeSetId: 'change-set-edited-pr', preparations: [preparation] });
+  const entry = plan.waves[0][0];
+  let created = false;
+  const result = await applyPublicationPlan(plan, { version: 1, approval: 'explicit', planId: plan.id }, {
+    verifyGitPreparation: async () => true,
+    execFile: async (command, args) => {
+      if (args.includes('get-url')) return { stdout: `${preparation.remotePushUrl}\n` };
+      if (args.at(-1) === 'HEAD') return { stdout: `${preparation.headCommit}\n` };
+      if (command === 'git' && args[0] === 'ls-remote') return { stdout: `${preparation.headCommit}\trefs/heads/${preparation.branch}\n` };
+      if (command === 'gh' && args[1] === 'list') return { stdout: `${JSON.stringify([{
+        url: 'https://github.com/owner/edited-pr/pull/1',
+        title: 'Human-friendly title',
+        body: `Why this change matters.\n\n${entry.bodyMarkers}\n\nTesting notes.`,
+        isDraft: true,
+      }])}\n` };
+      if (command === 'gh' && args[1] === 'create') created = true;
+      return { stdout: '' };
+    },
+  });
+  assert.equal(result.published[0].pullRequestUrl, 'https://github.com/owner/edited-pr/pull/1');
+  assert.equal(created, false);
+});
+
+test('publication validates every prepared sandbox before the first external write', async () => {
+  const source = gitPreparation('source', 'git@github.com:owner/source.git');
+  const sandbox = { ...(await sandboxFixture()), id: 'consumer-sandbox' };
+  await writeFile(path.join(sandbox.directory, 'SKILL.md'), 'tampered after preparation\n');
+  const plan = buildPublicationPlan({
+    changeSetId: 'change-set-sandbox-preflight',
+    preparations: [source, sandbox],
+    dependencies: [{ from: 'source', to: 'consumer-sandbox' }],
+  });
+  let pushed = false;
+  await assert.rejects(applyPublicationPlan(plan, {
+    version: 1, approval: 'explicit', planId: plan.id,
+  }, {
+    verifyGitPreparation: async () => true,
+    execFile: async (command, args) => {
+      if (args.includes('get-url')) return { stdout: `${source.remotePushUrl}\n` };
+      if (args.at(-1) === 'HEAD') return { stdout: `${source.headCommit}\n` };
+      if (command === 'gh' && args[1] === 'list') return { stdout: '[]\n' };
+      if (command === 'git' && args[2] === 'push') pushed = true;
+      return { stdout: '' };
+    },
+  }), { code: 'sandbox-stage-tampered' });
+  assert.equal(pushed, false);
 });
 
 test('publication continues a Change Set only with exact merged dependency evidence', () => {
@@ -302,6 +470,10 @@ async function sandboxFixture() {
     validate: async () => {},
   });
   return prepared;
+}
+
+function approvalFor(plan) {
+  return { version: 1, planId: plan.id, approval: 'explicit' };
 }
 
 async function gitFixture() {

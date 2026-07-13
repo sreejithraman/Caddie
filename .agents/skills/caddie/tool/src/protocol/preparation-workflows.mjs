@@ -1,22 +1,30 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { prepareChangeSandbox, prepareGitChange } from '../changeset/index.mjs';
+import {
+  applyPublicationPlan,
+  buildPublicationPlan,
+  prepareChangeSandbox,
+  prepareGitChange,
+  resumeGitChange,
+} from '../changeset/index.mjs';
+import { replan } from '../changeset/errors.mjs';
 import { invalid } from './errors.mjs';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const { hashValue } = require('../plans');
 
-const KINDS = new Set(['prepare-git-change', 'prepare-change-sandbox']);
+const KINDS = new Set(['prepare-git-change', 'prepare-change-sandbox', 'publish-git-change']);
 
-export function createPreparationWorkflowPlan(input) {
+export async function createPreparationWorkflowPlan(input, runtime = {}) {
   const kind = input.workflow;
   if (!KINDS.has(kind)) throw new TypeError(`Unsupported preparation workflow: ${kind}`);
-  if (kind === 'prepare-git-change' && !isExactCommit(input.expectedBaseCommit)) {
+  if (['prepare-git-change', 'publish-git-change'].includes(kind) && !isExactCommit(input.expectedBaseCommit)) {
     throw invalid(
       'expected-base-commit-required',
       'Git preparation requires an exact expectedBaseCommit before approval',
@@ -24,23 +32,91 @@ export function createPreparationWorkflowPlan(input) {
   }
   const changes = validateChanges(input.changes);
   const validationCommands = validateCommands(input.validationCommands);
-  const request = kind === 'prepare-git-change'
+  const request = kind !== 'prepare-change-sandbox'
     ? pick(input, ['repository', 'slug', 'baseRef', 'expectedBaseCommit', 'workspaceRoot', 'message', 'authorName', 'authorEmail', 'dependencyCommits'])
     : pick(input, ['source', 'slug', 'workspaceRoot']);
-  const payload = { version: 1, kind, request, changes, validationCommands };
+  if (kind === 'publish-git-change') {
+    const timestamp = exactTimestamp(input.commitTimestamp ?? new Date().toISOString());
+    request.authorDate = timestamp;
+    request.committerDate = timestamp;
+  }
+  let publication;
+  if (kind === 'publish-git-change') {
+    const callbacks = {
+      author: ({ directory }) => applyChanges(directory, changes),
+      validate: ({ directory }) => runValidation(directory, validationCommands),
+    };
+    const preview = await (runtime.previewGitChange ?? previewGitChange)({ ...request, ...callbacks });
+    publication = validatePublication({ ...input, headCommit: preview.headCommit });
+  }
+  const payload = { version: 1, kind, request, changes, validationCommands, ...(publication ? { publication } : {}) };
   return Object.freeze({ ...payload, id: hashValue(payload) });
 }
 
-export async function applyPreparationWorkflow(plan, approval) {
+export async function applyPreparationWorkflow(plan, approval, runtime = {}) {
   verifyPreparationPlan(plan, approval);
   const callbacks = {
     author: ({ directory }) => applyChanges(directory, plan.changes),
     validate: ({ directory }) => runValidation(directory, plan.validationCommands),
   };
   if (plan.kind === 'prepare-git-change') {
-    return prepareGitChange({ ...plan.request, ...callbacks });
+    return (runtime.prepareGitChange ?? prepareGitChange)({ ...plan.request, ...callbacks });
   }
-  return prepareChangeSandbox({ ...plan.request, ...callbacks });
+  if (plan.kind === 'publish-git-change') {
+    const approved = plan.publication;
+    const preparationOptions = {
+      ...plan.request,
+      ...callbacks,
+      expectedChangedFiles: plan.changes.map(({ path: changedPath }) => changedPath),
+      expectedHeadCommit: approved.headCommit,
+    };
+    let preparation;
+    try {
+      preparation = await (runtime.prepareGitChange ?? prepareGitChange)(preparationOptions);
+    } catch (error) {
+      if (error?.code !== 'branch-already-exists') throw error;
+      preparation = await (runtime.resumeGitChange ?? resumeGitChange)(preparationOptions);
+    }
+    if (preparation.headCommit !== approved.headCommit) {
+      throw replan('prepared-commit-mismatch', 'Prepared commit differs from the exact commit approved by the user', {
+        expected: approved.headCommit, received: preparation.headCommit,
+      });
+    }
+    if (preparation.remotePushUrl !== approved.remotePushUrl) {
+      throw replan('remote-destination-moved', 'Prepared Git push destination differs from the approved workflow', {
+        expected: approved.remotePushUrl, received: preparation.remotePushUrl,
+      });
+    }
+    const liveRemoteHead = preparation.expectedRemoteBranchCommit;
+    if (liveRemoteHead !== approved.expectedRemoteBranchCommit && liveRemoteHead !== preparation.headCommit) {
+      throw replan('remote-branch-moved', 'Publication branch changed after workflow approval', {
+        expected: approved.expectedRemoteBranchCommit, received: liveRemoteHead,
+      });
+    }
+    const boundPreparation = {
+      ...preparation,
+      id: approved.changeId,
+      title: approved.title,
+      expectedRemoteBranchCommit: approved.expectedRemoteBranchCommit,
+    };
+    const publicationPlan = buildPublicationPlan({
+      changeSetId: approved.changeSetId,
+      preparations: [boundPreparation],
+    });
+    const derivedApproval = {
+      version: 1,
+      planId: publicationPlan.id,
+      approval: 'derived-from-approved-workflow',
+      parentPlanId: plan.id,
+    };
+    const publication = await (runtime.applyPublicationPlan ?? applyPublicationPlan)(
+      publicationPlan,
+      derivedApproval,
+      { ...runtime, approvedParentPlanId: plan.id },
+    );
+    return { preparation: boundPreparation, publication };
+  }
+  return (runtime.prepareChangeSandbox ?? prepareChangeSandbox)({ ...plan.request, ...callbacks });
 }
 
 function verifyPreparationPlan(plan, approval) {
@@ -54,6 +130,54 @@ function verifyPreparationPlan(plan, approval) {
   }
   validateChanges(plan.changes);
   validateCommands(plan.validationCommands);
+  if (plan.kind === 'publish-git-change') validatePublication(plan.publication);
+}
+
+function validatePublication(input) {
+  const publication = input.publication ?? input;
+  const required = ['changeSetId', 'changeId', 'remotePushUrl'];
+  for (const field of required) {
+    if (typeof publication[field] !== 'string' || !publication[field]) throw new TypeError(`${field} is required for approved publication`);
+  }
+  if (publication.expectedRemoteBranchCommit !== null && !isExactCommit(publication.expectedRemoteBranchCommit)) {
+    throw new TypeError('expectedRemoteBranchCommit must be null or an exact commit');
+  }
+  if (publication.title !== undefined && (typeof publication.title !== 'string' || !publication.title)) {
+    throw new TypeError('Publication title must be a non-empty string');
+  }
+  if (!isExactCommit(publication.headCommit)) throw new TypeError('Publication must bind the exact prepared headCommit');
+  return {
+    changeSetId: publication.changeSetId,
+    changeId: publication.changeId,
+    remotePushUrl: publication.remotePushUrl,
+    expectedRemoteBranchCommit: publication.expectedRemoteBranchCommit,
+    headCommit: publication.headCommit.toLowerCase(),
+    ...(publication.title ? { title: publication.title } : {}),
+  };
+}
+
+async function previewGitChange(options) {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-publication-preview-'));
+  const repository = path.join(root, 'repository');
+  try {
+    await execFileAsync('git', ['clone', '--mirror', '--no-hardlinks', path.resolve(options.repository), repository], { encoding: 'utf8' });
+    await execFileAsync('git', ['-C', repository, 'update-ref', 'refs/heads/caddie-preview-base', options.expectedBaseCommit], { encoding: 'utf8' });
+    return await prepareGitChange({
+      ...options,
+      repository,
+      baseRef: 'caddie-preview-base',
+      workspaceRoot: path.join(root, 'worktrees'),
+      cleanupFailedWorktree: true,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function exactTimestamp(value) {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) throw new TypeError('commitTimestamp must be an exact date-time');
+  return parsed.toISOString();
 }
 
 async function applyChanges(root, changes) {

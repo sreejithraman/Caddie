@@ -32,10 +32,12 @@ async function main() {
   const caddieHome = path.join(configHome, 'caddie');
   const userHome = path.join(caddieHome, 'user');
   const destination = path.join(userHome, '.agents', 'skills', 'caddie');
-  const exposure = path.join(userHome, '.claude', 'skills');
+  const codexExposure = path.join(os.homedir(), '.agents', 'skills', 'caddie');
+  const claudeExposure = path.join(os.homedir(), '.claude', 'skills', 'caddie');
   const outputs = {
     destination,
-    exposure,
+    codexExposure,
+    claudeExposure,
     manifest: path.join(userHome, 'caddie.json'),
     lock: path.join(userHome, 'caddie.lock'),
     ledger: path.join(userHome, '.agents', '.caddie', 'ledger.json'),
@@ -67,8 +69,10 @@ async function main() {
   const createdDirectories = [];
   try {
     fs.cpSync(sourceSkill, staged.destination, { recursive: true, errorOnExist: true, force: false });
-    fs.mkdirSync(path.dirname(staged.exposure), { recursive: true });
-    fs.symlinkSync('../.agents/skills', staged.exposure, 'dir');
+    for (const name of ['codexExposure', 'claudeExposure']) {
+      fs.mkdirSync(path.dirname(staged[name]), { recursive: true });
+      fs.symlinkSync(path.relative(path.dirname(outputs[name]), destination), staged[name], 'dir');
+    }
 
     const fingerprint = await fingerprintDirectory(staged.destination);
     if (!fingerprint.complete) fail('The staged Caddie Skill could not be fingerprinted completely.');
@@ -81,12 +85,13 @@ async function main() {
     writeJson(staged.ledger, {
       version: 1,
       scopeId: 'user',
+      harnessLinks: [codexExposure, claudeExposure],
       entries: [{
         name: 'caddie',
         path: destination,
         source: 'caddie',
         selectedPath: '.agents/skills/caddie',
-        fingerprint,
+        fingerprint: fingerprint.digest,
       }],
     });
     writeJson(staged.config, {
@@ -104,7 +109,7 @@ async function main() {
     ensureParents(journalPath, createdDirectories);
     writeJson(journalPath, { version: 2, owner, expected });
 
-    for (const name of ['destination', 'exposure', 'manifest', 'lock', 'ledger', 'config']) {
+    for (const name of ['destination', 'codexExposure', 'claudeExposure', 'manifest', 'lock', 'ledger', 'config']) {
       ensureParents(outputs[name], createdDirectories);
       fs.renameSync(staged[name], outputs[name]);
       published.push(outputs[name]);

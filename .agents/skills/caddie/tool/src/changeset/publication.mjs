@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { invalid, replan } from './errors.mjs';
 import { verifyGitPreparation } from './git.mjs';
+import { verifyChangeSandboxPlan } from './sandbox.mjs';
 
 const require = createRequire(import.meta.url);
 const { hashValue } = require('../plans');
@@ -57,46 +58,55 @@ export function buildPublicationPlan({ changeSetId, preparations, dependencies =
 }
 
 export async function applyPublicationPlan(plan, approval, runtime = {}) {
-  verifyPublicationPlan(plan, approval);
+  verifyPublicationPlan(plan, approval, runtime);
   const run = runtime.execFile ?? execFileAsync;
   const verify = runtime.verifyGitPreparation ?? verifyGitPreparation;
+  const verifySandbox = runtime.verifyChangeSandboxPlan ?? verifyChangeSandboxPlan;
   const published = [];
+  const checks = [];
   // Only the dependency-free frontier is publishable under one approval. A
   // later wave must be prepared again after its dependencies merge so its
   // locks and base commit bind the final merged source state.
   for (const wave of plan.waves.slice(0, 1)) {
     for (const entry of wave) {
       if (entry.workflow === 'review-apply-plan' || entry.workflow === 'local-branch') {
-        published.push({ id: entry.id, workflow: entry.workflow, externalWrite: false });
+        if (entry.workflow === 'review-apply-plan') await verifySandbox(entry.applyPlan);
+        else await preflightLocalGitEntry(entry, run, verify);
+        checks.push({ entry, externalWrite: false });
         continue;
       }
-      const preparation = entry.preparation;
-      await verify(preparation);
-      const liveRemoteUrls = (await run('git', [
-        '-C', entry.worktree, 'remote', 'get-url', '--push', '--all', entry.destination.remote,
-      ], { encoding: 'utf8' })).stdout.trim().split('\n').filter(Boolean);
-      if (liveRemoteUrls.length !== 1 || liveRemoteUrls[0] !== entry.destination.remoteUrl) {
-        throw replan('remote-destination-moved', 'Git remote destination changed after publication approval', {
-          remote: entry.destination.remote,
-          expected: entry.destination.remoteUrl,
-          received: liveRemoteUrls,
-        });
+      checks.push(await preflightPublicationEntry(entry, run, verify));
+    }
+  }
+
+  // Nothing external is written until every prepared repository in the
+  // Change Set has passed its current-state checks.
+  for (const laterWave of plan.waves.slice(1)) {
+    for (const entry of laterWave) {
+      if (entry.workflow === 'review-apply-plan') await verifySandbox(entry.applyPlan);
+      else if (entry.workflow === 'local-branch') await preflightLocalGitEntry(entry, run, verify);
+      else await preflightPublicationEntry(entry, run, verify, { inspectPullRequest: false });
+    }
+  }
+
+  for (const check of checks) {
+    const { entry } = check;
+    if (!check.externalWrite) {
+      published.push({ id: entry.id, workflow: entry.workflow, externalWrite: false });
+      continue;
+    }
+    try {
+      if (!check.alreadyPushed) {
+        const lease = entry.expectedRemoteBranchCommit === null ? '' : entry.expectedRemoteBranchCommit;
+        await run('git', [
+          '-C', entry.worktree,
+          'push', entry.destination.remoteUrl,
+          `${entry.headCommit}:refs/heads/${entry.branch}`,
+          `--force-with-lease=refs/heads/${entry.branch}:${lease}`,
+        ], { encoding: 'utf8' });
       }
-      const actualHead = (await run('git', ['-C', entry.worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).stdout.trim();
-      if (actualHead !== entry.headCommit) {
-        throw replan('prepared-head-moved', 'Prepared branch head changed before publication', {
-          expected: entry.headCommit, received: actualHead,
-        });
-      }
-      const lease = entry.expectedRemoteBranchCommit === null ? '' : entry.expectedRemoteBranchCommit;
-      await run('git', [
-        '-C', entry.worktree,
-        'push', entry.destination.remote,
-        `${entry.headCommit}:refs/heads/${entry.branch}`,
-        `--force-with-lease=refs/heads/${entry.branch}:${lease}`,
-      ], { encoding: 'utf8' });
-      let pullRequestUrl = null;
-      if (entry.workflow === 'github-draft-pr') {
+      let pullRequestUrl = check.pullRequestUrl;
+      if (entry.workflow === 'github-draft-pr' && !pullRequestUrl) {
         const result = await run('gh', [
           'pr', 'create', '--draft', '--repo', entry.destination.repositorySlug,
           '--base', entry.destination.baseBranch, '--head', entry.branch,
@@ -105,6 +115,12 @@ export async function applyPublicationPlan(plan, approval, runtime = {}) {
         pullRequestUrl = result.stdout.trim();
       }
       published.push({ id: entry.id, workflow: entry.workflow, externalWrite: true, pullRequestUrl });
+    } catch (error) {
+      throw replan('publication-interrupted', 'Publication stopped after an external write; retry the same exact plan to resume safely', {
+        completed: published,
+        failed: entry.id,
+        cause: error.message,
+      });
     }
   }
   return {
@@ -117,6 +133,66 @@ export async function applyPublicationPlan(plan, approval, runtime = {}) {
       reason: 'merged-dependencies-must-be-reresolved',
     } : {}),
   };
+}
+
+async function preflightLocalGitEntry(entry, run, verify) {
+  await verify(entry.preparation);
+  const actualHead = (await run('git', ['-C', entry.worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).stdout.trim();
+  if (actualHead !== entry.headCommit) {
+    throw replan('prepared-head-moved', 'Prepared branch head changed before publication', {
+      expected: entry.headCommit, received: actualHead,
+    });
+  }
+}
+
+async function preflightPublicationEntry(entry, run, verify, options = {}) {
+  await verify(entry.preparation);
+  const liveRemoteUrls = (await run('git', [
+    '-C', entry.worktree, 'remote', 'get-url', '--push', '--all', entry.destination.remote,
+  ], { encoding: 'utf8' })).stdout.trim().split('\n').filter(Boolean);
+  if (liveRemoteUrls.length !== 1 || liveRemoteUrls[0] !== entry.destination.remoteUrl) {
+    throw replan('remote-destination-moved', 'Git remote destination changed after publication approval', {
+      remote: entry.destination.remote,
+      expected: entry.destination.remoteUrl,
+      received: liveRemoteUrls,
+    });
+  }
+  const actualHead = (await run('git', ['-C', entry.worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).stdout.trim();
+  if (actualHead !== entry.headCommit) {
+    throw replan('prepared-head-moved', 'Prepared branch head changed before publication', {
+      expected: entry.headCommit, received: actualHead,
+    });
+  }
+  const remoteLine = (await run('git', [
+    'ls-remote', '--', entry.destination.remoteUrl, `refs/heads/${entry.branch}`,
+  ], { encoding: 'utf8' })).stdout.trim();
+  const remoteHead = remoteLine ? remoteLine.split(/\s+/)[0] : null;
+  const expected = entry.expectedRemoteBranchCommit;
+  if (remoteHead !== expected && remoteHead !== entry.headCommit) {
+    throw replan('remote-branch-moved', 'Remote publication branch changed after approval', {
+      branch: entry.branch, expected, received: remoteHead,
+    });
+  }
+  let pullRequestUrl = null;
+  if (entry.workflow === 'github-draft-pr' && options.inspectPullRequest !== false) {
+    const response = await run('gh', [
+      'pr', 'list', '--repo', entry.destination.repositorySlug,
+      '--head', entry.branch, '--state', 'open', '--json', 'url,title,body,isDraft',
+    ], { encoding: 'utf8' });
+    let existing;
+    try { [existing] = JSON.parse(response.stdout || '[]'); } catch {
+      throw replan('github-evidence-invalid', 'GitHub returned invalid pull-request evidence');
+    }
+    if (existing) {
+      const actualMarkers = parsePullRequestMarkers(existing.body ?? '');
+      const expectedMarkers = parsePullRequestMarkers(entry.bodyMarkers);
+      if (JSON.stringify(actualMarkers) !== JSON.stringify(expectedMarkers) || existing.isDraft !== true) {
+        throw replan('pull-request-collision', 'An existing pull request for the branch does not match the approved publication');
+      }
+      pullRequestUrl = existing.url;
+    }
+  }
+  return { entry, externalWrite: true, alreadyPushed: remoteHead === entry.headCommit, pullRequestUrl };
 }
 
 export function createPullRequestMarkers(changeSetId, changeId, dependencies = []) {
@@ -147,7 +223,7 @@ function publicationEntry(changeSetId, preparation, dependencies) {
   if (pushUrl && !Object.hasOwn(preparation, 'expectedRemoteBranchCommit')) {
     throw invalid('remote-branch-state-required', 'Publication must bind the exact current remote branch state');
   }
-  const remote = remoteName(preparation.baseRef);
+  const remote = pushUrl ? remoteName(preparation.baseRef) : null;
   const repositorySlug = github ? githubSlug(pushUrl) : null;
   return {
     id: preparation.id,
@@ -181,13 +257,17 @@ function isGitHubRemote(url) {
   return githubDestination(url) !== null;
 }
 
-function verifyPublicationPlan(plan, approval) {
+function verifyPublicationPlan(plan, approval, runtime = {}) {
   if (!plan || plan.version !== 1 || plan.kind !== 'publication' || typeof plan.id !== 'string') {
     throw invalid('invalid-publication-plan', 'Publication plan is invalid');
   }
   const { id, ...payload } = plan;
   if (hashValue(payload) !== id) throw replan('altered-plan', 'Publication plan was altered');
-  if (!approval || approval.version !== 1 || approval.approval !== 'explicit' || approval.planId !== id) {
+  const explicit = approval?.approval === 'explicit';
+  const derived = approval?.approval === 'derived-from-approved-workflow'
+    && typeof runtime.approvedParentPlanId === 'string'
+    && approval.parentPlanId === runtime.approvedParentPlanId;
+  if (!approval || approval.version !== 1 || (!explicit && !derived) || approval.planId !== id) {
     throw invalid('unapproved-plan', 'Exact explicit approval is required');
   }
 }

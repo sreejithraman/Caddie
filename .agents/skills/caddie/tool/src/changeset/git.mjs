@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -43,35 +43,18 @@ export async function prepareGitChange(options) {
     await git(worktree, [
       '-c', `user.name=${options.authorName ?? 'Caddie'}`,
       '-c', `user.email=${options.authorEmail ?? 'caddie@localhost'}`,
+      '-c', 'commit.gpgSign=false',
       'commit', '-m', options.message ?? `caddie: ${slug}`,
-    ]);
+    ], commitEnvironment(options));
     const headCommit = (await git(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
+    if (options.expectedHeadCommit && headCommit !== options.expectedHeadCommit) {
+      throw replan('prepared-commit-mismatch', 'Prepared commit differs from the exact approved commit', {
+        expected: options.expectedHeadCommit, received: headCommit,
+      });
+    }
     const commitCount = Number((await git(worktree, ['rev-list', '--count', `${base.commit}..${headCommit}`])).stdout.trim());
     if (commitCount !== 1) throw replan('non-focused-history', 'Prepared branch must contain exactly one focused commit', { commitCount });
-    const remoteName = /^([^/]+)\/(.+)$/.exec(base.ref)?.[1] ?? 'origin';
-    const remoteUrl = await optionalGit(worktree, ['remote', 'get-url', remoteName]);
-    const remotePushResult = await optionalGit(worktree, ['remote', 'get-url', '--push', '--all', remoteName]);
-    const remotePushUrls = remotePushResult?.stdout.trim().split('\n').filter(Boolean) ?? [];
-    if (remotePushUrls.length > 1) throw invalid('multiple-push-destinations', 'Publication requires exactly one bound push destination');
-    const remotePushUrl = remotePushUrls[0] ?? null;
-    const expectedRemoteBranchCommit = remotePushUrl
-      ? await readOptionalRemoteBranch(repository, remotePushUrl, branch)
-      : undefined;
-    return {
-      kind: 'git',
-      repository,
-      worktree,
-      branch,
-      baseRef: base.ref,
-      baseCommit: base.commit,
-      headCommit,
-      changedFiles: staged.stdout.trim().split('\n'),
-      remote: base.remote,
-      remoteUrl: remoteUrl?.stdout.trim() || null,
-      remotePushUrl,
-      ...(remotePushUrl ? { expectedRemoteBranchCommit } : {}),
-      ...(options.dependencyCommits ? { dependencyCommits: validateDependencyCommits(options.dependencyCommits) } : {}),
-    };
+    return describeGitPreparation({ repository, worktree, branch, base, headCommit, options });
   } catch (error) {
     // Failed authoring or validation may itself contain valuable local work. Preserve
     // it by default; cleanup is an explicit opt-in for disposable automation.
@@ -82,6 +65,79 @@ export async function prepareGitChange(options) {
     }
     throw error;
   }
+}
+
+export async function resumeGitChange(options) {
+  const repository = path.resolve(required(options.repository, 'repository'));
+  const slug = validateSlug(options.slug);
+  const expectedBaseCommit = validateExpectedBaseCommit(options.expectedBaseCommit);
+  if (!options.workspaceRoot) throw invalid('workspace-root-required', 'Resumable Git publication requires an exact workspaceRoot');
+  if (typeof options.author !== 'function') throw invalid('author-required', 'A focused author function is required');
+  if (typeof options.validate !== 'function') throw invalid('validation-required', 'A parent-owned validation function is required');
+  const branch = `caddie/${slug}`;
+  const worktree = path.join(path.resolve(options.workspaceRoot), slug);
+  const base = await resolveExactBase(repository, { ...options, expectedBaseCommit });
+  let actualRoot;
+  try { actualRoot = await realpath((await git(worktree, ['rev-parse', '--show-toplevel'])).stdout.trim()); } catch {
+    throw replan('prepared-worktree-missing', 'The approved prepared worktree is unavailable', { worktree });
+  }
+  if (actualRoot !== await realpath(worktree)) throw replan('prepared-worktree-moved', 'The prepared worktree path changed', { worktree });
+  const actualBranch = (await git(worktree, ['branch', '--show-current'])).stdout.trim();
+  if (actualBranch !== branch) throw replan('prepared-branch-moved', 'The prepared worktree branch changed', { expected: branch, received: actualBranch });
+  const headCommit = (await git(worktree, ['rev-parse', 'HEAD^{commit}'])).stdout.trim();
+  if (options.expectedHeadCommit && headCommit !== options.expectedHeadCommit) {
+    throw replan('prepared-commit-mismatch', 'Existing prepared commit differs from the exact approved commit', {
+      expected: options.expectedHeadCommit, received: headCommit,
+    });
+  }
+  const parentCommit = (await git(worktree, ['rev-parse', 'HEAD^1^{commit}'])).stdout.trim();
+  const commitCount = Number((await git(worktree, ['rev-list', '--count', `${base.commit}..${headCommit}`])).stdout.trim());
+  if (parentCommit !== base.commit || commitCount !== 1) {
+    throw replan('non-focused-history', 'Resumed branch must contain exactly one focused commit on the approved base', { commitCount });
+  }
+  await options.author({ directory: worktree, repository, branch, baseCommit: base.commit });
+  await options.validate({ directory: worktree, repository, branch, baseCommit: base.commit });
+  const status = (await git(worktree, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout;
+  if (status.trim()) throw replan('prepared-content-moved', 'Prepared commit no longer matches the approved exact changes');
+  const changedFiles = (await git(worktree, ['diff', '--name-only', base.commit, headCommit])).stdout.trim().split('\n').filter(Boolean).sort();
+  const expectedChangedFiles = [...new Set(options.expectedChangedFiles ?? [])].sort();
+  if (expectedChangedFiles.length && JSON.stringify(changedFiles) !== JSON.stringify(expectedChangedFiles)) {
+    throw replan('prepared-files-moved', 'Prepared commit changed files outside the approved set', { expected: expectedChangedFiles, received: changedFiles });
+  }
+  const expectedMessage = options.message ?? `caddie: ${slug}`;
+  const actualMessage = (await git(worktree, ['log', '-1', '--format=%B'])).stdout.trimEnd();
+  if (actualMessage !== expectedMessage) throw replan('prepared-metadata-moved', 'Prepared commit message differs from the approved message');
+  const identity = (await git(worktree, ['log', '-1', '--format=%an%x00%ae%x00%cn%x00%ce'])).stdout.trim().split('\0');
+  const expectedIdentity = [
+    options.authorName ?? 'Caddie', options.authorEmail ?? 'caddie@localhost',
+    options.authorName ?? 'Caddie', options.authorEmail ?? 'caddie@localhost',
+  ];
+  if (JSON.stringify(identity) !== JSON.stringify(expectedIdentity)) {
+    throw replan('prepared-metadata-moved', 'Prepared commit identity differs from the approved identity');
+  }
+  return describeGitPreparation({ repository, worktree, branch, base, headCommit, options });
+}
+
+async function describeGitPreparation({ repository, worktree, branch, base, headCommit, options }) {
+  const remoteName = /^([^/]+)\/(.+)$/.exec(base.ref)?.[1] ?? 'origin';
+  const remoteUrl = await optionalGit(worktree, ['remote', 'get-url', remoteName]);
+  const remotePushResult = await optionalGit(worktree, ['remote', 'get-url', '--push', '--all', remoteName]);
+  const remotePushUrls = remotePushResult?.stdout.trim().split('\n').filter(Boolean) ?? [];
+  if (remotePushUrls.length > 1) throw invalid('multiple-push-destinations', 'Publication requires exactly one bound push destination');
+  const remotePushUrl = remotePushUrls[0] ?? null;
+  const expectedRemoteBranchCommit = remotePushUrl
+    ? await readOptionalRemoteBranch(repository, remotePushUrl, branch)
+    : undefined;
+  const changedFiles = (await git(worktree, ['diff', '--name-only', base.commit, headCommit])).stdout.trim().split('\n').filter(Boolean);
+  return {
+    kind: 'git', repository, worktree, branch,
+    baseRef: base.ref, baseCommit: base.commit, headCommit, changedFiles,
+    remote: base.remote,
+    remoteUrl: remoteUrl?.stdout.trim() || null,
+    remotePushUrl,
+    ...(remotePushUrl ? { expectedRemoteBranchCommit } : {}),
+    ...(options.dependencyCommits ? { dependencyCommits: validateDependencyCommits(options.dependencyCommits) } : {}),
+  };
 }
 
 export async function verifyGitPreparation(preparation) {
@@ -152,13 +208,20 @@ async function readOptionalRemoteBranch(repository, remotePushUrl, branch) {
   return line ? line.split(/\s+/)[0] : null;
 }
 
-async function git(directory, args) {
+async function git(directory, args, options = {}) {
   try {
-    return await execFileAsync('git', ['-C', directory, ...args], { encoding: 'utf8' });
+    return await execFileAsync('git', ['-C', directory, ...args], { encoding: 'utf8', ...options });
   } catch (error) {
     error.gitExitCode = error.code;
     throw error;
   }
+}
+
+function commitEnvironment(options) {
+  const env = { ...process.env };
+  if (options.authorDate) env.GIT_AUTHOR_DATE = options.authorDate;
+  if (options.committerDate) env.GIT_COMMITTER_DATE = options.committerDate;
+  return { env };
 }
 
 async function optionalGit(directory, args) {

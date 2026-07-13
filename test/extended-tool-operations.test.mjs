@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,7 @@ test('compare and plan are available while planning performs no mutation', async
 
   const destination = path.join(scopeRoot, '.agents', 'skills', 'fixture');
   const planned = invoke('plan', {
+    configHome: path.join(scopeRoot, 'config'),
     kind: 'reconcile',
     scope: { id: 'fixture', root: scopeRoot },
     operations: [{
@@ -68,6 +69,7 @@ test('evidence fingerprint flows through exact plan approval into complete mater
     entries: [{ name: 'fixture', path: destination, fingerprint: sourceFingerprint }],
   }, null, 2)}\n`;
   const planned = invoke('plan', {
+    configHome: path.join(scopeRoot, 'config'),
     kind: 'reconcile',
     scope: { id: `project:${scopeRoot}`, root: scopeRoot },
     operations: [
@@ -80,9 +82,11 @@ test('evidence fingerprint flows through exact plan approval into complete mater
         expectedDestination: { state: 'absent' },
       },
       {
-        type: 'ensure-claude-exposure',
-        linkPath: path.join(scopeRoot, '.claude', 'skills'),
-        targetPath: path.join(scopeRoot, '.agents', 'skills'),
+        type: 'ensure-harness-exposure',
+        harness: 'claude',
+        linkPath: path.join(scopeRoot, '.claude', 'skills', 'fixture'),
+        targetPath: destination,
+        targetFingerprint: sourceFingerprint,
         expected: { state: 'absent' },
       },
       {
@@ -102,7 +106,7 @@ test('evidence fingerprint flows through exact plan approval into complete mater
 
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal(await readFile(path.join(destination, 'assets', 'complete.txt'), 'utf8'), 'complete\n');
-  assert.equal(await readlink(path.join(scopeRoot, '.claude', 'skills')), '../.agents/skills');
+  assert.equal(await readlink(path.join(scopeRoot, '.claude', 'skills', 'fixture')), '../../.agents/skills/fixture');
   assert.equal(JSON.parse(await readFile(ledgerPath, 'utf8')).entries[0].name, 'fixture');
 });
 
@@ -127,6 +131,7 @@ test('adoption inspection and preservation-first planning are reachable through 
 
   const planned = invoke('plan', {
     workflow: 'adoption',
+    configHome: path.join(scopeRoot, 'config'),
     scopeRoot,
     candidates,
     scope: { id: `project:${scopeRoot}`, root: scopeRoot },
@@ -152,6 +157,7 @@ test('adoption planning recomputes live evidence instead of trusting a caller pr
   await writeFile(path.join(installed, 'SKILL.md'), '---\nname: unknown\n---\n');
   const planned = invoke('plan', {
     workflow: 'adoption',
+    configHome: path.join(scopeRoot, 'config'),
     scopeRoot,
     candidates: [],
     proposal: {
@@ -165,6 +171,179 @@ test('adoption planning recomputes live evidence instead of trusting a caller pr
   assert.equal(planned.ok, true, JSON.stringify(planned));
   const ledgerOperation = planned.result.plan.operations.find((operation) => operation.type === 'write-ledger');
   assert.deepEqual(JSON.parse(ledgerOperation.content).entries, []);
+});
+
+test('the first approved project mutation registers its real root without planning writes', async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-operation-register-'));
+  const scopeRoot = path.join(fixture, 'project');
+  const configHome = path.join(fixture, 'config');
+  const configPath = path.join(configHome, 'caddie', 'config.json');
+  const userManifest = path.join(fixture, 'user', 'caddie.json');
+  const otherProject = path.join(fixture, 'other');
+  await mkdir(scopeRoot);
+  await mkdir(path.dirname(configPath), { recursive: true });
+  const originalConfig = {
+    version: 1,
+    userManifest,
+    registeredProjects: [otherProject],
+  };
+  await writeFile(configPath, `${JSON.stringify(originalConfig, null, 2)}\n`);
+
+  const planned = invoke('plan', {
+    configHome,
+    kind: 'reconcile',
+    scope: { id: `project:${scopeRoot}`, root: scopeRoot },
+    operations: [{
+      type: 'write-ledger',
+      path: path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'),
+      content: '{"version":1,"entries":[]}\n',
+      expected: { state: 'absent' },
+    }],
+  });
+
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), originalConfig);
+  const registration = planned.result.plan.operations.find((operation) => operation.type === 'write-machine-config');
+  assert.equal(registration.path, configPath);
+
+  const applied = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  });
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  const registered = JSON.parse(await readFile(configPath, 'utf8'));
+  assert.equal(registered.userManifest, userManifest);
+  assert.deepEqual(registered.registeredProjects, [otherProject, await realpath(scopeRoot)]);
+});
+
+test('user-scope reconciliation never registers the User Skills home as a project', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-user-scope-'));
+  const home = path.join(root, 'home');
+  const source = path.join(root, 'source', 'fixture');
+  await mkdir(home, { recursive: true });
+  await mkdir(source, { recursive: true });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  const planned = invoke('plan', {
+    kind: 'reconcile',
+    configHome: path.join(root, 'config'),
+    scope: { id: 'user', root },
+    operations: [{
+      type: 'materialize-skill', name: 'fixture', sourcePath: source,
+      destinationPath: path.join(root, '.agents', 'skills', 'fixture'),
+      sourceFingerprint: complete('fixture').digest,
+      expectedDestination: { state: 'absent' },
+    }],
+  }, { HOME: home });
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  assert.equal(planned.result.plan.operations.some(({ type }) => type === 'write-machine-config'), false);
+  assert.deepEqual(
+    planned.result.plan.operations.filter(({ type }) => type === 'ensure-harness-exposure').map(({ harness }) => harness).sort(),
+    ['claude', 'codex'],
+  );
+  const ledger = JSON.parse(planned.result.plan.operations.find(({ type }) => type === 'write-ledger').content);
+  assert.deepEqual(ledger.entries.map(({ name }) => name), ['fixture']);
+  assert.equal(ledger.harnessLinks.length, 2);
+});
+
+test('user reconciliation preserves unchanged harness ownership in its complete ledger update', async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-operation-user-ledger-'));
+  const home = path.join(fixture, 'home');
+  const scopeRoot = path.join(fixture, 'config', 'caddie', 'user');
+  const oldSkill = path.join(scopeRoot, '.agents', 'skills', 'old');
+  const sourceRoot = path.join(fixture, 'source');
+  const source = path.join(sourceRoot, 'new');
+  const destination = path.join(scopeRoot, '.agents', 'skills', 'new');
+  const oldLinks = [path.join(home, '.agents', 'skills', 'old'), path.join(home, '.claude', 'skills', 'old')];
+  await mkdir(home, { recursive: true });
+  await mkdir(oldSkill, { recursive: true });
+  await mkdir(source, { recursive: true });
+  await writeFile(path.join(oldSkill, 'SKILL.md'), '---\nname: old\n---\n');
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: new\n---\n');
+  for (const linkPath of oldLinks) {
+    await mkdir(path.dirname(linkPath), { recursive: true });
+    await symlink(oldSkill, linkPath, 'dir');
+  }
+  const ledgerPath = path.join(scopeRoot, '.agents', '.caddie', 'ledger.json');
+  await mkdir(path.dirname(ledgerPath), { recursive: true });
+  await writeFile(ledgerPath, `${JSON.stringify({
+    version: 1, scopeId: 'user', harnessLinks: oldLinks,
+    entries: [{ name: 'old', path: oldSkill, fingerprint: 'sha256:old' }],
+  }, null, 2)}\n`);
+  const env = { HOME: home };
+  const evidence = invoke('inspect-source', { type: 'local', root: sourceRoot, selectionPath: 'new' }, env);
+  const planned = invoke('plan', {
+    kind: 'reconcile',
+    configHome: path.join(fixture, 'config'),
+    scope: { id: 'user', root: scopeRoot },
+    operations: [{
+      type: 'materialize-skill', name: 'new', sourcePath: source, destinationPath: destination,
+      sourceFingerprint: evidence.result.fingerprint.digest, expectedDestination: { state: 'absent' },
+    }],
+  }, env);
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  const ledgerOperation = planned.result.plan.operations.find(({ type }) => type === 'write-ledger');
+  const nextLedger = JSON.parse(ledgerOperation.content);
+  assert.deepEqual(nextLedger.entries.map(({ name }) => name).sort(), ['new', 'old']);
+  assert.deepEqual(nextLedger.harnessLinks.sort(), [
+    ...oldLinks,
+    path.join(home, '.agents', 'skills', 'new'),
+    path.join(home, '.claude', 'skills', 'new'),
+  ].sort());
+
+  const applied = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  }, env);
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  assert.deepEqual(JSON.parse(await readFile(ledgerPath, 'utf8')).harnessLinks.sort(), nextLedger.harnessLinks.sort());
+  assert.equal(await realpath(oldLinks[0]), await realpath(oldSkill));
+});
+
+test('user-scope adoption exposes each skill to the actual Codex and Claude homes', async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-operation-user-exposure-'));
+  const home = path.join(fixture, 'home');
+  const scopeRoot = path.join(fixture, 'config', 'caddie', 'user');
+  const source = path.join(fixture, 'source', 'fixture');
+  const installed = path.join(scopeRoot, '.agents', 'skills', 'fixture');
+  await mkdir(source, { recursive: true });
+  await mkdir(home, { recursive: true });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\n---\n');
+  await cp(source, installed, { recursive: true });
+  const env = { HOME: home };
+
+  const planned = invoke('plan', {
+    workflow: 'adoption',
+    configHome: path.join(fixture, 'config'),
+    scopeRoot,
+    candidates: [{ name: 'fixture', sourcePath: source, sourceId: 'authored', selectedPath: 'fixture' }],
+    scope: { id: 'user', root: scopeRoot },
+  }, env);
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+
+  const applied = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  }, env);
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  const canonicalInstalled = await realpath(installed);
+  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'fixture')), canonicalInstalled);
+  assert.equal(await realpath(path.join(home, '.claude', 'skills', 'fixture')), canonicalInstalled);
+
+  const cleanup = invoke('plan', {
+    workflow: 'cleanup',
+    scope: { id: 'user', root: scopeRoot },
+    skillPaths: [installed],
+    removeHarnessExposure: true,
+  }, env);
+  assert.equal(cleanup.ok, true, JSON.stringify(cleanup));
+  const cleaned = invoke('apply-plan', {
+    plan: cleanup.result.plan,
+    approval: { version: 1, planId: cleanup.result.plan.id, approval: 'explicit' },
+  }, env);
+  assert.equal(cleaned.ok, true, JSON.stringify(cleaned));
+  assert.equal(spawnSync('test', ['-e', installed]).status, 1);
+  assert.equal(spawnSync('test', ['-e', path.join(home, '.agents', 'skills', 'fixture')]).status, 1);
+  assert.equal(spawnSync('test', ['-e', path.join(home, '.claude', 'skills', 'fixture')]).status, 1);
 });
 
 test('JSON workflow prepares and applies a non-Git Change Sandbox after exact approvals', async () => {
@@ -200,6 +379,24 @@ test('JSON workflow prepares and applies a non-Git Change Sandbox after exact ap
   });
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal(await readFile(path.join(source, 'value.txt'), 'utf8'), 'after\n');
+});
+
+test('apply-plan dispatches by explicit kind and rejects sandbox shape sniffing', () => {
+  const rejected = invoke('apply-plan', {
+    plan: {
+      version: 1,
+      kind: 'lookalike',
+      id: 'not-a-plan',
+      source: '/tmp/source',
+      stageRoot: '/tmp/stage',
+      precondition: { fingerprint: { digest: 'before' } },
+      result: { fingerprint: { digest: 'after' } },
+      operations: [],
+    },
+    approval: { version: 1, planId: 'not-a-plan', approval: 'explicit' },
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'unsupported-plan-kind');
 });
 
 test('JSON preparation rejects a final-component symlink without writing through it', async () => {
@@ -257,6 +454,56 @@ test('publication is reachable as an immutable approval-bound JSON workflow', ()
   assert.equal(rejected.error.code, 'unapproved-plan');
 });
 
+test('one public approval creates and pushes one focused commit', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-one-approval-'));
+  const remote = path.join(root, 'remote.git');
+  const seed = path.join(root, 'seed');
+  const repository = path.join(root, 'repository');
+  gitSync(root, ['init', '--bare', '--initial-branch=main', remote]);
+  gitSync(root, ['init', '--initial-branch=main', seed]);
+  await writeFile(path.join(seed, 'value.txt'), 'before\n');
+  gitSync(seed, ['add', '.']);
+  gitSync(seed, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'base']);
+  gitSync(seed, ['remote', 'add', 'origin', remote]);
+  gitSync(seed, ['push', '-u', 'origin', 'main']);
+  gitSync(root, ['clone', remote, repository]);
+  const base = gitSync(repository, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const planned = invoke('plan', {
+    workflow: 'publish-git-change',
+    repository,
+    slug: 'one-approval',
+    workspaceRoot: path.join(root, 'worktrees'),
+    expectedBaseCommit: base,
+    changes: [{ path: 'value.txt', content: 'after\n' }],
+    validationCommands: [[process.execPath, '-e', "require('node:fs').accessSync('value.txt')"]],
+    changeSetId: 'single-approval',
+    changeId: 'fixture',
+    remotePushUrl: remote,
+    expectedRemoteBranchCommit: null,
+  });
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  assert.match(planned.result.plan.publication.headCommit, /^[0-9a-f]{40,64}$/);
+
+  const applied = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  });
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  assert.equal(applied.result.preparation.headCommit, planned.result.plan.publication.headCommit);
+  const remoteHead = gitSync(root, ['--git-dir', remote, 'rev-parse', 'refs/heads/caddie/one-approval']).stdout.trim();
+  assert.equal(remoteHead, applied.result.preparation.headCommit);
+  assert.equal(gitSync(repository, ['show', 'HEAD:value.txt']).stdout, 'before\n');
+  assert.equal(gitSync(root, ['--git-dir', remote, 'show', `${remoteHead}:value.txt`]).stdout, 'after\n');
+
+  const resumed = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  assert.equal(resumed.result.preparation.headCommit, remoteHead);
+});
+
 test('public Git preparation planning rejects a moving base before approval', () => {
   const planned = invoke('plan', {
     workflow: 'prepare-git-change',
@@ -275,12 +522,19 @@ function complete(digest) {
   return { complete: true, digest };
 }
 
-function invoke(operation, input) {
+function invoke(operation, input, env = {}) {
   const result = spawnSync(process.execPath, [tool], {
     cwd: repositoryRoot,
     input: JSON.stringify({ version: 1, operation, input }),
     encoding: 'utf8',
+    env: { ...process.env, ...env },
   });
   assert.equal(result.stderr, '');
   return JSON.parse(result.stdout);
+}
+
+function gitSync(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result;
 }

@@ -8,6 +8,7 @@ const { canonicalize, verifyApprovedPlan } = require('../plans');
 const { copyDirectory, exists, fingerprint, fingerprintIfPresent, writeJsonAtomic } = require('./filesystem');
 const { validateJournal } = require('../recovery/journal');
 const { parseSkillMetadata } = require('../skill-metadata');
+const { expectedFor, strategyFor, targetFor } = require('../mutations/strategies');
 
 class ApplyError extends Error {
   constructor(message, code = 'apply-failed', details) {
@@ -177,9 +178,10 @@ async function stageOperations(plan, operationRoot) {
   const records = [];
   for (let index = 0; index < plan.operations.length; index += 1) {
     const operation = plan.operations[index];
+    const definition = strategyFor(operation);
     const record = { type: operation.type, operation, completed: false };
-    if (operation.type === 'materialize-skill') {
-      record.stagedPath = path.join(operationRoot, 'staged', `${index}-skill`);
+    if (definition.strategy === 'directory-replace') {
+      record.stagedPath = path.join(operationRoot, 'staged', `${index}-${definition.storageSuffix}`);
       await copyDirectory(operation.sourcePath, record.stagedPath);
       const { assertContainedSymlinks } = await import('../sources/selection-path.mjs');
       try { await assertContainedSymlinks(record.stagedPath); } catch (error) {
@@ -192,14 +194,16 @@ async function stageOperations(plan, operationRoot) {
       const stagedName = await readSkillName(record.stagedPath);
       if (stagedName !== operation.name) throw new ApplyError('SKILL.md name does not match the approved destination name', 'stale-plan', { approved: operation.name, actual: stagedName });
       record.afterFingerprint = stagedFingerprint;
-      record.backupPath = path.join(operationRoot, 'backups', `${index}-skill`);
-    } else if (['write-manifest', 'write-lock', 'write-registry', 'write-ledger'].includes(operation.type)) {
-      record.stagedPath = path.join(operationRoot, 'staged', `${index}-file`);
+      record.backupPath = path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`);
+    } else if (definition.strategy === 'file-replace') {
+      record.stagedPath = path.join(operationRoot, 'staged', `${index}-${definition.storageSuffix}`);
       await fs.writeFile(record.stagedPath, operation.content, { flag: 'wx' });
       record.afterFingerprint = await fingerprint(record.stagedPath);
-      record.backupPath = path.join(operationRoot, 'backups', `${index}-file`);
-    } else if (['remove-ledger', 'remove-legacy-lock', 'cleanup-preserved-skill', 'cleanup-exposure'].includes(operation.type)) {
-      record.backupPath = path.join(operationRoot, 'backups', `${index}-removed`);
+      record.backupPath = path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`);
+    } else if (definition.strategy === 'remove') {
+      record.backupPath = path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`);
+    } else if (definition.strategy === 'symlink') {
+      record.parentCreated = !await exists(path.dirname(operation.linkPath));
     }
     records.push(record);
   }
@@ -209,20 +213,27 @@ async function stageOperations(plan, operationRoot) {
 async function verifyPreconditions(plan, ledger) {
   for (const condition of plan.preconditions || []) await verifyCondition(condition);
   for (const operation of plan.operations) {
-    if (operation.type === 'materialize-skill') {
-      await verifyExpected(operation.destinationPath, operation.expectedDestination);
-      if (operation.expectedDestination.state !== 'absent') {
+    const definition = strategyFor(operation);
+    if (!definition) continue;
+    const target = targetFor(operation);
+    const expected = expectedFor(operation);
+    await verifyExpected(target, expected);
+    if (definition.strategy === 'symlink') {
+      const targetFingerprint = await fingerprintIfPresent(operation.targetPath);
+      const plannedMaterialization = plan.operations.find((candidate) => candidate.type === 'materialize-skill'
+        && path.resolve(candidate.destinationPath) === path.resolve(operation.targetPath)
+        && candidate.sourceFingerprint === operation.targetFingerprint);
+      if (targetFingerprint !== operation.targetFingerprint && !(!targetFingerprint && plannedMaterialization)) {
+        throw new ApplyError('harness exposure target changed after approval', 'stale-plan', { path: operation.targetPath });
+      }
+    }
+    if (definition.strategy === 'directory-replace') {
+      if (expected.state !== 'absent') {
         const owned = (ledger.entries || []).find((entry) => path.resolve(entry.path) === path.resolve(operation.destinationPath));
-        if (!owned || owned.fingerprint !== operation.expectedDestination.fingerprint) {
+        if (!owned || owned.fingerprint !== expected.fingerprint) {
           throw new ApplyError('existing skill is unmanaged or no longer matches Caddie ownership', 'collision', { path: operation.destinationPath });
         }
       }
-    } else if (operation.type === 'ensure-claude-exposure') {
-      await verifyExpected(operation.linkPath, operation.expected);
-    } else if (operation.type.startsWith('recover-')) {
-      continue;
-    } else if (operation.expected) {
-      await verifyExpected(operation.path, operation.expected);
     }
   }
 }
@@ -280,7 +291,8 @@ async function finishJournal(journalPath, journal, onBoundary) {
 
 async function executeRecord(record, onBoundary, journal, recordIndex) {
   const operation = record.operation;
-  if (operation.type === 'materialize-skill') {
+  const strategy = strategyFor(operation)?.strategy;
+  if (strategy === 'directory-replace') {
     await fs.mkdir(path.dirname(operation.destinationPath), { recursive: true });
     if (!await exists(record.stagedPath)) {
       if (await fingerprintIfPresent(operation.destinationPath) === record.afterFingerprint) return;
@@ -297,11 +309,11 @@ async function executeRecord(record, onBoundary, journal, recordIndex) {
     }
     return;
   }
-  if (operation.type === 'ensure-claude-exposure') {
+  if (strategy === 'symlink') {
     if (await exists(operation.linkPath)) {
       const stat = await fs.lstat(operation.linkPath);
       const resolved = stat.isSymbolicLink() ? path.resolve(path.dirname(operation.linkPath), await fs.readlink(operation.linkPath)) : null;
-      if (resolved !== path.resolve(operation.targetPath)) throw new ApplyError('Claude exposure changed during recovery', 'replan');
+      if (resolved !== path.resolve(operation.targetPath)) throw new ApplyError('harness exposure changed during recovery', 'replan');
       record.created = operation.expected.state === 'absent';
       record.afterTarget = await fs.readlink(operation.linkPath);
       return;
@@ -314,7 +326,7 @@ async function executeRecord(record, onBoundary, journal, recordIndex) {
     await boundary(onBoundary, `mutation:${recordIndex}:linked`, journal);
     return;
   }
-  if (['write-manifest', 'write-lock', 'write-registry', 'write-ledger'].includes(operation.type)) {
+  if (strategy === 'file-replace') {
     await fs.mkdir(path.dirname(operation.path), { recursive: true });
     if (!await exists(record.stagedPath)) {
       if (await fingerprintIfPresent(operation.path) === record.afterFingerprint) return;
@@ -331,7 +343,7 @@ async function executeRecord(record, onBoundary, journal, recordIndex) {
     }
     return;
   }
-  if (['remove-ledger', 'remove-legacy-lock', 'cleanup-preserved-skill', 'cleanup-exposure'].includes(operation.type)) {
+  if (strategy === 'remove') {
     if (await exists(operation.path)) {
       await fs.rename(operation.path, record.backupPath);
       await boundary(onBoundary, `mutation:${recordIndex}:removed`, journal);
@@ -344,17 +356,22 @@ async function executeRecord(record, onBoundary, journal, recordIndex) {
 async function verifyCompleted(journal) {
   for (const record of journal.records) {
     const operation = record.operation;
-    if (operation.type === 'materialize-skill') {
-      if (await fingerprint(operation.destinationPath) !== record.afterFingerprint) throw new ApplyError('materialized result failed verification', 'verification-failed');
-    } else if (operation.type === 'ensure-claude-exposure') {
+    const strategy = strategyFor(operation)?.strategy;
+    const target = targetFor(operation);
+    if (strategy === 'directory-replace') {
+      if (await fingerprint(target) !== record.afterFingerprint) throw new ApplyError('materialized result failed verification', 'verification-failed');
+    } else if (strategy === 'symlink') {
       const stat = await fs.lstat(operation.linkPath);
       if (!stat.isSymbolicLink() || path.resolve(path.dirname(operation.linkPath), await fs.readlink(operation.linkPath)) !== path.resolve(operation.targetPath)) {
-        throw new ApplyError('Claude exposure failed verification', 'verification-failed');
+        throw new ApplyError('harness exposure failed verification', 'verification-failed');
       }
-    } else if (['write-manifest', 'write-lock', 'write-registry', 'write-ledger'].includes(operation.type)) {
-      if (await fingerprint(operation.path) !== record.afterFingerprint) throw new ApplyError('state file failed verification', 'verification-failed', { path: operation.path });
-    } else if (['remove-ledger', 'remove-legacy-lock', 'cleanup-preserved-skill', 'cleanup-exposure'].includes(operation.type) && await exists(operation.path)) {
-      throw new ApplyError('removed state remains present', 'verification-failed', { path: operation.path });
+      if (await fingerprint(operation.targetPath) !== operation.targetFingerprint) {
+        throw new ApplyError('harness exposure target failed verification', 'verification-failed');
+      }
+    } else if (strategy === 'file-replace') {
+      if (await fingerprint(target) !== record.afterFingerprint) throw new ApplyError('state file failed verification', 'verification-failed', { path: target });
+    } else if (strategy === 'remove' && await exists(target)) {
+      throw new ApplyError('removed state remains present', 'verification-failed', { path: target });
     }
   }
 }
@@ -405,8 +422,10 @@ async function rollbackJournal(journalPath, journal, onBoundary) {
 
 async function rollbackRecord(record, onBoundary, journal, recordIndex) {
   const operation = record.operation;
-  const originalExpected = operation.expectedDestination || operation.expected;
-  if (operation.type === 'ensure-claude-exposure') {
+  const definition = strategyFor(operation);
+  const strategy = definition?.strategy;
+  const originalExpected = expectedFor(operation);
+  if (strategy === 'symlink') {
     if (record.created || originalExpected.state === 'absent') {
       const stat = await fs.lstat(operation.linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
       const resolved = stat && stat.isSymbolicLink()
@@ -417,11 +436,14 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
         await fs.unlink(operation.linkPath);
         await boundary(onBoundary, `rollback-mutation:${recordIndex}:unlinked`, journal);
       }
+      if (record.parentCreated) await fs.rmdir(path.dirname(operation.linkPath)).catch((error) => {
+        if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error;
+      });
     }
     return;
   }
-  const target = operation.destinationPath || operation.path;
-  if (['materialize-skill', 'write-manifest', 'write-lock', 'write-registry', 'write-ledger'].includes(operation.type)) {
+  const target = targetFor(operation);
+  if (strategy === 'directory-replace' || strategy === 'file-replace') {
     const actual = await fingerprintIfPresent(target);
     if (!await exists(record.backupPath)) {
       if (originalExpected.state === 'absent' && !actual) return;
@@ -438,7 +460,7 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
     }
     return;
   }
-  if (['remove-ledger', 'remove-legacy-lock', 'cleanup-preserved-skill', 'cleanup-exposure'].includes(operation.type)) {
+  if (strategy === 'remove') {
     if (await exists(target)) {
       if (!await exists(record.backupPath)) {
         await verifyExpected(target, originalExpected);
@@ -475,11 +497,15 @@ async function assertMutationAncestors(plan) {
     for (const candidate of candidates) {
       const resolved = path.resolve(candidate);
       const configRoot = plan.scope.configRoot && path.resolve(plan.scope.configRoot);
+      const harnessRoot = ['ensure-harness-exposure', 'cleanup-exposure'].includes(operation.type) && plan.scope.id === 'user'
+        ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
+        : null;
       const anchor = isInside(scopeRoot, resolved)
         ? scopeRoot
         : configRoot && isInside(configRoot, resolved) ? configRoot : null;
-      if (!anchor) throw new ApplyError('mutation path is outside its approved scope', 'invalid-plan', { path: resolved });
-      await assertNoSymlinkAncestors(anchor, path.dirname(resolved));
+      const approvedAnchor = anchor || (harnessRoot && isInside(harnessRoot, resolved) ? os.homedir() : null);
+      if (!approvedAnchor) throw new ApplyError('mutation path is outside its approved scope', 'invalid-plan', { path: resolved });
+      await assertNoSymlinkAncestors(approvedAnchor, path.dirname(resolved));
     }
   }
 }

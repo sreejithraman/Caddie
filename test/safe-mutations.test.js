@@ -7,10 +7,31 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createPlan, approvePlan } = require('../.agents/skills/caddie/tool/src/plans');
+const { MUTATION_OPERATION_TYPES, strategyFor } = require('../.agents/skills/caddie/tool/src/mutations/strategies');
 const { applyPlan, acquireScopeLock } = require('../.agents/skills/caddie/tool/src/apply');
-const { fingerprint, exists } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
+const { fingerprint, exists, writeJsonAtomic } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
 const { recover } = require('../.agents/skills/caddie/tool/src/recovery');
-const { createAdoptionPlan, createUnmanagementPlan, inspectAdoption } = require('../.agents/skills/caddie/tool/src/adoption');
+
+test('every planned mutation operation has one canonical filesystem strategy', () => {
+  assert.deepEqual(new Set(MUTATION_OPERATION_TYPES.map((type) => strategyFor(type).strategy)), new Set([
+    'directory-replace', 'file-replace', 'remove', 'symlink',
+  ]));
+  for (const type of MUTATION_OPERATION_TYPES) {
+    const definition = strategyFor(type);
+    assert.equal(typeof definition.targetField, 'string');
+    assert.equal(typeof definition.expectedField, 'string');
+  }
+});
+
+test('atomic JSON writes clean their temporary file when publication fails', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-atomic-json-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const destination = path.join(root, 'occupied');
+  await fs.mkdir(destination);
+  await assert.rejects(writeJsonAtomic(destination, { version: 1 }));
+  assert.deepEqual(await fs.readdir(root), ['occupied']);
+});
+const { createAdoptionPlan, createCleanupPlan, createUnmanagementPlan, inspectAdoption } = require('../.agents/skills/caddie/tool/src/adoption');
 
 const journalPathFor = (fx) => path.join(fx.root, '.agents', '.caddie', 'operation-journal.json');
 const lockPathFor = (fx) => path.join(fx.root, '.agents', '.caddie', 'mutation.lock');
@@ -38,7 +59,7 @@ async function reconcilePlan(fx) {
     scope: fx.scope,
     operations: [
       { type: 'materialize-skill', name: 'chosen', sourcePath: fx.source, destinationPath: fx.destination, sourceFingerprint, expectedDestination: { state: 'absent' } },
-      { type: 'ensure-claude-exposure', linkPath: path.join(fx.root, '.claude', 'skills'), targetPath: path.join(fx.root, '.agents', 'skills'), expected: { state: 'absent' } },
+      { type: 'ensure-harness-exposure', harness: 'claude', linkPath: path.join(fx.root, '.claude', 'skills', 'chosen'), targetPath: fx.destination, targetFingerprint: sourceFingerprint, expected: { state: 'absent' } },
       { type: 'write-ledger', path: fx.ledgerPath, content: ledgerContent, expected: { state: 'absent' } },
     ],
   });
@@ -56,7 +77,7 @@ test('exact approval materializes only the complete selected skill and writes le
   assert.equal(result.status, 'applied');
   assert.equal(await fs.readFile(path.join(fx.destination, 'scripts', 'run.js'), 'utf8'), 'console.log("ok")\n');
   assert.equal(await fs.readFile(path.join(unrelated, 'keep.txt'), 'utf8'), 'mine');
-  assert.equal(path.resolve(path.dirname(path.join(fx.root, '.claude', 'skills')), await fs.readlink(path.join(fx.root, '.claude', 'skills'))), path.join(fx.root, '.agents', 'skills'));
+  assert.equal(path.resolve(path.dirname(path.join(fx.root, '.claude', 'skills', 'chosen')), await fs.readlink(path.join(fx.root, '.claude', 'skills', 'chosen'))), fx.destination);
   assert.ok(boundaries.indexOf('ledger-written') > boundaries.indexOf('operation:1'));
 });
 
@@ -134,6 +155,58 @@ test('interruption exposes immutable finish and rollback plans; finish resumes e
   await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
   assert.equal(await exists(fx.ledgerPath), true);
   assert.equal((await recover({ scope: fx.scope })).status, 'clean');
+});
+
+test('interrupted user harness exposure can be recovered at the fixed runtime HOME roots', async (t) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-user-recovery-'));
+  const previousHome = process.env.HOME;
+  const home = path.join(base, 'home');
+  const root = path.join(base, 'config', 'caddie', 'user');
+  const source = path.join(base, 'source', 'chosen');
+  const destination = path.join(root, '.agents', 'skills', 'chosen');
+  await fs.mkdir(home, { recursive: true });
+  await fs.mkdir(root, { recursive: true });
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, 'SKILL.md'), '---\nname: chosen\n---\n');
+  process.env.HOME = home;
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await fs.rm(base, { recursive: true, force: true });
+  });
+  const sourceFingerprint = await fingerprint(source);
+  const links = [
+    { harness: 'codex', linkPath: path.join(home, '.agents', 'skills', 'chosen') },
+    { harness: 'claude', linkPath: path.join(home, '.claude', 'skills', 'chosen') },
+  ];
+  const scope = { id: 'user', root };
+  const plan = createPlan({
+    kind: 'reconcile',
+    scope,
+    operations: [
+      { type: 'materialize-skill', name: 'chosen', sourcePath: source, destinationPath: destination, sourceFingerprint, expectedDestination: { state: 'absent' } },
+      ...links.map(({ harness, linkPath }) => ({
+        type: 'ensure-harness-exposure', harness, linkPath, targetPath: destination,
+        targetFingerprint: sourceFingerprint, expected: { state: 'absent' },
+      })),
+      {
+        type: 'write-ledger', path: path.join(root, '.agents', '.caddie', 'ledger.json'),
+        content: `${JSON.stringify({ version: 1, scopeId: 'user', harnessLinks: links.map(({ linkPath }) => linkPath), entries: [{ name: 'chosen', path: destination, fingerprint: sourceFingerprint }] }, null, 2)}\n`,
+        expected: { state: 'absent' },
+      },
+    ],
+  });
+
+  await assert.rejects(applyPlan({
+    plan,
+    approval: approvePlan(plan),
+    onBoundary(name) { if (name === 'mutation:1:linked') throw new Error('interrupt'); },
+  }), /interrupt/);
+  const recovery = await recover({ scope });
+  assert.equal(recovery.status, 'interrupted');
+  await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
+  assert.equal(await fs.realpath(links[0].linkPath), await fs.realpath(destination));
+  assert.equal(await fs.realpath(links[1].linkPath), await fs.realpath(destination));
 });
 
 test('rollback restores the exact pre-mutation state', async (t) => {
@@ -371,7 +444,7 @@ test('adoption is read-only, preselects exact matches, and treats legacy data as
   assert.equal(proposal.legacy.evidenceOnly, true);
   assert.equal(proposal.legacy.removalRecommended, true);
   assert.equal(await exists(fx.ledgerPath), false);
-  const adoptionPlan = createAdoptionPlan({ scope: fx.scope, proposal, removeLegacy: true });
+  const adoptionPlan = await createAdoptionPlan({ scope: fx.scope, proposal, removeLegacy: true });
   await applyPlan({ plan: adoptionPlan, approval: approvePlan(adoptionPlan) });
   assert.equal(JSON.parse(await fs.readFile(fx.ledgerPath, 'utf8')).entries.length, 1);
   assert.equal(await exists(legacyPath), false);
@@ -384,7 +457,7 @@ test('adoption ledger extras cannot override canonical ownership fields', async 
   await fs.mkdir(path.dirname(fx.destination), { recursive: true });
   await fs.cp(fx.source, fx.destination, { recursive: true });
   const proposal = await inspectAdoption({ scopeRoot: fx.root, candidates: [{ name: 'chosen', sourcePath: fx.source }] });
-  const plan = createAdoptionPlan({
+  const plan = await createAdoptionPlan({
     scope: fx.scope,
     proposal,
     ensureClaude: false,
@@ -395,6 +468,38 @@ test('adoption ledger extras cannot override canonical ownership fields', async 
   assert.equal(ledger.scopeId, fx.scope.id);
   assert.deepEqual(ledger.entries.map((entry) => entry.name), ['chosen']);
   assert.equal(ledger.harmlessExtra, true);
+});
+
+test('adoption refuses a changed installed target before exposing it to Claude', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  await fs.mkdir(path.dirname(fx.destination), { recursive: true });
+  await fs.cp(fx.source, fx.destination, { recursive: true });
+  const proposal = await inspectAdoption({ scopeRoot: fx.root, candidates: [{ name: 'chosen', sourcePath: fx.source }] });
+  const plan = await createAdoptionPlan({ scope: fx.scope, proposal });
+  await fs.writeFile(path.join(fx.destination, 'SKILL.md'), 'changed after approval\n');
+
+  await assert.rejects(applyPlan({ plan, approval: approvePlan(plan) }), (error) => error.code === 'stale-plan');
+  assert.equal(await exists(path.join(fx.root, '.claude', 'skills', 'chosen')), false);
+  assert.equal(await exists(fx.ledgerPath), false);
+});
+
+test('cleanup removes only explicitly selected matching Claude links', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const reconcile = await reconcilePlan(fx);
+  await applyPlan({ plan: reconcile, approval: approvePlan(reconcile) });
+  const unrelatedTarget = path.join(fx.root, 'unrelated');
+  const unrelatedLink = path.join(fx.root, '.claude', 'skills', 'unrelated');
+  await fs.mkdir(unrelatedTarget);
+  await fs.symlink(unrelatedTarget, unrelatedLink, 'dir');
+
+  const cleanup = await createCleanupPlan({ scope: fx.scope, skillPaths: [fx.destination], removeClaudeExposure: true });
+  await applyPlan({ plan: cleanup, approval: approvePlan(cleanup) });
+
+  assert.equal(await exists(fx.destination), false);
+  assert.equal(await exists(path.join(fx.root, '.claude', 'skills', 'chosen')), false);
+  assert.equal(await fs.lstat(unrelatedLink).then((stat) => stat.isSymbolicLink()), true);
 });
 
 test('adoption never accepts a caller-supplied candidate fingerprint as evidence', async (t) => {
@@ -418,7 +523,7 @@ test('unmanagement removes ownership and registration while preserving skills an
   t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
   const reconcile = await reconcilePlan(fx);
   await applyPlan({ plan: reconcile, approval: approvePlan(reconcile) });
-  const registryPath = path.join(fx.scope.configRoot, 'registry.json');
+  const registryPath = path.join(fx.scope.configRoot, 'config.json');
   await fs.mkdir(path.dirname(registryPath), { recursive: true });
   await fs.writeFile(registryPath, '{"projects":["here"]}\n');
   const unmanage = createUnmanagementPlan({
@@ -429,6 +534,6 @@ test('unmanagement removes ownership and registration while preserving skills an
   await applyPlan({ plan: unmanage, approval: approvePlan(unmanage) });
   assert.equal(await exists(fx.ledgerPath), false);
   assert.equal(await exists(fx.destination), true);
-  assert.equal(await fs.lstat(path.join(fx.root, '.claude', 'skills')).then((stat) => stat.isSymbolicLink()), true);
+  assert.equal(await fs.lstat(path.join(fx.root, '.claude', 'skills', 'chosen')).then((stat) => stat.isSymbolicLink()), true);
   assert.deepEqual(JSON.parse(await fs.readFile(registryPath, 'utf8')), { projects: [] });
 });

@@ -5,9 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { canonicalize, verifyPlanIntegrity } = require('../plans');
 const { exists, fingerprint } = require('../apply/filesystem');
-
-const WRITE_TYPES = new Set(['write-manifest', 'write-lock', 'write-registry', 'write-ledger']);
-const REMOVE_TYPES = new Set(['remove-ledger', 'remove-legacy-lock', 'cleanup-preserved-skill', 'cleanup-exposure']);
+const { expectedFor, strategyFor, targetFor } = require('../mutations/strategies');
 const PHASES = new Set(['staged', 'applying', 'verified', 'rolling-back', 'rolled-back']);
 
 class JournalValidationError extends Error {
@@ -55,8 +53,12 @@ async function validateJournal(journal, scope) {
       const scopeRoot = path.resolve(scope.root);
       const configRoot = scope.configRoot && path.resolve(scope.configRoot);
       const anchor = isInside(scopeRoot, resolved) ? scopeRoot : configRoot && isInside(configRoot, resolved) ? configRoot : null;
-      failUnless(anchor, 'embedded plan mutation path is outside its approved scope');
-      await requireRealAncestors(anchor, path.dirname(resolved), 'embedded plan mutation path');
+      const harnessRoot = ['ensure-harness-exposure', 'cleanup-exposure'].includes(operation.type) && scope.id === 'user'
+        ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
+        : null;
+      const approvedAnchor = anchor || (harnessRoot && isInside(harnessRoot, resolved) ? os.homedir() : null);
+      failUnless(approvedAnchor, 'embedded plan mutation path is outside its approved scope');
+      await requireRealAncestors(approvedAnchor, path.dirname(resolved), 'embedded plan mutation path');
     }
     if (operation.sourceCleanup) {
       const cleanupRoot = path.resolve(operation.sourceCleanup.root);
@@ -93,8 +95,8 @@ async function validateJournal(journal, scope) {
 
 async function validateRolledBackState(record, index) {
   const operation = record.operation;
-  const target = operation.destinationPath || operation.path || operation.linkPath;
-  const expected = operation.expectedDestination || operation.expected;
+  const target = targetFor(operation);
+  const expected = expectedFor(operation);
   if (!target || !expected) return;
   const actual = await snapshotPath(target);
   failUnless(canonicalize(actual) === canonicalize(expected), `rolled-back record ${index} does not match its approved pre-state`);
@@ -102,26 +104,28 @@ async function validateRolledBackState(record, index) {
 
 async function validateCompletedState(record, index) {
   const operation = record.operation;
-  if (operation.type === 'materialize-skill') {
+  const strategy = strategyFor(operation)?.strategy;
+  if (strategy === 'directory-replace') {
     failUnless(await exists(operation.destinationPath), `completed record ${index} destination is missing`);
     failUnless(await fingerprint(operation.destinationPath) === record.afterFingerprint, `completed record ${index} destination changed`);
     return;
   }
-  if (WRITE_TYPES.has(operation.type)) {
+  if (strategy === 'file-replace') {
     failUnless(await exists(operation.path), `completed record ${index} state file is missing`);
     failUnless(await fs.readFile(operation.path, 'utf8') === operation.content, `completed record ${index} state content changed`);
     failUnless(await fingerprint(operation.path) === record.afterFingerprint, `completed record ${index} state fingerprint changed`);
     return;
   }
-  if (operation.type === 'ensure-claude-exposure') {
+  if (strategy === 'symlink') {
     const stat = await fs.lstat(operation.linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
     const resolved = stat && stat.isSymbolicLink()
       ? path.resolve(path.dirname(operation.linkPath), await fs.readlink(operation.linkPath))
       : null;
     failUnless(resolved === path.resolve(operation.targetPath), `completed record ${index} exposure changed`);
+    failUnless(await fingerprint(operation.targetPath) === operation.targetFingerprint, `completed record ${index} exposure target changed`);
     return;
   }
-  if (REMOVE_TYPES.has(operation.type)) failUnless(!await exists(operation.path), `completed record ${index} removed path returned`);
+  if (strategy === 'remove') failUnless(!await exists(targetFor(operation)), `completed record ${index} removed path returned`);
 }
 
 async function validateRecord(record, operation, operationRoot, index, journal, terminalCleanup) {
@@ -134,16 +138,18 @@ async function validateRecord(record, operation, operationRoot, index, journal, 
     }
     await validateBackupState(record, operation, index);
   }
-  if (operation.type === 'materialize-skill') {
-    requirePath(record.stagedPath, path.join(operationRoot, 'staged', `${index}-skill`), `record ${index} staged path`);
-    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-skill`), `record ${index} backup path`);
+  const definition = strategyFor(operation);
+  const strategy = definition?.strategy;
+  if (strategy === 'directory-replace') {
+    requirePath(record.stagedPath, path.join(operationRoot, 'staged', `${index}-${definition.storageSuffix}`), `record ${index} staged path`);
+    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`), `record ${index} backup path`);
     failUnless(record.afterFingerprint === operation.sourceFingerprint, `record ${index} materialized fingerprint is invalid`);
     if (await exists(record.stagedPath)) failUnless(await fingerprint(record.stagedPath) === operation.sourceFingerprint, `record ${index} staged skill changed`);
     return;
   }
-  if (WRITE_TYPES.has(operation.type)) {
-    requirePath(record.stagedPath, path.join(operationRoot, 'staged', `${index}-file`), `record ${index} staged path`);
-    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-file`), `record ${index} backup path`);
+  if (strategy === 'file-replace') {
+    requirePath(record.stagedPath, path.join(operationRoot, 'staged', `${index}-${definition.storageSuffix}`), `record ${index} staged path`);
+    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`), `record ${index} backup path`);
     if (await exists(record.stagedPath)) {
       failUnless(await fs.readFile(record.stagedPath, 'utf8') === operation.content, `record ${index} staged state content changed`);
       failUnless(await fingerprint(record.stagedPath) === record.afterFingerprint, `record ${index} staged state fingerprint changed`);
@@ -154,12 +160,12 @@ async function validateRecord(record, operation, operationRoot, index, journal, 
     }
     return;
   }
-  if (REMOVE_TYPES.has(operation.type)) {
-    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-removed`), `record ${index} backup path`);
+  if (strategy === 'remove') {
+    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`), `record ${index} backup path`);
     failUnless(record.stagedPath === undefined, `record ${index} unexpectedly has a staged path`);
     return;
   }
-  if (operation.type === 'ensure-claude-exposure') {
+  if (strategy === 'symlink') {
     failUnless(record.stagedPath === undefined && record.backupPath === undefined, `record ${index} exposure paths are invalid`);
     return;
   }
@@ -170,7 +176,7 @@ async function validateBackupState(record, operation, index) {
   if (!record.backupPath) return;
   const stat = await fs.lstat(record.backupPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!stat) return;
-  const expected = operation.expectedDestination || operation.expected;
+  const expected = expectedFor(operation);
   failUnless(expected && expected.state !== 'absent', `record ${index} has an unexpected backup`);
   if (expected.state === 'symlink') {
     failUnless(stat.isSymbolicLink() && await fs.readlink(record.backupPath) === expected.target, `record ${index} backup symlink changed`);
@@ -183,7 +189,7 @@ async function snapshotLivePreconditions(journal) {
   const paths = new Set([journal.operationRoot]);
   for (const record of journal.records) {
     const operation = record.operation;
-    paths.add(operation.destinationPath || operation.path || operation.linkPath);
+    paths.add(targetFor(operation));
   }
   const preconditions = [];
   for (const candidate of paths) {
