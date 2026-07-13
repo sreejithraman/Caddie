@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ const vendorRoot = path.join(root, 'skills', 'caddie', 'tool', 'vendor');
 const check = process.argv.slice(2).includes('--check');
 const outputRoot = check ? await mkdtemp(path.join(os.tmpdir(), 'caddie-yaml-vendor-')) : vendorRoot;
 const yamlPackage = JSON.parse(await readFile(path.join(root, 'node_modules', 'yaml', 'package.json'), 'utf8'));
+const yamlLicense = await readFile(path.join(root, 'node_modules', 'yaml', 'LICENSE'), 'utf8');
 
 try {
   await mkdir(outputRoot, { recursive: true });
@@ -21,14 +22,15 @@ try {
     target: 'node22',
     minify: true,
     legalComments: 'none',
-    banner: { js: `/* yaml ${yamlPackage.version} — ${yamlPackage.license} license; see YAML-LICENSE.txt */` },
+    banner: { js: `/*!
+yaml ${yamlPackage.version} — ${yamlPackage.license}
+
+${yamlLicense.trim()}
+*/` },
   });
 
-  const license = await readFile(path.join(root, 'node_modules', 'yaml', 'LICENSE'));
-  await writeFile(path.join(outputRoot, 'YAML-LICENSE.txt'), license);
-
   if (check) {
-    for (const name of ['yaml.cjs', 'YAML-LICENSE.txt']) {
+    for (const name of ['yaml.cjs']) {
       const [generated, committed] = await Promise.all([
         readFile(path.join(outputRoot, name)),
         readFile(path.join(vendorRoot, name)),

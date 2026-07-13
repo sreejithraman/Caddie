@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { compareSkillEvidence } from '../compare/index.mjs';
 import { inspect as inspectAvailableSkills } from '../context/inspect.mjs';
-import { applyChangeSandbox, applyPublicationPlan, buildPublicationPlan, reconstructChangeSets } from '../changeset/index.mjs';
 import {
   inspectGitSource,
   inspectLocalSource,
@@ -13,7 +12,6 @@ import {
 } from '../sources/index.mjs';
 import { ToolError, invalid } from './errors.mjs';
 import { authorizedUserHarnessLinks, loadOwnershipLedger, validateLedgerProposal } from './ledger-ownership.mjs';
-import { applyPreparationWorkflow, createPreparationWorkflowPlan } from './preparation-workflows.mjs';
 import { planProjectRegistration } from '../registry/plan-registration.mjs';
 
 const require = createRequire(import.meta.url);
@@ -44,9 +42,8 @@ async function inspectOperation(input, runtime) {
     if (input.view === 'adoption') {
       return { proposal: await inspectAdoption({ ...input, home: runtimeHome(input, runtime) }), coverage: completeCoverage() };
     }
-    if (input.view === 'change-sets') {
-      const result = reconstructChangeSets(input);
-      return withProtocolCoverage(result, result.coverage);
+    if (input.view !== undefined) {
+      throw invalid('unsupported-inspect-view', `Unsupported inspect view: ${String(input.view)}`);
     }
     return inspectAvailableSkills(input, runtime);
   } catch (error) {
@@ -90,14 +87,10 @@ async function planOperation(input, runtime) {
       plan = createUnmanagementPlan({ ...input, home });
     } else if (input.workflow === 'cleanup') {
       plan = await createCleanupPlan({ ...input, home });
-    } else if (input.workflow === 'publication') {
-      return { publicationPlan: buildPublicationPlan(input), coverage: completeCoverage() };
-    } else if (input.workflow === 'sandbox-apply') {
-      if (!input.preparation?.applyPlan) throw invalid('sandbox-preparation-required', 'A prepared Change Sandbox is required');
-      plan = input.preparation.applyPlan;
-    } else if (['prepare-git-change', 'prepare-change-sandbox', 'publish-git-change'].includes(input.workflow)) {
-      plan = await createPreparationWorkflowPlan(input, runtime);
     } else {
+      if (input.workflow !== undefined) {
+        throw invalid('unsupported-plan-workflow', `Unsupported plan workflow: ${String(input.workflow)}`);
+      }
       if (input.kind === 'reconcile') {
         const registration = await planProjectRegistration(input, runtime);
         const operations = registration.operation ? [registration.operation, ...input.operations] : input.operations;
@@ -258,16 +251,6 @@ async function loadUserHarnessOwnership(input, runtime, scope, home) {
 async function applyPlanOperation(input) {
   try {
     const kind = input.plan?.kind;
-    if (kind === 'publication') return { ...(await applyPublicationPlan(input.plan, input.approval)), coverage: completeCoverage() };
-    if (kind === 'prepare-git-change' || kind === 'prepare-change-sandbox') {
-      return { preparation: await applyPreparationWorkflow(input.plan, input.approval), coverage: completeCoverage() };
-    }
-    if (kind === 'publish-git-change') {
-      return { ...(await applyPreparationWorkflow(input.plan, input.approval)), coverage: completeCoverage() };
-    }
-    if (kind === 'sandbox-apply') {
-      return { ...(await applyChangeSandbox(input.plan, { approval: input.approval })), coverage: completeCoverage() };
-    }
     if (['reconcile', 'adopt', 'unmanage', 'cleanup', 'recovery'].includes(kind)) {
       return { ...(await applyPlan(input)), coverage: completeCoverage() };
     }

@@ -429,42 +429,7 @@ test('user-scope adoption keeps the standard installation and adds Claude compat
   assert.equal(spawnSync('test', ['-e', path.join(home, '.claude', 'skills', 'fixture')]).status, 1);
 });
 
-test('JSON workflow prepares and applies a non-Git Change Sandbox after exact approvals', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-sandbox-workflow-'));
-  const source = path.join(root, 'source');
-  await mkdir(source);
-  await writeFile(path.join(source, 'value.txt'), 'before\n');
-  const planned = invoke('plan', {
-    workflow: 'prepare-change-sandbox',
-    source,
-    slug: 'change-value',
-    workspaceRoot: path.join(root, 'sandboxes'),
-    changes: [{ path: 'value.txt', content: 'after\n' }],
-    validationCommands: [[process.execPath, '-e', "require('node:fs').accessSync('value.txt')"]],
-  });
-  assert.equal(planned.ok, true, JSON.stringify(planned));
-
-  const prepared = invoke('apply-plan', {
-    plan: planned.result.plan,
-    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
-  });
-  assert.equal(prepared.ok, true, JSON.stringify(prepared));
-  assert.equal(await readFile(path.join(prepared.result.preparation.directory, 'value.txt'), 'utf8'), 'after\n');
-  assert.equal(await readFile(path.join(source, 'value.txt'), 'utf8'), 'before\n');
-
-  const applyPlan = invoke('plan', {
-    workflow: 'sandbox-apply',
-    preparation: prepared.result.preparation,
-  });
-  const applied = invoke('apply-plan', {
-    plan: applyPlan.result.plan,
-    approval: { version: 1, planId: applyPlan.result.plan.id, approval: 'explicit' },
-  });
-  assert.equal(applied.ok, true, JSON.stringify(applied));
-  assert.equal(await readFile(path.join(source, 'value.txt'), 'utf8'), 'after\n');
-});
-
-test('apply-plan dispatches by explicit kind and rejects sandbox shape sniffing', () => {
+test('apply-plan dispatches by explicit kind and rejects lookalike plan shapes', () => {
   const rejected = invoke('apply-plan', {
     plan: {
       version: 1,
@@ -482,125 +447,6 @@ test('apply-plan dispatches by explicit kind and rejects sandbox shape sniffing'
   assert.equal(rejected.error.code, 'unsupported-plan-kind');
 });
 
-test('JSON preparation rejects a final-component symlink without writing through it', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-symlink-write-'));
-  const source = path.join(root, 'source');
-  const outside = path.join(root, 'outside.txt');
-  await mkdir(source);
-  await writeFile(outside, 'preserve\n');
-  await symlink(outside, path.join(source, 'value.txt'));
-  const planned = invoke('plan', {
-    workflow: 'prepare-change-sandbox',
-    source,
-    slug: 'reject-symlink',
-    workspaceRoot: path.join(root, 'sandboxes'),
-    changes: [{ path: 'value.txt', content: 'escape\n' }],
-    validationCommands: [[process.execPath, '-e', 'process.exit(0)']],
-  });
-  const prepared = invoke('apply-plan', {
-    plan: planned.result.plan,
-    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
-  });
-
-  assert.equal(prepared.ok, false);
-  assert.match(prepared.error.message, /final-component symlink/);
-  assert.equal(await readFile(outside, 'utf8'), 'preserve\n');
-});
-
-test('publication is reachable as an immutable approval-bound JSON workflow', () => {
-  const planned = invoke('plan', {
-    workflow: 'publication',
-    changeSetId: 'json-change-set',
-    preparations: [{
-      id: 'source',
-      kind: 'git',
-      repository: '/tmp/source-repository',
-      worktree: '/tmp/source-worktree',
-      branch: 'caddie/source',
-      baseRef: 'origin/main',
-      baseCommit: 'base-commit',
-      headCommit: 'head-commit',
-      remote: true,
-      remoteUrl: 'git@github.com:owner/source.git',
-      expectedRemoteBranchCommit: null,
-    }],
-  });
-  assert.equal(planned.ok, true, JSON.stringify(planned));
-  assert.equal(planned.result.publicationPlan.kind, 'publication');
-  assert.match(planned.result.publicationPlan.id, /^[0-9a-f]{64}$/);
-
-  const rejected = invoke('apply-plan', {
-    plan: planned.result.publicationPlan,
-    approval: { version: 1, approval: 'explicit', planId: 'not-the-plan' },
-  });
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.error.code, 'unapproved-plan');
-});
-
-test('one public approval creates and pushes one focused commit', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'caddie-one-approval-'));
-  const remote = path.join(root, 'remote.git');
-  const seed = path.join(root, 'seed');
-  const repository = path.join(root, 'repository');
-  gitSync(root, ['init', '--bare', '--initial-branch=main', remote]);
-  gitSync(root, ['init', '--initial-branch=main', seed]);
-  await writeFile(path.join(seed, 'value.txt'), 'before\n');
-  gitSync(seed, ['add', '.']);
-  gitSync(seed, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'base']);
-  gitSync(seed, ['remote', 'add', 'origin', remote]);
-  gitSync(seed, ['push', '-u', 'origin', 'main']);
-  gitSync(root, ['clone', remote, repository]);
-  const base = gitSync(repository, ['rev-parse', 'HEAD']).stdout.trim();
-
-  const planned = invoke('plan', {
-    workflow: 'publish-git-change',
-    repository,
-    slug: 'one-approval',
-    workspaceRoot: path.join(root, 'worktrees'),
-    expectedBaseCommit: base,
-    changes: [{ path: 'value.txt', content: 'after\n' }],
-    validationCommands: [[process.execPath, '-e', "require('node:fs').accessSync('value.txt')"]],
-    changeSetId: 'single-approval',
-    changeId: 'fixture',
-    remotePushUrl: remote,
-    expectedRemoteBranchCommit: null,
-  });
-  assert.equal(planned.ok, true, JSON.stringify(planned));
-  assert.match(planned.result.plan.publication.headCommit, /^[0-9a-f]{40,64}$/);
-
-  const applied = invoke('apply-plan', {
-    plan: planned.result.plan,
-    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
-  });
-  assert.equal(applied.ok, true, JSON.stringify(applied));
-  assert.equal(applied.result.preparation.headCommit, planned.result.plan.publication.headCommit);
-  const remoteHead = gitSync(root, ['--git-dir', remote, 'rev-parse', 'refs/heads/caddie/one-approval']).stdout.trim();
-  assert.equal(remoteHead, applied.result.preparation.headCommit);
-  assert.equal(gitSync(repository, ['show', 'HEAD:value.txt']).stdout, 'before\n');
-  assert.equal(gitSync(root, ['--git-dir', remote, 'show', `${remoteHead}:value.txt`]).stdout, 'after\n');
-
-  const resumed = invoke('apply-plan', {
-    plan: planned.result.plan,
-    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
-  });
-  assert.equal(resumed.ok, true, JSON.stringify(resumed));
-  assert.equal(resumed.result.preparation.headCommit, remoteHead);
-});
-
-test('public Git preparation planning rejects a moving base before approval', () => {
-  const planned = invoke('plan', {
-    workflow: 'prepare-git-change',
-    repository: '/unused',
-    slug: 'moving-base',
-    changes: [{ path: 'value.txt', content: 'after\n' }],
-    validationCommands: [[process.execPath, '-e', 'process.exit(0)']],
-  });
-
-  assert.equal(planned.ok, false);
-  assert.equal(planned.error.code, 'expected-base-commit-required');
-  assert.equal(planned.error.disposition, 'invalid');
-});
-
 function complete(digest) {
   return { complete: true, digest };
 }
@@ -614,10 +460,4 @@ function invoke(operation, input, env = {}) {
   });
   assert.equal(result.stderr, '');
   return JSON.parse(result.stdout);
-}
-
-function gitSync(cwd, args) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stderr);
-  return result;
 }
