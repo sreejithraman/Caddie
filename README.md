@@ -6,7 +6,7 @@ It is designed to give an agent a bird's-eye view of a user's skill environment:
 
 ## Status
 
-Caddie is currently specified but not yet implemented.
+Caddie v1 is under active implementation.
 
 - [Caddie v1 specification](https://github.com/sreejithraman/Caddie/issues/1)
 - [First implementation ticket](https://github.com/sreejithraman/Caddie/issues/2)
@@ -35,6 +35,18 @@ Caddie is an Agent App, not a human-facing package-manager CLI. Its scripts are 
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
 The GitHub v1 specification is the normative implementation source.
+
+## Agent Tool
+
+The deterministic tool accepts one versioned JSON request on standard input:
+
+```sh
+printf '%s\n' '{"version":1,"operation":"locate","input":{"cwd":"/path/to/project"}}' | node bin/caddie-tool.mjs
+```
+
+The Caddie Skill is in `.agents/skills/caddie`. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
+
+See [the protocol](docs/protocol.md) and [persisted formats](docs/formats.md).
 
 ## License
 

@@ -1,0 +1,14 @@
+{
+  "name": "caddie-agent-app",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "caddie-tool": "./bin/caddie-tool.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
