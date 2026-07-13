@@ -32,20 +32,27 @@ async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scope
       });
       continue;
     }
+    const evidence = {
+      name,
+      installedPath,
+      preserved: true,
+      extensionFields: skillShape.extensionFields,
+      legacyEvidence: legacy.entries[name] || null,
+    };
     if (duplicateNames.has(name)) {
-      entries.push({ name, installedPath, classification: 'colliding', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
+      entries.push({ ...evidence, classification: 'colliding', preselected: false });
       continue;
     }
     let installedFingerprint;
     try { installedFingerprint = await fingerprint(installedPath); } catch (error) {
       if (isPermissionFailure(error)) {
-        entries.push({ name, installedPath, classification: 'permission-blocked', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
+        entries.push({ ...evidence, classification: 'permission-blocked', preselected: false });
         continue;
       }
       throw error;
     }
     if (!candidate) {
-      entries.push({ name, installedPath, installedFingerprint, classification: 'unknown', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
+      entries.push({ ...evidence, installedFingerprint, classification: 'unknown', preselected: false });
       continue;
     }
     // Candidate metadata is only a hint about where evidence can be read. A
@@ -55,7 +62,7 @@ async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scope
     if (candidate.sourcePath) {
       try { sourceFingerprint = await fingerprint(candidate.sourcePath); } catch (error) {
         if (isPermissionFailure(error) || error.code === 'ENOENT') {
-          entries.push({ name, installedPath, installedFingerprint, classification: 'permission-blocked', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
+          entries.push({ ...evidence, installedFingerprint, classification: 'permission-blocked', preselected: false });
           continue;
         }
         throw error;
@@ -63,17 +70,13 @@ async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scope
     }
     const exact = typeof sourceFingerprint === 'string' && sourceFingerprint === installedFingerprint;
     entries.push({
-      name,
-      installedPath,
+      ...evidence,
       installedFingerprint,
       sourceFingerprint,
       sourceId: candidate.sourceId,
       selectedPath: candidate.selectedPath,
       classification: exact ? 'exact' : 'modified',
       preselected: exact,
-      preserved: true,
-      extensionFields: skillShape.extensionFields,
-      legacyEvidence: legacy.entries[name] || null,
     });
   }
 
