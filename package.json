@@ -1,0 +1,15 @@
+{
+  "name": "caddie-agent-app",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "caddie-tool": "./bin/caddie-tool.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:release": "CADDIE_REQUIRE_CLAUDE=1 CADDIE_REQUIRE_CODEX=1 node --test test/claude-harness.test.cjs test/v1-acceptance.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -6,7 +6,7 @@ It is designed to give an agent a bird's-eye view of a user's skill environment:
 
 ## Status
 
-Caddie is currently specified but not yet implemented.
+Caddie v1 is under active implementation.
 
 - [Caddie v1 specification](https://github.com/sreejithraman/Caddie/issues/1)
 - [First implementation ticket](https://github.com/sreejithraman/Caddie/issues/2)
@@ -17,14 +17,14 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 
 - Keep User Skills available across projects.
 - Add project-owned capabilities through Project Skills.
-- Expose one canonical `.agents/skills` installation to Codex and Claude.
+- Expose each canonical User Skill to the actual Codex and Claude user harness roots without duplicating its content.
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
 - Prepare repository changes in isolated worktrees and draft pull requests.
 - Inspect every registered project from one conversational bird's-eye view.
 
-Caddie is an Agent App, not a human-facing package-manager CLI. Its scripts are tools for the agent; bootstrap is the only intended direct shell interaction.
+Caddie is an Agent App. Users interact through the Caddie Skill, which directs the Caddie Tool; bootstrap is the only intended direct shell interaction.
 
 ## Design principles
 
@@ -35,6 +35,18 @@ Caddie is an Agent App, not a human-facing package-manager CLI. Its scripts are 
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
 The GitHub v1 specification is the normative implementation source.
+
+## Caddie Tool
+
+The deterministic tool accepts one versioned JSON request on standard input:
+
+```sh
+printf '%s\n' '{"version":1,"operation":"locate","input":{"cwd":"/path/to/project"}}' | node bin/caddie-tool.mjs
+```
+
+The Caddie Skill is in `.agents/skills/caddie`. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
+
+See [the protocol](docs/protocol.md) and [persisted formats](docs/formats.md).
 
 ## License
 
