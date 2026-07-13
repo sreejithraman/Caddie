@@ -12,11 +12,12 @@ const tool = path.join(repositoryRoot, 'bin', 'caddie-tool.mjs');
 test('returns exactly one versioned JSON envelope for locate without making writes', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-locate-'));
   const project = path.join(fixture, 'project');
+  const home = path.join(fixture, 'home');
   const configHome = path.join(fixture, 'config');
   await mkdir(project, { recursive: true });
   const before = await tree(fixture);
 
-  const result = invoke({ version: 1, operation: 'locate', input: { cwd: project, configHome } });
+  const result = invoke({ version: 1, operation: 'locate', input: { cwd: project, home, configHome } });
 
   assert.equal(result.status, 0);
   assert.equal(result.stderr, '');
@@ -26,19 +27,19 @@ test('returns exactly one versioned JSON envelope for locate without making writ
     ok: true,
     operation: 'locate',
     result: {
-      user: { manifestPath: path.join(configHome, 'caddie', 'caddie.json'), status: 'missing' },
+      user: { root: home, manifestPath: path.join(home, '.agents', '.caddie', 'manifest.json'), status: 'missing' },
       project: { root: project, manifestPath: null, status: 'missing' },
       registry: {
         status: 'missing',
-        configPath: path.join(configHome, 'caddie', 'config.json'),
-        userManifest: null,
+        registryPath: path.join(home, '.agents', '.caddie', 'registry.json'),
         registeredProjects: [],
       },
+      legacy: { configPath: path.join(configHome, 'caddie', 'config.json'), status: 'missing' },
     },
     coverage: {
       status: 'partial',
       issues: [
-        { scope: 'user', code: 'manifest-missing', path: path.join(configHome, 'caddie', 'caddie.json') },
+        { scope: 'user', code: 'manifest-missing', path: path.join(home, '.agents', '.caddie', 'manifest.json') },
         { scope: 'project', code: 'manifest-missing', path: null },
       ],
     },
@@ -55,8 +56,8 @@ test('inspect composes User Skills and Project Skills and reads names from SKILL
   await skill(path.join(userSource, 'shared-helper'), 'shared-helper');
   await skill(path.join(projectSource, 'project-helper'), 'project-helper');
   await mkdir(project, { recursive: true });
-  const userManifest = path.join(user, 'caddie.json');
-  const projectManifest = path.join(project, 'caddie.json');
+  const userManifest = path.join(user, '.agents', '.caddie', 'manifest.json');
+  const projectManifest = path.join(project, '.agents', '.caddie', 'manifest.json');
   await json(userManifest, {
     manifestVersion: 1,
     scope: 'user',
@@ -74,7 +75,7 @@ test('inspect composes User Skills and Project Skills and reads names from SKILL
   const result = invoke({
     version: 1,
     operation: 'inspect',
-    input: { cwd: project, userManifestPath: userManifest },
+    input: { cwd: project, home: user },
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -96,11 +97,11 @@ test('inspect lets a project skill shadow a same-named user skill with explicit 
   const project = path.join(fixture, 'project');
   await skill(path.join(user, 'source', 'same-name'), 'same-name');
   await skill(path.join(project, 'source', 'same-name'), 'same-name');
-  const userManifest = path.join(user, 'caddie.json');
+  const userManifest = path.join(user, '.agents', '.caddie', 'manifest.json');
   await json(userManifest, manifest('user', './source', 'same-name'));
-  await json(path.join(project, 'caddie.json'), manifest('project', './source', 'same-name'));
+  await json(path.join(project, '.agents', '.caddie', 'manifest.json'), manifest('project', './source', 'same-name'));
 
-  const result = invoke({ version: 1, operation: 'inspect', input: { cwd: project, userManifestPath: userManifest } });
+  const result = invoke({ version: 1, operation: 'inspect', input: { cwd: project, home: user } });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const envelope = JSON.parse(result.stdout);
@@ -120,9 +121,9 @@ test('inspect lets a project skill shadow a same-named user skill with explicit 
 test('unsupported manifests are bounded partial evidence and unsupported protocol versions are invalid', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-version-'));
   const project = path.join(fixture, 'project');
-  await json(path.join(project, 'caddie.json'), { manifestVersion: 2, scope: 'project', sources: {}, skills: [] });
+  await json(path.join(project, '.agents', '.caddie', 'manifest.json'), { manifestVersion: 2, scope: 'project', sources: {}, skills: [] });
 
-  const manifestResult = invoke({ version: 1, operation: 'inspect', input: { cwd: project, userManifestPath: path.join(fixture, 'missing.json') } });
+  const manifestResult = invoke({ version: 1, operation: 'inspect', input: { cwd: project, home: path.join(fixture, 'home') } });
   assert.equal(manifestResult.status, 0);
   assert.equal(JSON.parse(manifestResult.stdout).result.scopes.project.status, 'unsupported');
   assert.equal(JSON.parse(manifestResult.stdout).coverage.issues[1].code, 'unsupported-manifest-version');
@@ -141,8 +142,8 @@ test('invalid input and selections cannot contaminate stdout or escape a source'
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-escape-'));
   const project = path.join(fixture, 'project');
   await skill(path.join(fixture, 'outside'), 'outside');
-  await json(path.join(project, 'caddie.json'), manifest('project', './source', '../../outside'));
-  const escaped = invoke({ version: 1, operation: 'inspect', input: { cwd: project, userManifestPath: path.join(fixture, 'missing') } });
+  await json(path.join(project, '.agents', '.caddie', 'manifest.json'), manifest('project', './source', '../../outside'));
+  const escaped = invoke({ version: 1, operation: 'inspect', input: { cwd: project, home: path.join(fixture, 'home') } });
   assert.equal(JSON.parse(escaped.stdout).error.code, 'selection-outside-source');
 });
 

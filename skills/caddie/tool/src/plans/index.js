@@ -4,13 +4,13 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
 const { MUTATION_OPERATION_TYPES, RECOVERY_OPERATION_TYPES } = require('../mutations/strategies');
-const { canonicalSkillsRoot, claudeSkillsRoot, stateRoot } = require('../layout');
+const { canonicalSkillsRoot, claudeSkillsRoot, scopeLayout, userLayout } = require('../layout');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
 
 const OPERATION_SET = new Set(OPERATION_TYPES);
-const PLAN_KINDS = new Set(['reconcile', 'adopt', 'unmanage', 'cleanup', 'recovery']);
+const PLAN_KINDS = new Set(['reconcile', 'adopt', 'unmanage', 'cleanup', 'migrate', 'recovery']);
 
 class PlanError extends Error {
   constructor(message, code = 'invalid-plan') {
@@ -60,9 +60,9 @@ function validateOperation(operation, scope, kind, home) {
     throw new PlanError(`operation type is not allowlisted: ${operation && operation.type}`);
   }
 
-  const root = path.resolve(scope.root);
   const canonicalRoot = canonicalSkillsRoot(scope, home);
-  const caddieStateRoot = stateRoot(scope);
+  const layout = scopeLayout(scope, home);
+  const caddieStateRoot = layout.stateRoot;
 
   if (operation.type === 'materialize-skill') {
     assertAbsolute(operation.sourcePath, 'sourcePath');
@@ -111,8 +111,8 @@ function validateOperation(operation, scope, kind, home) {
   }
 
   if (['write-manifest', 'write-lock'].includes(operation.type)) {
-    const expectedName = operation.type === 'write-manifest' ? 'caddie.json' : 'caddie.lock';
-    if (path.resolve(operation.path) !== path.join(root, expectedName)) throw new PlanError(`${operation.type} path is outside its fixed location`);
+    const expectedPath = operation.type === 'write-manifest' ? layout.manifestPath : layout.lockPath;
+    if (path.resolve(operation.path) !== expectedPath) throw new PlanError(`${operation.type} path is outside its fixed location`);
     validateExpected(operation.expected, `${operation.type} expected state`);
     if (typeof operation.content !== 'string') throw new PlanError(`${operation.type} requires exact content`);
     return;
@@ -125,24 +125,30 @@ function validateOperation(operation, scope, kind, home) {
     return;
   }
 
-  if (operation.type === 'write-machine-config') {
-    assertAbsolute(scope.configRoot, 'scope.configRoot');
-    const fixedPath = scope.machineConfigPath
-      ? path.resolve(scope.machineConfigPath)
-      : path.join(path.resolve(scope.configRoot), 'config.json');
-    if (!isInside(scope.configRoot, fixedPath) || path.resolve(operation.path) !== fixedPath) {
-      throw new PlanError('machine configuration writes must target the fixed machineConfigPath under scope.configRoot');
+  if (operation.type === 'write-registry') {
+    if (path.resolve(operation.path) !== userLayout(home).registryPath) {
+      throw new PlanError('registry writes must target the fixed User Caddie state root');
     }
-    validateExpected(operation.expected, 'machine configuration expected state');
-    if (typeof operation.content !== 'string') throw new PlanError('write-machine-config requires exact content');
+    validateExpected(operation.expected, 'registry expected state');
+    if (typeof operation.content !== 'string') throw new PlanError('write-registry requires exact content');
     return;
   }
 
-  if (operation.type === 'remove-legacy-lock') {
-    if (kind !== 'adopt' || path.resolve(operation.path) !== path.join(root, '.skill-lock.json')) {
-      throw new PlanError('legacy lock removal is allowed only by adoption at the fixed legacy path');
+  if (operation.type === 'remove-legacy-state') {
+    assertAbsolute(scope.legacyConfigHome, 'scope.legacyConfigHome');
+    const legacyRoot = path.join(path.resolve(scope.legacyConfigHome), 'caddie');
+    if (kind !== 'migrate' || path.resolve(operation.path) !== legacyRoot) {
+      throw new PlanError('legacy state removal is allowed only by migration at the fixed legacy root');
     }
-    validateExpected(operation.expected, 'legacy lock expected state');
+    validateExpected(operation.expected, 'legacy state expected state');
+    return;
+  }
+
+  if (operation.type === 'remove-legacy-manager-state') {
+    if (kind !== 'cleanup' || path.resolve(operation.path) !== userLayout(home).legacySkillLockPath) {
+      throw new PlanError('legacy manager cleanup is limited to the fixed User Skills lock');
+    }
+    validateExpected(operation.expected, 'legacy manager state expected state');
     return;
   }
 
@@ -192,6 +198,9 @@ function createPlan(input) {
   if (!input.scope || typeof input.scope.id !== 'string') throw new PlanError('scope.id is required');
   assertAbsolute(input.scope.root, 'scope.root');
   const home = planHome(input);
+  if (input.scope.id === 'user' && path.resolve(input.scope.root) !== home) {
+    throw new PlanError('User Skills scope root must equal the plan home');
+  }
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new PlanError('plan requires at least one operation');
   input.operations.forEach((operation) => validateOperation(operation, input.scope, input.kind, home));
 
@@ -231,7 +240,7 @@ function verifyPlanIntegrity(plan) {
 }
 
 function planHome(plan) {
-  const candidate = plan?.home ?? os.homedir();
+  const candidate = plan?.home ?? (plan?.scope?.id === 'user' ? plan.scope.root : os.homedir());
   if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) {
     throw new PlanError('plan home must be an absolute path');
   }

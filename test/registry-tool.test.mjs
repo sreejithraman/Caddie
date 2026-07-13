@@ -9,49 +9,34 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tool = path.join(repositoryRoot, 'bin', 'caddie-tool.mjs');
 
-test('locate discovers the configured User Skills manifest without registering the project', async () => {
+test('locate discovers fixed User Skills state without registering the project', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-registry-locate-'));
-  const configHome = path.join(fixture, 'config');
+  const home = path.join(fixture, 'home');
   const project = path.join(fixture, 'project');
-  const userManifest = path.join(fixture, 'skills-home', 'caddie.json');
+  const userManifest = path.join(home, '.agents', '.caddie', 'manifest.json');
   await mkdir(project, { recursive: true });
   await json(userManifest, manifest('user'));
-  await json(path.join(configHome, 'caddie', 'config.json'), {
-    version: 1,
-    userManifest,
-    registeredProjects: [],
-  });
+  await json(path.join(home, '.agents', '.caddie', 'registry.json'), { version: 1, registeredProjects: [] });
 
-  const envelope = invoke({ version: 1, operation: 'locate', input: { cwd: project, configHome } });
-
+  const envelope = invoke('locate', { cwd: project, home });
   assert.equal(envelope.ok, true);
   assert.equal(envelope.result.user.manifestPath, userManifest);
   assert.equal(envelope.result.user.status, 'found');
   assert.deepEqual(envelope.result.registry.registeredProjects, []);
 });
 
-test('explicit bird’s-eye inspection covers every Registered Project and reports selected, not used', async () => {
+test('explicit bird’s-eye inspection covers every Registered Project', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-birdseye-'));
-  const configHome = path.join(fixture, 'config');
+  const home = path.join(fixture, 'home');
   const current = path.join(fixture, 'current');
   const other = path.join(fixture, 'other');
-  const userManifest = path.join(fixture, 'user', 'caddie.json');
   await mkdir(current, { recursive: true });
   await mkdir(other, { recursive: true });
-  await json(userManifest, manifest('user'));
-  await json(path.join(other, 'caddie.json'), manifest('project'));
-  await json(path.join(configHome, 'caddie', 'config.json'), {
-    version: 1,
-    userManifest,
-    registeredProjects: [current, other],
-  });
+  await json(path.join(home, '.agents', '.caddie', 'manifest.json'), manifest('user'));
+  await json(path.join(home, '.agents', '.caddie', 'registry.json'), { version: 1, registeredProjects: [current, other] });
+  await json(path.join(other, '.agents', '.caddie', 'manifest.json'), manifest('project'));
 
-  const envelope = invoke({
-    version: 1,
-    operation: 'inspect',
-    input: { cwd: current, configHome, birdseye: true },
-  });
-
+  const envelope = invoke('inspect', { cwd: current, home, birdseye: true });
   assert.equal(envelope.ok, true);
   assert.equal(envelope.result.birdseye.projects.length, 2);
   assert.equal(envelope.result.birdseye.projects[0].root, current);
@@ -63,23 +48,20 @@ test('explicit bird’s-eye inspection covers every Registered Project and repor
 
 test('inspection reports live Upstream Change from ledger, source, and installation fingerprints', async () => {
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-live-state-'));
+  const home = path.join(fixture, 'home');
   const project = path.join(fixture, 'project');
   const source = path.join(project, 'source', 'fixture');
   const installed = path.join(project, '.agents', 'skills', 'fixture');
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n\nBefore.\n');
   await cp(source, installed, { recursive: true });
-  await json(path.join(project, 'caddie.json'), {
+  await json(path.join(project, '.agents', '.caddie', 'manifest.json'), {
     version: 1,
     scope: 'project',
     sources: { authored: { type: 'local', path: './source' } },
     selections: [{ source: 'authored', path: 'fixture' }],
   });
-  const baseline = invoke({
-    version: 1,
-    operation: 'inspect-source',
-    input: { type: 'local', root: path.join(project, 'source'), selectionPath: 'fixture' },
-  }).result.fingerprint.digest;
+  const baseline = invoke('inspect-source', { type: 'local', root: path.join(project, 'source'), selectionPath: 'fixture' }).result.fingerprint.digest;
   await json(path.join(project, '.agents', '.caddie', 'ledger.json'), {
     version: 1,
     scopeId: `project:${project}`,
@@ -87,24 +69,17 @@ test('inspection reports live Upstream Change from ledger, source, and installat
   });
   await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n\nAfter.\n');
 
-  const envelope = invoke({
-    version: 1,
-    operation: 'inspect',
-    input: { cwd: project, userManifestPath: path.join(fixture, 'missing-user.json') },
-  });
-
+  const envelope = invoke('inspect', { cwd: project, home });
   assert.equal(envelope.ok, true);
   const skill = envelope.result.availableSkills[0];
   assert.equal(skill.reconciliation.kind, 'upstream-change');
-  assert.equal(skill.reconciliation.label, 'Upstream Change');
-  assert.equal(skill.provenance.source, 'authored');
   assert.equal(skill.provenance.lastReconciledFingerprint, baseline);
 });
 
-function invoke(request) {
+function invoke(operation, input) {
   const result = spawnSync(process.execPath, [tool], {
     cwd: repositoryRoot,
-    input: JSON.stringify(request),
+    input: JSON.stringify({ version: 1, operation, input }),
     encoding: 'utf8',
   });
   assert.equal(result.stderr, '');

@@ -6,7 +6,7 @@ import { validateSelectionMetadata } from './selection-metadata.mjs';
 
 export const MANIFEST_VERSION = 1;
 
-export async function parseManifest(manifestPath, expectedScope) {
+export async function parseManifest(manifestPath, expectedScope, scopeRoot = path.dirname(manifestPath)) {
   let text;
   try {
     text = await readFile(manifestPath, 'utf8');
@@ -45,7 +45,7 @@ export async function parseManifest(manifestPath, expectedScope) {
     });
   }
 
-  const sources = normaliseSources(value.sources, manifestPath);
+  const sources = normaliseSources(value.sources, manifestPath, scopeRoot);
   const skills = value.skills ?? value.selections ?? [];
   if (!Array.isArray(skills)) {
     throw invalid('invalid-skill-selections', 'Caddie Manifest skills must be an array', { manifestPath });
@@ -59,7 +59,7 @@ export async function parseManifest(manifestPath, expectedScope) {
   return { manifestVersion: version, scope: value.scope, sources, skills, manifestPath };
 }
 
-function normaliseSources(raw, manifestPath) {
+function normaliseSources(raw, manifestPath, scopeRoot) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) && raw.some((item) => !item || typeof item !== 'object')) {
     throw invalid('invalid-sources', 'Caddie Manifest sources must be an object or array', { manifestPath });
   }
@@ -81,7 +81,7 @@ function normaliseSources(raw, manifestPath) {
       if (typeof source.path !== 'string' || !source.path || Object.hasOwn(source, 'url') || Object.hasOwn(source, 'ref')) {
         throw invalid('invalid-local-source', `Local Skill Source ${name} must have only a path`, { manifestPath, source: name });
       }
-      sources[name] = { name, type: 'local', path: path.resolve(path.dirname(manifestPath), source.path) };
+      sources[name] = { name, type: 'local', path: path.resolve(scopeRoot, source.path) };
       continue;
     }
     if (Object.hasOwn(source, 'path')) {

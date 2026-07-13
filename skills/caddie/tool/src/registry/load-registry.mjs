@@ -1,19 +1,21 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { invalid } from '../protocol/errors.mjs';
+
+const require = createRequire(import.meta.url);
+const { userLayout } = require('../layout');
 
 export const REGISTRY_VERSION = 1;
 
-export async function loadRegistry(input, configHome) {
-  const configPath = path.resolve(
-    input.machineConfigPath ?? path.join(configHome, 'caddie', 'config.json'),
-  );
+export async function loadRegistry(input, home) {
+  const registryPath = userLayout(home).registryPath;
   let text;
   try {
-    text = await readFile(configPath, 'utf8');
+    text = await readFile(registryPath, 'utf8');
   } catch (cause) {
     if (cause?.code === 'ENOENT') {
-      return { status: 'missing', configPath, userManifest: null, registeredProjects: [] };
+      return { status: 'missing', registryPath, registeredProjects: [] };
     }
     throw cause;
   }
@@ -22,34 +24,32 @@ export async function loadRegistry(input, configHome) {
   try {
     value = JSON.parse(text);
   } catch {
-    throw invalid('invalid-machine-config-json', `Machine configuration is not valid JSON: ${configPath}`, {
-      configPath,
+    throw invalid('invalid-registry-json', `Caddie Registry is not valid JSON: ${registryPath}`, {
+      registryPath,
     });
   }
   if (!value || Array.isArray(value) || typeof value !== 'object') {
-    throw invalid('invalid-machine-config', `Machine configuration must be an object: ${configPath}`, {
-      configPath,
+    throw invalid('invalid-registry', `Caddie Registry must be an object: ${registryPath}`, {
+      registryPath,
     });
   }
   if (value.version !== REGISTRY_VERSION) {
     return {
       status: 'unsupported',
-      configPath,
+      registryPath,
       version: value.version ?? null,
-      userManifest: null,
       registeredProjects: [],
     };
   }
   if (!Array.isArray(value.registeredProjects) || value.registeredProjects.some((item) => typeof item !== 'string')) {
     throw invalid('invalid-registered-projects', 'Registered Projects must be an array of paths', {
-      configPath,
+      registryPath,
     });
   }
   return {
     status: 'found',
-    configPath,
+    registryPath,
     version: value.version,
-    userManifest: typeof value.userManifest === 'string' ? path.resolve(value.userManifest) : null,
     registeredProjects: [...new Set(value.registeredProjects.map((item) => path.resolve(item)))],
   };
 }

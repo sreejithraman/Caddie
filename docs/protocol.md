@@ -4,7 +4,7 @@ Caddie v1 uses one JSON request on standard input and emits exactly one JSON res
 
 Requests contain `version`, `operation`, and operation-specific input. Supported operations are `locate`, `inspect`, `inspect-source`, `compare`, `plan`, `apply-plan`, and `recover`.
 
-`inspect` supports focused Available Skills, explicit bird's-eye, and Adoption views. Exact locked Git inspection may retain a content-bound disposable materialization for reconciliation. `plan` supports reconciliation plus `adoption`, `unmanagement`, and `cleanup` workflow variants. Every mutating `apply-plan` request carries approval bound to the exact returned plan identifier.
+`inspect` supports focused Available Skills, explicit bird's-eye, Adoption, `migration`, and `legacy-manager` views. Exact locked Git inspection may retain a content-bound disposable materialization for reconciliation. `plan` supports reconciliation plus `adoption`, `unmanagement`, `cleanup`, `state-migration`, and `legacy-manager-cleanup` workflow variants. Every mutating `apply-plan` request carries approval bound to the exact returned plan identifier.
 
 The protocol manages only Caddie-owned state. Repository authoring, worktrees, validation commands, commits, pushes, and pull requests remain ordinary agent work and are not Caddie Tool operations. See [ADR 0002](adr/0002-leave-repository-workflows-to-agents.md).
 
@@ -16,7 +16,9 @@ User reconciliation materializes complete skills directly beneath the runtime HO
 
 Every materialized or adopted skill must have valid Agent Skills `name` and `description` fields and valid values for any standard optional fields it declares. Client-specific frontmatter extensions are preserved unchanged and reported as `extensionFields`; they do not make otherwise valid upstream skills unavailable. During inspection, a Project Skill deterministically shadows a same-named User Skill; the effective skill list contains the project selection and `shadowedSkills` preserves explicit evidence of both selections.
 
-All Caddie mutations at the standard user root or user Claude compatibility root serialize on one runtime-HOME lock and reserve recovery before publishing the scope journal, even when their User Skills manifests live in different repositories. The fixed coordination files are `~/.agents/.caddie/user-mutation.lock` and `user-operation.json`; they are machine-local state, not plan effects. Ordinary exposure never replaces existing regular Claude content.
+All Caddie mutations at the standard user root, user Claude compatibility root, or user registry serialize on one runtime-HOME lock and reserve recovery before publishing the scope journal. The fixed coordination files are `~/.agents/.caddie/user-mutation.lock` and `user-operation.json`; they are machine-local state, not plan effects. Ordinary exposure never replaces existing regular Claude content.
+
+Migration and legacy-manager cleanup are deliberately separate. `state-migration` is the only workflow allowed to remove the fixed legacy Caddie state root after copying supported state. `legacy-manager-cleanup` is the only workflow allowed to remove `~/.agents/.skill-lock.json`, and only when every entry is proven to be either represented by the current Caddie ledger with an exact installed fingerprint or obsolete because no installation remains. Malformed, conflicting, or unmanaged live entries block removal.
 
 `npm run test:release` is the harness and end-to-end release gate. It requires installed Codex and Claude Code binaries rather than silently skipping harness discovery; the compatibility decision is recorded in [ADR 0001](adr/0001-expose-individual-skills-to-claude.md).
 

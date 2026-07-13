@@ -63,6 +63,7 @@ test('recover exposes interrupted finish and rollback plans through the public J
   await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\n');
   const evidence = invoke('inspect-source', { type: 'local', root, selectionPath: 'fixture' });
   const planned = invoke('plan', {
+    home: root,
     kind: 'reconcile',
     configHome: path.join(root, 'config'),
     scope: { id: `project:${root}`, root },
@@ -96,6 +97,7 @@ test('public errors classify all six dispositions and stale preconditions', asyn
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-dispositions-'));
   const ledgerPath = path.join(root, '.agents', '.caddie', 'ledger.json');
   const planned = invoke('plan', {
+    home: root,
     kind: 'reconcile', configHome: path.join(root, 'config'),
     scope: { id: `project:${root}`, root },
     operations: [{
@@ -125,13 +127,15 @@ test('public errors classify all six dispositions and stale preconditions', asyn
 
   const protectedRoot = path.join(root, 'protected');
   await mkdir(protectedRoot);
-  await writeFile(path.join(protectedRoot, 'caddie.json'), '{"version":1,"scope":"project","sources":{},"skills":[]}\n');
-  await chmod(path.join(protectedRoot, 'caddie.json'), 0o000);
+  const protectedManifest = path.join(protectedRoot, '.agents', '.caddie', 'manifest.json');
+  await mkdir(path.dirname(protectedManifest), { recursive: true });
+  await writeFile(protectedManifest, '{"version":1,"scope":"project","sources":{},"skills":[]}\n');
+  await chmod(protectedManifest, 0o000);
   try {
-    const permission = invoke('inspect', { cwd: protectedRoot, userManifestPath: path.join(root, 'missing-user') });
+    const permission = invoke('inspect', { cwd: protectedRoot, home: path.join(root, 'home') });
     assert.equal(permission.error.disposition, 'needs-permission');
   } finally {
-    await chmod(path.join(protectedRoot, 'caddie.json'), 0o600);
+    await chmod(protectedManifest, 0o600);
   }
 
   const bug = await runTool(JSON.stringify({ version: 1, operation: 'fault-fixture', input: {} }), {
@@ -146,13 +150,13 @@ test('public inspection recognizes a project-owned In-place Skill', async () => 
   const skill = path.join(root, '.agents', 'skills', 'project-helper');
   await mkdir(skill, { recursive: true });
   await writeFile(path.join(skill, 'SKILL.md'), '---\nname: project-helper\ndescription: Test fixture.\n---\n');
-  await writeJson(path.join(root, 'caddie.json'), {
+  await writeJson(path.join(root, '.agents', '.caddie', 'manifest.json'), {
     version: 1, scope: 'project',
     sources: { authored: { type: 'local', path: './.agents/skills' } },
     skills: [{ source: 'authored', path: 'project-helper' }],
   });
 
-  const inspected = invoke('inspect', { cwd: root, userManifestPath: path.join(root, 'missing-user.json') });
+  const inspected = invoke('inspect', { cwd: root, home: path.join(root, 'home') });
   assert.equal(inspected.ok, true, JSON.stringify(inspected));
   assert.equal(inspected.result.scopes.project.skills[0].reconciliation.kind, 'in-place');
   assert.equal(inspected.result.scopes.project.skills[0].reconciliation.safeToReplace, false);
@@ -165,7 +169,7 @@ test('public reconciliation preserves Divergence and reports ledger loss as insu
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nbaseline\n');
   await cp(source, installed, { recursive: true });
-  await writeJson(path.join(root, 'caddie.json'), {
+  await writeJson(path.join(root, '.agents', '.caddie', 'manifest.json'), {
     version: 1, scope: 'project', sources: { authored: { type: 'local', path: './source' } },
     skills: [{ source: 'authored', path: 'fixture' }],
   });
@@ -180,13 +184,13 @@ test('public reconciliation preserves Divergence and reports ledger loss as insu
   await writeFile(path.join(source, 'SKILL.md'), sourceContent);
   await writeFile(path.join(installed, 'SKILL.md'), installedContent);
 
-  const diverged = invoke('inspect', { cwd: root, userManifestPath: path.join(root, 'missing-user.json') });
+  const diverged = invoke('inspect', { cwd: root, home: path.join(root, 'home') });
   assert.equal(diverged.result.scopes.project.skills[0].reconciliation.kind, 'divergence');
   assert.equal(await readFile(path.join(source, 'SKILL.md'), 'utf8'), sourceContent);
   assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), installedContent);
 
   await rm(ledgerPath);
-  const withoutLedger = invoke('inspect', { cwd: root, userManifestPath: path.join(root, 'missing-user.json') });
+  const withoutLedger = invoke('inspect', { cwd: root, home: path.join(root, 'home') });
   assert.equal(withoutLedger.result.scopes.project.skills[0].reconciliation.kind, 'insufficient-evidence');
   assert.deepEqual(withoutLedger.result.scopes.project.skills[0].reconciliation.coverage.missing, ['lastReconciled']);
   assert.equal(await readFile(path.join(source, 'SKILL.md'), 'utf8'), sourceContent);
@@ -200,7 +204,7 @@ test('matching mtimes never conceal content Drift', async () => {
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nbaseline\n');
   await cp(source, installed, { recursive: true });
-  await writeJson(path.join(root, 'caddie.json'), {
+  await writeJson(path.join(root, '.agents', '.caddie', 'manifest.json'), {
     version: 1, scope: 'project', sources: { authored: { type: 'local', path: './source' } },
     skills: [{ source: 'authored', path: 'fixture' }],
   });
@@ -213,7 +217,7 @@ test('matching mtimes never conceal content Drift', async () => {
   await writeFile(path.join(installed, 'SKILL.md'), '---\nname: fixture\ndescription: Test fixture.\n---\nchanged at same time\n');
   await utimes(path.join(installed, 'SKILL.md'), sourceTimes.atime, sourceTimes.mtime);
 
-  const inspected = invoke('inspect', { cwd: root, userManifestPath: path.join(root, 'missing-user.json') });
+  const inspected = invoke('inspect', { cwd: root, home: path.join(root, 'home') });
   assert.equal(inspected.result.scopes.project.skills[0].reconciliation.kind, 'drift');
 });
 
@@ -239,7 +243,7 @@ test('public Adoption preserves colliding and permission-blocked installations',
   assert.equal(collision.result.proposal.entries[0].classification, 'colliding');
   assert.equal(collision.result.proposal.entries[0].preselected, false);
   const collisionPlan = invoke('plan', {
-    workflow: 'adoption', configHome, scopeRoot: collidingRoot, candidates: collidingCandidates,
+    home: fixture, workflow: 'adoption', configHome, scopeRoot: collidingRoot, candidates: collidingCandidates,
     scope: { id: `project:${collidingRoot}`, root: collidingRoot }, ensureClaude: false,
   });
   assert.equal(invoke('apply-plan', { plan: collisionPlan.result.plan, approval: approve(collisionPlan.result.plan) }).ok, true);
@@ -260,7 +264,7 @@ test('public Adoption preserves colliding and permission-blocked installations',
     assert.equal(blocked.result.proposal.entries[0].classification, 'permission-blocked');
     assert.equal(blocked.result.proposal.entries[0].preselected, false);
     const blockedPlan = invoke('plan', {
-      workflow: 'adoption', configHome, scopeRoot: blockedRoot, candidates,
+      home: fixture, workflow: 'adoption', configHome, scopeRoot: blockedRoot, candidates,
       scope: { id: `project:${blockedRoot}`, root: blockedRoot }, ensureClaude: false,
     });
     assert.equal(invoke('apply-plan', { plan: blockedPlan.result.plan, approval: approve(blockedPlan.result.plan) }).ok, true);

@@ -5,8 +5,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { canonicalize, planHome, verifyPlanIntegrity } = require('../plans');
 const { exists, fingerprint } = require('../apply/filesystem');
-const { expectedFor, isUserHarnessAnchored, strategyFor, targetFor } = require('../mutations/strategies');
-const { canonicalSkillsRoot, claudeSkillsRoot, stateRoot: layoutStateRoot } = require('../layout');
+const { expectedFor, isUserHarnessAnchored, isUserStateAnchored, strategyFor, targetFor } = require('../mutations/strategies');
+const { canonicalSkillsRoot, claudeSkillsRoot, scopeLayout } = require('../layout');
 const PHASES = new Set(['staged', 'applying', 'verified', 'rolling-back', 'rolled-back']);
 
 class JournalValidationError extends Error {
@@ -35,7 +35,7 @@ async function validateJournal(journal, scope) {
   failUnless(journal.plan.scope.id === scope.id && path.resolve(journal.plan.scope.root) === path.resolve(scope.root), 'embedded plan scope does not match recovery scope');
 
   const home = planHome(journal.plan);
-  const stateRoot = layoutStateRoot(scope);
+  const stateRoot = scopeLayout(scope, home).stateRoot;
   const operationRoot = path.join(stateRoot, 'operations', journal.plan.id);
   failUnless(path.resolve(journal.operationRoot) === operationRoot, 'journal operation root is not the fixed plan operation directory');
   await requireRealAncestors(path.resolve(scope.root), path.dirname(operationRoot), 'journal operation root');
@@ -53,15 +53,20 @@ async function validateJournal(journal, scope) {
     for (const candidate of [operation.destinationPath, operation.linkPath, operation.targetPath, operation.path].filter(Boolean)) {
       const resolved = path.resolve(candidate);
       const scopeRoot = path.resolve(scope.root);
-      const configRoot = scope.configRoot && path.resolve(scope.configRoot);
-      const anchor = isInside(scopeRoot, resolved) ? scopeRoot : configRoot && isInside(configRoot, resolved) ? configRoot : null;
+      const legacyConfigHome = scope.legacyConfigHome && path.resolve(scope.legacyConfigHome);
+      const anchor = isInside(scopeRoot, resolved) ? scopeRoot
+        : legacyConfigHome && isInside(legacyConfigHome, resolved) ? legacyConfigHome : null;
       const userSkillsRoot = scope.id === 'user' ? canonicalSkillsRoot(scope, home) : null;
       const harnessRoot = isUserHarnessAnchored(operation) && scope.id === 'user'
         ? claudeSkillsRoot(scope, home)
         : null;
+      const userStateRoot = isUserStateAnchored(operation)
+        ? scopeLayout({ id: 'user', root: home }, home).agentsRoot
+        : null;
       const approvedAnchor = anchor
         || (userSkillsRoot && isInside(userSkillsRoot, resolved) ? home : null)
-        || (harnessRoot && isInside(harnessRoot, resolved) ? home : null);
+        || (harnessRoot && isInside(harnessRoot, resolved) ? home : null)
+        || (userStateRoot && isInside(userStateRoot, resolved) ? home : null);
       failUnless(approvedAnchor, 'embedded plan mutation path is outside its approved scope');
       await requireRealAncestors(approvedAnchor, path.dirname(resolved), 'embedded plan mutation path');
     }

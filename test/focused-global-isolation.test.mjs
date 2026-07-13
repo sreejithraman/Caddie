@@ -13,18 +13,16 @@ test('a broken unrelated registered project cannot veto focused inspection', asy
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-focused-isolation-'));
   const current = path.join(fixture, 'current');
   const broken = path.join(fixture, 'broken');
-  const configHome = path.join(fixture, 'config');
-  const userManifest = path.join(fixture, 'user', 'caddie.json');
+  const home = path.join(fixture, 'home');
   await mkdir(current, { recursive: true });
   await mkdir(broken, { recursive: true });
-  await json(userManifest, { version: 1, scope: 'user', sources: {}, selections: [] });
-  await json(path.join(current, 'caddie.json'), { version: 1, scope: 'project', sources: {}, selections: [] });
-  await writeFile(path.join(broken, 'caddie.json'), '{not json\n');
-  await json(path.join(configHome, 'caddie', 'config.json'), {
-    version: 1, userManifest, registeredProjects: [current, broken],
-  });
+  await json(path.join(home, '.agents', '.caddie', 'manifest.json'), { version: 1, scope: 'user', sources: {}, selections: [] });
+  await json(path.join(home, '.agents', '.caddie', 'registry.json'), { version: 1, registeredProjects: [current, broken] });
+  await json(path.join(current, '.agents', '.caddie', 'manifest.json'), { version: 1, scope: 'project', sources: {}, selections: [] });
+  await mkdir(path.join(broken, '.agents', '.caddie'), { recursive: true });
+  await writeFile(path.join(broken, '.agents', '.caddie', 'manifest.json'), '{not json\n');
 
-  const response = invoke({ version: 1, operation: 'inspect', input: { cwd: current, configHome } });
+  const response = invoke({ version: 1, operation: 'inspect', input: { cwd: current, home } });
   assert.equal(response.ok, true);
   assert.equal(response.result.scopes.project.status, 'inspected');
   assert.deepEqual(response.result.elsewhere.projects, [{

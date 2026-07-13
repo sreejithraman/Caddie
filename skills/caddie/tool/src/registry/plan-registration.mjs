@@ -1,11 +1,12 @@
 import path from 'node:path';
 import os from 'node:os';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { invalid } from '../protocol/errors.mjs';
 
 const require = createRequire(import.meta.url);
 const { fingerprint } = require('../apply/filesystem');
+const { userLayout } = require('../layout');
 
 export async function planProjectRegistration(input, runtime = {}) {
   if (typeof input.scope?.id !== 'string' || !input.scope.id.startsWith('project:')) {
@@ -13,34 +14,31 @@ export async function planProjectRegistration(input, runtime = {}) {
   }
   const env = runtime.env ?? process.env;
   const home = path.resolve(input.home ?? env.HOME ?? os.homedir());
-  const configHome = path.resolve(input.configHome ?? env.XDG_CONFIG_HOME ?? path.join(home, '.config'));
-  const configRoot = path.join(configHome, 'caddie');
-  const configPath = path.join(configRoot, 'config.json');
-  const configAnchor = await nearestExistingDirectory(configHome);
+  const registryPath = userLayout(home).registryPath;
   const projectRoot = await realpath(path.resolve(input.scope.root));
 
   let current;
   let expected;
   try {
-    current = JSON.parse(await readFile(configPath, 'utf8'));
-    expected = { state: 'file', fingerprint: await fingerprint(configPath) };
+    current = JSON.parse(await readFile(registryPath, 'utf8'));
+    expected = { state: 'file', fingerprint: await fingerprint(registryPath) };
   } catch (error) {
     if (error?.code === 'ENOENT') {
       current = { version: 1, registeredProjects: [] };
       expected = { state: 'absent' };
     } else if (error instanceof SyntaxError) {
-      throw invalid('invalid-machine-config-json', `Machine configuration is not valid JSON: ${configPath}`, { configPath });
+      throw invalid('invalid-registry-json', `Caddie Registry is not valid JSON: ${registryPath}`, { registryPath });
     } else {
       throw error;
     }
   }
 
   if (!current || Array.isArray(current) || typeof current !== 'object' || current.version !== 1) {
-    throw invalid('invalid-machine-config', `Machine configuration must be a supported version 1 object: ${configPath}`, { configPath });
+    throw invalid('invalid-registry', `Caddie Registry must be a supported version 1 object: ${registryPath}`, { registryPath });
   }
   if (!Array.isArray(current.registeredProjects)
     || current.registeredProjects.some((project) => typeof project !== 'string')) {
-    throw invalid('invalid-registered-projects', 'Registered Projects must be an array of paths', { configPath });
+    throw invalid('invalid-registered-projects', 'Registered Projects must be an array of paths', { registryPath });
   }
 
   const registeredRealPaths = await Promise.all(current.registeredProjects.map(async (project) => {
@@ -49,10 +47,10 @@ export async function planProjectRegistration(input, runtime = {}) {
   }));
   const alreadyRegistered = registeredRealPaths.includes(projectRoot);
   return {
-    scope: { ...input.scope, configRoot: configAnchor, machineConfigPath: configPath },
+    scope: input.scope,
     operation: alreadyRegistered ? null : {
-      type: 'write-machine-config',
-      path: configPath,
+      type: 'write-registry',
+      path: registryPath,
       content: `${JSON.stringify({
         ...current,
         registeredProjects: [...current.registeredProjects, projectRoot],
@@ -60,20 +58,4 @@ export async function planProjectRegistration(input, runtime = {}) {
       expected,
     },
   };
-}
-
-async function nearestExistingDirectory(candidate) {
-  let current = path.resolve(candidate);
-  while (true) {
-    const stat = await lstat(current).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-    if (stat) {
-      if (!stat.isDirectory() || stat.isSymbolicLink()) {
-        throw invalid('invalid-config-home', `Machine configuration ancestor must be a real directory: ${current}`, { path: current });
-      }
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) throw invalid('invalid-config-home', `No real ancestor exists for machine configuration: ${candidate}`);
-    current = parent;
-  }
 }

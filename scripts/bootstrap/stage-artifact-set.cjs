@@ -10,7 +10,7 @@ async function stageArtifactSet({
   outputs,
   repository,
   commit,
-  config,
+  registry,
   fingerprintDirectory,
   writeJson,
 }) {
@@ -26,7 +26,7 @@ async function stageArtifactSet({
     repository,
     commit,
     fingerprint: fingerprint.digest,
-    config,
+    registry,
   });
   for (const artifact of artifacts) {
     if (artifact.kind === 'compatibility-link') {

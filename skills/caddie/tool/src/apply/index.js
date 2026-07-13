@@ -8,14 +8,13 @@ const { canonicalize, planHome, verifyApprovedPlan } = require('../plans');
 const { copyDirectory, exists, fingerprint, fingerprintIfPresent, writeJsonAtomic } = require('./filesystem');
 const { validateJournal } = require('../recovery/journal');
 const { parseSkillMetadata } = require('../skill-metadata');
-const { expectedFor, isUserHarnessAnchored, strategyFor, targetFor } = require('../mutations/strategies');
+const { expectedFor, isUserHarnessAnchored, isUserStateAnchored, strategyFor, targetFor } = require('../mutations/strategies');
 const userHarnessReservation = require('../coordination/user-harness-reservation');
 const {
   canonicalSkillsRoot,
   claudeSkillsRoot,
   runtimeUserCoordinationRoot,
-  scopeMutationStateRoot,
-  stateRoot: layoutStateRoot,
+  scopeLayout,
 } = require('../layout');
 
 class ApplyError extends Error {
@@ -28,7 +27,7 @@ class ApplyError extends Error {
 }
 
 async function acquireScopeLock(scopeRoot) {
-  const lockPath = path.join(scopeMutationStateRoot(scopeRoot), 'mutation.lock');
+  const lockPath = path.join(path.resolve(scopeRoot), '.agents', '.caddie', 'mutation.lock');
   return acquireOwnerLock(lockPath);
 }
 
@@ -171,7 +170,7 @@ async function applyPlan({ plan, approval, onBoundary }) {
 }
 
 async function reserveExistingUserJournal(plan) {
-  const journalPath = path.join(layoutStateRoot(plan.scope), 'operation-journal.json');
+  const journalPath = scopeLayout(plan.scope, planHome(plan)).operationJournalPath;
   if (!await exists(journalPath)) return;
   let journal;
   try {
@@ -185,12 +184,13 @@ async function reserveExistingUserJournal(plan) {
 }
 
 function needsUserHarnessLock(plan) {
-  if (plan.scope.id !== 'user') return false;
   const home = planHome(plan);
-  return plan.operations.some((operation) => isUserHarnessAnchored(operation)
-    || operationTouchesUserSkills(operation, plan.scope, home)
-    || operation.interruptedPlan?.operations?.some((nested) => isUserHarnessAnchored(nested)
-      || operationTouchesUserSkills(nested, plan.scope, home)));
+  return plan.operations.some((operation) => isUserStateAnchored(operation)
+    || (plan.scope.id === 'user' && (isUserHarnessAnchored(operation)
+      || operationTouchesUserSkills(operation, plan.scope, home)))
+    || operation.interruptedPlan?.operations?.some((nested) => isUserStateAnchored(nested)
+      || (plan.scope.id === 'user' && (isUserHarnessAnchored(nested)
+        || operationTouchesUserSkills(nested, plan.scope, home)))));
 }
 
 function operationTouchesUserSkills(operation, scope, home) {
@@ -201,7 +201,7 @@ function operationTouchesUserSkills(operation, scope, home) {
 }
 
 async function applyFresh(plan, onBoundary) {
-  const stateRoot = layoutStateRoot(plan.scope);
+  const stateRoot = scopeLayout(plan.scope, planHome(plan)).stateRoot;
   const journalPath = path.join(stateRoot, 'operation-journal.json');
   if (await exists(journalPath)) throw new ApplyError('unfinished mutation requires recovery', 'recovery-required');
 
@@ -598,17 +598,21 @@ async function assertMutationAncestors(plan) {
     ].filter(Boolean);
     for (const candidate of candidates) {
       const resolved = path.resolve(candidate);
-      const configRoot = plan.scope.configRoot && path.resolve(plan.scope.configRoot);
+      const legacyConfigHome = plan.scope.legacyConfigHome && path.resolve(plan.scope.legacyConfigHome);
       const userSkillsRoot = plan.scope.id === 'user' ? canonicalSkillsRoot(plan.scope, home) : null;
       const harnessRoot = isUserHarnessAnchored(operation) && plan.scope.id === 'user'
         ? claudeSkillsRoot(plan.scope, home)
         : null;
+      const userStateRoot = isUserStateAnchored(operation)
+        ? scopeLayout({ id: 'user', root: home }, home).agentsRoot
+        : null;
       const anchor = isInside(scopeRoot, resolved)
         ? scopeRoot
-        : configRoot && isInside(configRoot, resolved) ? configRoot : null;
+        : legacyConfigHome && isInside(legacyConfigHome, resolved) ? legacyConfigHome : null;
       const approvedAnchor = anchor
         || (userSkillsRoot && isInside(userSkillsRoot, resolved) ? home : null)
-        || (harnessRoot && isInside(harnessRoot, resolved) ? home : null);
+        || (harnessRoot && isInside(harnessRoot, resolved) ? home : null)
+        || (userStateRoot && isInside(userStateRoot, resolved) ? home : null);
       if (!approvedAnchor) throw new ApplyError('mutation path is outside its approved scope', 'invalid-plan', { path: resolved });
       await assertNoSymlinkAncestors(approvedAnchor, path.dirname(resolved));
     }

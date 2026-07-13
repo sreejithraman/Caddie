@@ -2,7 +2,7 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { stateRoot } = require('../layout');
+const { scopeLayout } = require('../layout');
 const { createPlan } = require('../plans');
 const { fingerprint } = require('../apply/filesystem');
 const { snapshotLivePreconditions, validateJournal } = require('./journal');
@@ -16,7 +16,7 @@ class RecoveryError extends Error {
 }
 
 async function recover({ scope }) {
-  const journalPath = path.join(stateRoot(scope), 'operation-journal.json');
+  const journalPath = scopeLayout(scope, scope.id === 'user' ? scope.root : undefined).operationJournalPath;
   let raw;
   try {
     raw = await fs.readFile(journalPath, 'utf8');

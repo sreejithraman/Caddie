@@ -19,7 +19,7 @@ test('adoption records an existing standard User Skill without relocating it', a
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-standard-adoption-'));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const home = path.join(fixture, 'home');
-  const scopeRoot = path.join(fixture, 'SreeStack');
+  const scopeRoot = home;
   const installed = path.join(home, '.agents', 'skills', 'shared');
   await skill(installed, 'installed bytes');
   await writeFile(path.join(installed, 'notes.txt'), 'preserve exactly\n');
@@ -45,7 +45,7 @@ test('adoption records an existing standard User Skill without relocating it', a
   assert.equal((await lstat(installed)).isSymbolicLink(), false);
   assert.equal(await readFile(path.join(installed, 'notes.txt'), 'utf8'), 'preserve exactly\n');
   assert.equal(await realpath(path.join(home, '.claude', 'skills', 'shared')), await realpath(installed));
-  const ledger = JSON.parse(await readFile(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'), 'utf8'));
+  const ledger = JSON.parse(await readFile(path.join(home, '.agents', '.caddie', 'ledger.json'), 'utf8'));
   assert.deepEqual(ledger.harnessLinks, [path.join(home, '.claude', 'skills', 'shared')]);
   assert.equal(ledger.entries[0].path, installed);
 });
@@ -54,7 +54,7 @@ test('rollback restores a standard User Skill after interrupted replacement', as
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-standard-recovery-'));
   const previousHome = process.env.HOME;
   const home = path.join(fixture, 'home');
-  const scopeRoot = path.join(fixture, 'SreeStack');
+  const scopeRoot = home;
   const source = path.join(fixture, 'source', 'shared');
   const installed = path.join(home, '.agents', 'skills', 'shared');
   process.env.HOME = home;
@@ -96,7 +96,7 @@ test('adoption preserves non-directory and nonconforming root entries', async (t
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-invalid-adoption-'));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const home = path.join(fixture, 'home');
-  const scopeRoot = path.join(fixture, 'SreeStack');
+  const scopeRoot = home;
   const root = path.join(home, '.agents', 'skills');
   await mkdir(root, { recursive: true });
   await mkdir(scopeRoot, { recursive: true });
@@ -122,7 +122,7 @@ test('adoption reports client extensions for a valid unknown User Skill', async 
   const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-user-extension-adoption-'));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const home = path.join(fixture, 'home');
-  const scopeRoot = path.join(fixture, 'SreeStack');
+  const scopeRoot = home;
   const installed = path.join(home, '.agents', 'skills', 'extended');
   await mkdir(installed, { recursive: true });
   await mkdir(scopeRoot, { recursive: true });
