@@ -7,15 +7,53 @@ function skill(name, path, digest, files = []) {
   return { name, path, fingerprint: { digest, complete: true }, files };
 }
 
-test('compare emits routine update evidence without a semantic claim', () => {
+test('same-path byte changes remain evidence until semantic behavior is assessed', () => {
   const result = compareSkillEvidence({
     before: [skill('alpha', 'skills/alpha', 'old')],
     after: [skill('alpha', 'skills/alpha', 'new')],
   });
 
-  assert.equal(result.candidates[0].kind, 'content-update');
+  assert.equal(result.candidates[0].kind, 'content-change');
   assert.equal(result.candidates[0].semanticCertainty, 'undetermined');
-  assert.equal(result.candidates[0].requiresUserChoice, false);
+  assert.equal(result.candidates[0].requiresUserChoice, true);
+  assert.deepEqual(result.candidates[0].alternatives, [
+    'confirm-routine-content-update', 'treat-as-behavior-change', 'defer',
+  ]);
+});
+
+test('confirmed semantic assessments distinguish routine updates from behavior migrations', () => {
+  const before = [skill('alpha', 'skills/alpha', 'old')];
+  const after = [skill('alpha', 'skills/alpha', 'new')];
+  const routine = compareSkillEvidence({
+    before,
+    after,
+    semanticAssessments: [{ path: 'skills/alpha', kind: 'routine-content-update', confirmed: true }],
+  });
+  const behavior = compareSkillEvidence({
+    before,
+    after,
+    semanticAssessments: [{ path: 'skills/alpha', kind: 'behavior-change', confirmed: true }],
+  });
+
+  assert.deepEqual(routine.candidates[0], {
+    kind: 'content-update',
+    before: { name: 'alpha', path: 'skills/alpha' },
+    after: { name: 'alpha', path: 'skills/alpha' },
+    semanticCertainty: 'confirmed-by-caller',
+    semanticAssessment: 'routine-content-update',
+    requiresUserChoice: false,
+    evidence: [{ type: 'same-selection-path' }, { type: 'fingerprint-changed' }],
+  });
+  assert.equal(behavior.candidates[0].kind, 'behavior-change');
+  assert.equal(behavior.candidates[0].semanticCertainty, 'confirmed-by-caller');
+  assert.equal(behavior.candidates[0].requiresUserChoice, true);
+  assert.deepEqual(behavior.candidates[0].alternatives, ['accept-semantic-migration', 'keep-current-selection', 'defer']);
+
+  assert.throws(() => compareSkillEvidence({
+    before,
+    after,
+    semanticAssessments: [{ path: 'skills/alpha', kind: 'routine-content-update', confirmed: false }],
+  }), /confirmed path and supported kind/);
 });
 
 test('compare reports likely rename evidence and alternatives', () => {

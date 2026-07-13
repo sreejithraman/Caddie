@@ -108,6 +108,9 @@ async function inspectResolvedGitSource({
     coverage: {
       complete: resolution.coverage.complete && evidence.coverage.complete,
       reason: !resolution.coverage.complete ? resolution.coverage.reason : evidence.coverage.reason,
+      ...(Number.isInteger(evidence.coverage.omittedEntries) ? { omittedEntries: evidence.coverage.omittedEntries } : {}),
+      ...(typeof evidence.coverage.cacheReference === 'string' ? { cacheReference: evidence.coverage.cacheReference } : {}),
+      ...(typeof evidence.coverage.continuationCursor === 'string' ? { continuationCursor: evidence.coverage.continuationCursor } : {}),
     },
     findings: [...resolution.findings, ...evidence.coverage.findings],
     ...(retainCheckout ? {

@@ -28,7 +28,7 @@ async function inspectAdoption({ scopeRoot, candidates = [], legacyLockPath = pa
     }
     let installedFingerprint;
     try { installedFingerprint = await fingerprint(installedPath); } catch (error) {
-      if (['EACCES', 'EPERM'].includes(error.code)) {
+      if (isPermissionFailure(error)) {
         entries.push({ name, installedPath, classification: 'permission-blocked', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
         continue;
       }
@@ -44,7 +44,7 @@ async function inspectAdoption({ scopeRoot, candidates = [], legacyLockPath = pa
     let sourceFingerprint;
     if (candidate.sourcePath) {
       try { sourceFingerprint = await fingerprint(candidate.sourcePath); } catch (error) {
-        if (['EACCES', 'EPERM', 'ENOENT'].includes(error.code)) {
+        if (isPermissionFailure(error) || error.code === 'ENOENT') {
           entries.push({ name, installedPath, installedFingerprint, classification: 'permission-blocked', preselected: false, preserved: true, legacyEvidence: legacy.entries[name] || null });
           continue;
         }
@@ -83,6 +83,12 @@ async function inspectAdoption({ scopeRoot, candidates = [], legacyLockPath = pa
     },
     mutationsPerformed: false,
   };
+}
+
+function isPermissionFailure(error) {
+  return ['EACCES', 'EPERM'].includes(error?.code)
+    || (error?.code === 'incomplete-fingerprint'
+      && error.findings?.some((finding) => finding.code === 'permission-denied'));
 }
 
 async function readLegacyEvidence(candidate) {

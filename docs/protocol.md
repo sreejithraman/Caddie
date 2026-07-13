@@ -13,3 +13,5 @@ Diagnostics belong on standard error. Persisted formats have their own version f
 User-scope Adoption and reconciliation plans include individual links from the actual runtime-HOME Codex and Claude skill roots to the configured canonical User Skills. Project Skills remain canonical in the project `.agents/skills` and receive only the Claude compatibility link. These fixed harness paths are bound by the immutable plan and revalidated during apply and recovery.
 
 `npm run test:release` is the harness and end-to-end release gate. It requires installed Codex and Claude Code binaries rather than silently skipping harness discovery; the compatibility decision is recorded in [ADR 0001](adr/0001-expose-individual-skills-to-claude.md).
+
+Bounded `inspect-source` evidence includes a deterministic `sha256:` cache reference. When file entries remain, coverage also includes a continuation cursor bound to the exact source fingerprint and the original evidence limits. Continue with the same request and limits plus `cursor`; changed content requires replanning and changed limits are invalid.

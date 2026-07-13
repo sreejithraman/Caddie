@@ -7,6 +7,7 @@ import skillMetadata from '../skill-metadata.js';
 import { invalid } from '../protocol/errors.mjs';
 import { inspectLockedGitSource } from '../sources/index.mjs';
 import { resolveSelectionWithinSource } from '../sources/selection-path.mjs';
+import { validateSelectionMetadata } from './selection-metadata.mjs';
 
 const { parseSkillMetadata } = skillMetadata;
 const execFileAsync = promisify(execFile);
@@ -105,6 +106,7 @@ export async function resolveSelectionsWithEvidence(manifest, {
       resolvedCommit: lockEntry.commit.toLowerCase(),
       fingerprint: inspected.evidence.fingerprint,
       freshness: inspected.resolution.freshness,
+      ...lineageFields(selection),
     });
   }
 
@@ -153,6 +155,14 @@ async function resolveLocalSelection(manifest, source, selection) {
     skillPath,
     skillFile,
     ...(git ?? {}),
+    ...lineageFields(selection),
+  };
+}
+
+function lineageFields(selection) {
+  return {
+    ...(selection.derivedFrom ? { derivedFrom: structuredClone(selection.derivedFrom) } : {}),
+    ...(selection.migrationRecord ? { migrationRecord: selection.migrationRecord } : {}),
   };
 }
 
@@ -180,6 +190,7 @@ function validateSelection(selection, manifest) {
   if (typeof selection.path !== 'string' || !selection.path) {
     throw invalid('invalid-selection-path', 'Every Skill Selection must have a path', { manifestPath: manifest.manifestPath });
   }
+  validateSelectionMetadata(selection, manifest.sources, manifest.manifestPath);
 }
 
 function findLockEntry(lock, sourceName) {

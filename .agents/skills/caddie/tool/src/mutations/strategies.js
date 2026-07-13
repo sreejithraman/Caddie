@@ -5,7 +5,7 @@
 // as the single taxonomy used by planning, application, and recovery.
 const DEFINITIONS = Object.freeze({
   'materialize-skill': descriptor('directory-replace', 'destinationPath', 'expectedDestination', 'skill'),
-  'ensure-harness-exposure': descriptor('symlink', 'linkPath', 'expected'),
+  'ensure-harness-exposure': descriptor('symlink', 'linkPath', 'expected', 'link'),
   'write-manifest': descriptor('file-replace', 'path', 'expected', 'file'),
   'write-lock': descriptor('file-replace', 'path', 'expected', 'file'),
   'write-machine-config': descriptor('file-replace', 'path', 'expected', 'file'),

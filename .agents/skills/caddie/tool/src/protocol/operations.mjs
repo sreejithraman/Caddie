@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { compareSkillEvidence } from '../compare/index.mjs';
 import { inspect as inspectAvailableSkills } from '../context/inspect.mjs';
-import { applyChangeSandbox, applyPublicationPlan, buildPublicationPlan } from '../changeset/index.mjs';
+import { applyChangeSandbox, applyPublicationPlan, buildPublicationPlan, reconstructChangeSets } from '../changeset/index.mjs';
 import {
   inspectGitSource,
   inspectLocalSource,
@@ -12,6 +12,7 @@ import {
   materializeLockedGitSource,
 } from '../sources/index.mjs';
 import { ToolError, invalid } from './errors.mjs';
+import { authorizedUserHarnessLinks, loadOwnershipLedger, validateLedgerProposal } from './ledger-ownership.mjs';
 import { applyPreparationWorkflow, createPreparationWorkflowPlan } from './preparation-workflows.mjs';
 import { planProjectRegistration } from '../registry/plan-registration.mjs';
 
@@ -40,6 +41,10 @@ async function inspectOperation(input, runtime) {
   try {
     if (input.view === 'adoption') {
       return { proposal: await inspectAdoption(input), coverage: completeCoverage() };
+    }
+    if (input.view === 'change-sets') {
+      const result = reconstructChangeSets(input);
+      return withProtocolCoverage(result, result.coverage);
     }
     return inspectAvailableSkills(input, runtime);
   } catch (error) {
@@ -93,7 +98,8 @@ async function planOperation(input, runtime) {
       if (input.kind === 'reconcile') {
         const registration = await planProjectRegistration(input, runtime);
         const operations = registration.operation ? [registration.operation, ...input.operations] : input.operations;
-        const exposedOperations = await withUserHarnessExposures(registration.scope, operations);
+        const replaceableHarnessLinks = await loadOwnedUserHarnessLinks(input, runtime, registration.scope);
+        const exposedOperations = await withUserHarnessExposures(registration.scope, operations, replaceableHarnessLinks);
         plan = createPlan({
           ...input,
           scope: registration.scope,
@@ -116,19 +122,21 @@ async function bindHarnessOwnershipInLedger(scope, operations) {
   if (plannedHarnessLinks.length === 0) return operations;
   const ledgerPath = path.join(scope.root, '.agents', '.caddie', 'ledger.json');
   const plannedLedger = operations.find(({ type }) => type === 'write-ledger');
-  let existingLedger = null;
+  const existingLedger = await loadOwnershipLedger(ledgerPath, {
+    expectedScopeId: scope.id,
+    allowMissing: true,
+    label: 'existing reconciliation ledger',
+  });
   let existingExpected = { state: 'absent' };
-  try {
-    existingLedger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
+  if (existingLedger) {
     existingExpected = { state: 'file', fingerprint: await fingerprint(ledgerPath) };
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw invalid('invalid-ledger-content', `The existing reconciliation ledger is unreadable: ${ledgerPath}`);
   }
   let desiredLedger = existingLedger ?? { version: 1, scopeId: scope.id, entries: [] };
   if (plannedLedger) {
     try { desiredLedger = JSON.parse(plannedLedger.content); } catch (_) {
       throw invalid('invalid-ledger-content', 'The reconciliation ledger content must be valid JSON');
     }
+    validateLedgerProposal(desiredLedger, { expectedScopeId: scope.id });
   }
   const entries = [...(existingLedger?.entries ?? [])];
   for (const desiredEntry of desiredLedger.entries ?? []) upsertLedgerEntry(entries, desiredEntry);
@@ -168,7 +176,7 @@ function sameLedgerEntry(entry, name, candidatePath) {
       && path.resolve(entry.path) === path.resolve(candidatePath));
 }
 
-async function withUserHarnessExposures(scope, operations) {
+async function withUserHarnessExposures(scope, operations, replaceableHarnessLinks = new Map()) {
   if (scope.id !== 'user') return operations;
   const result = [...operations];
   const existing = new Set(operations.filter(({ type }) => type === 'ensure-harness-exposure').map(({ linkPath }) => path.resolve(linkPath)));
@@ -182,22 +190,47 @@ async function withUserHarnessExposures(scope, operations) {
         linkPath,
         targetPath: materialization.destinationPath,
         targetFingerprint: materialization.sourceFingerprint,
-        expected: await expectedExposure(linkPath, materialization.destinationPath),
+        expected: await expectedExposure(linkPath, materialization.destinationPath, replaceableHarnessLinks),
       });
     }
   }
   return result;
 }
 
-async function expectedExposure(linkPath, targetPath) {
+async function expectedExposure(linkPath, targetPath, replaceableHarnessLinks = new Map()) {
   const stat = await fs.lstat(linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!stat) return { state: 'absent' };
   if (!stat.isSymbolicLink()) throw invalid('harness-exposure-collision', `Harness exposure collides with existing content: ${linkPath}`);
   const target = await fs.readlink(linkPath);
   if (path.resolve(path.dirname(linkPath), target) !== path.resolve(targetPath)) {
+    const ownedTarget = replaceableHarnessLinks.get(path.resolve(linkPath));
+    if (ownedTarget === path.resolve(path.dirname(linkPath), target)) return { state: 'symlink', target };
     throw invalid('harness-exposure-collision', `Harness exposure points at a different skill: ${linkPath}`);
   }
   return { state: 'symlink', target };
+}
+
+async function loadOwnedUserHarnessLinks(input, runtime, scope) {
+  if (scope.id !== 'user') return new Map();
+  const env = runtime.env ?? process.env;
+  const configHome = input.configHome ?? env.XDG_CONFIG_HOME ?? path.join(env.HOME ?? os.homedir(), '.config');
+  const configPath = path.join(configHome, 'caddie', 'config.json');
+  let config;
+  try { config = JSON.parse(await fs.readFile(configPath, 'utf8')); } catch (error) {
+    if (error.code === 'ENOENT') return new Map();
+    throw invalid('invalid-machine-config', `Caddie machine configuration is unreadable: ${configPath}`);
+  }
+  if (typeof config.userManifest !== 'string') return new Map();
+  const previousScope = path.dirname(config.userManifest);
+  if (path.resolve(previousScope) === path.resolve(scope.root)) return new Map();
+  const ledgerPath = path.join(previousScope, '.agents', '.caddie', 'ledger.json');
+  const ledger = await loadOwnershipLedger(ledgerPath, {
+    expectedScopeId: 'user',
+    allowMissing: true,
+    label: 'previous User Skills ledger',
+  });
+  if (!ledger) return new Map();
+  return authorizedUserHarnessLinks(ledger, { scopeRoot: previousScope, home: env.HOME ?? os.homedir() });
 }
 
 async function applyPlanOperation(input) {
@@ -245,6 +278,8 @@ function toProtocolCoverage(coverage) {
     ...(coverage.reason ? { reason: coverage.reason } : {}),
     ...(Number.isInteger(coverage.omittedEntries) ? { omittedEntries: coverage.omittedEntries } : {}),
     ...(Number.isInteger(coverage.omittedCandidates) ? { omittedCandidates: coverage.omittedCandidates } : {}),
+    ...(typeof coverage.cacheReference === 'string' ? { cacheReference: coverage.cacheReference } : {}),
+    ...(typeof coverage.continuationCursor === 'string' ? { continuationCursor: coverage.continuationCursor } : {}),
   };
 }
 

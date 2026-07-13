@@ -9,3 +9,5 @@ All Caddie v1 persisted JSON formats use `version: 1`.
 - Machine configuration uses the operating system's conventional user configuration directory. It stores the User Skills manifest location and Registered Projects; disposable evidence belongs in the conventional cache directory.
 
 Unsupported versions are inspectable as bounded evidence and are not migrated implicitly.
+
+Each Skill Selection may declare `derivedFrom` as a non-empty array of distinct exact `{ "source", "path" }` origins. Every origin names a source in the same manifest and a relative selection path; Git source revisions remain pinned by the Caddie Lock. A selection may also point to a durable Markdown Migration Record with a scope-relative `migrationRecord` path. Absolute paths, traversal, malformed origins, duplicate origins, and non-Markdown Migration Record pointers are invalid.

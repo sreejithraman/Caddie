@@ -1,7 +1,7 @@
 import { locate } from './locate.mjs';
 import path from 'node:path';
 import os from 'node:os';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { parseManifest } from '../manifest/parse-manifest.mjs';
 import { resolveSelectionsWithEvidence } from '../manifest/resolve-selections.mjs';
 import { classifyFingerprints, fingerprintDirectory } from '../fingerprint/index.mjs';
@@ -76,6 +76,7 @@ export async function inspect(input, runtime = {}) {
     coverage: context.coverage,
   };
   if (input.birdseye === true) result.birdseye = await inspectBirdseye(input, runtime, context);
+  else if (runtime._skipElsewhere !== true) result.elsewhere = await inspectElsewhere(input, runtime, context);
   return result;
 }
 
@@ -91,8 +92,20 @@ async function inspectBirdseye(input, runtime, context) {
     if (right === focusedRoot) return 1;
     return left.localeCompare(right);
   });
-  const projects = await Promise.all(roots.map(async (root) => {
-    const evidence = await inspect({ ...input, cwd: root, projectManifestPath: undefined, birdseye: false }, runtime);
+  const inspected = await Promise.all(roots.map((root) => inspectRegisteredProject(input, runtime, root)));
+  const projects = inspected.map(({ root, evidence, finding }) => {
+    if (finding) {
+      return {
+        root,
+        focus: root === focusedRoot,
+        scopes: { user: { status: 'unknown' }, project: { status: 'failed' } },
+        availableSkills: [],
+        coverage: {
+          status: 'partial',
+          issues: [{ scope: finding.scope, code: finding.code, disposition: finding.disposition }],
+        },
+      };
+    }
     return {
       root,
       focus: root === focusedRoot,
@@ -100,7 +113,7 @@ async function inspectBirdseye(input, runtime, context) {
       availableSkills: evidence.availableSkills,
       coverage: evidence.coverage,
     };
-  }));
+  });
   return {
     projects,
     usageEvidence: 'not-inspected',
@@ -111,6 +124,56 @@ async function inspectBirdseye(input, runtime, context) {
   };
 }
 
+async function inspectElsewhere(input, runtime, context) {
+  const focusedRoot = path.resolve(context.project.root);
+  const roots = context.registry.registeredProjects
+    .map((root) => path.resolve(root))
+    .filter((root) => root !== focusedRoot)
+    .sort((left, right) => left.localeCompare(right));
+  const inspected = await Promise.all(roots.map((root) => inspectRegisteredProject(input, runtime, root)));
+  const projects = inspected.map(({ root, evidence, finding }) => {
+    if (finding) return { root, findings: [{ type: 'coverage', ...finding }] };
+    const coverageIssues = evidence.coverage.issues
+      .filter((issue) => issue.scope === 'project')
+      .map((issue) => ({ type: 'coverage', ...issue }));
+    const reconciliationFindings = (evidence.scopes.project.skills ?? [])
+      .filter((skill) => !['unchanged', 'in-place'].includes(skill.reconciliation?.kind))
+      .map((skill) => ({
+        type: 'reconciliation',
+        name: skill.name,
+        kind: skill.reconciliation.kind,
+        label: skill.reconciliation.label,
+      }));
+    return { root, findings: [...coverageIssues, ...reconciliationFindings] };
+  });
+  const projectsWithFindings = projects.filter((project) => project.findings.length > 0);
+  return {
+    registeredProjects: roots.length,
+    projectsWithFindings: projectsWithFindings.length,
+    relevantFindings: projectsWithFindings.reduce((count, project) => count + project.findings.length, 0),
+    projects: projectsWithFindings,
+  };
+}
+
+async function inspectRegisteredProject(input, runtime, root) {
+  try {
+    const evidence = await inspect(
+      { ...input, cwd: root, projectManifestPath: undefined, birdseye: false },
+      { ...runtime, _skipElsewhere: true },
+    );
+    return { root, evidence };
+  } catch (error) {
+    return {
+      root,
+      finding: {
+        scope: 'project',
+        code: error?.code ?? 'inspection-failed',
+        disposition: error?.disposition ?? 'bug',
+      },
+    };
+  }
+}
+
 async function enrichLiveState(skills, manifest) {
   const scopeRoot = path.dirname(manifest.manifestPath);
   const ledger = await readLedger(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'));
@@ -118,7 +181,7 @@ async function enrichLiveState(skills, manifest) {
   return Promise.all(skills.map(async (skill) => {
     const source = manifest.sources[skill.source];
     const installationPath = path.join(scopeRoot, '.agents', 'skills', skill.name);
-    const inPlace = source?.type === 'local' && path.resolve(skill.skillPath) === path.resolve(installationPath);
+    const inPlace = source?.type === 'local' && await sameLocation(skill.skillPath, installationPath);
     if (inPlace) {
       return {
         ...skill,
@@ -146,6 +209,14 @@ async function enrichLiveState(skills, manifest) {
   }));
 }
 
+async function sameLocation(left, right) {
+  try {
+    return await realpath(left) === await realpath(right);
+  } catch {
+    return path.resolve(left) === path.resolve(right);
+  }
+}
+
 function provenance(skill, source, entry) {
   return {
     source: skill.source,
@@ -155,6 +226,8 @@ function provenance(skill, source, entry) {
     repositoryRoot: skill.repositoryRoot ?? null,
     repositoryDirty: skill.repositoryDirty ?? null,
     lastReconciledFingerprint: entry?.fingerprint ?? null,
+    ...(skill.derivedFrom ? { derivedFrom: structuredClone(skill.derivedFrom) } : {}),
+    ...(skill.migrationRecord ? { migrationRecord: skill.migrationRecord } : {}),
   };
 }
 

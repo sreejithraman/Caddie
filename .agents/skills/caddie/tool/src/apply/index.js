@@ -204,6 +204,10 @@ async function stageOperations(plan, operationRoot) {
       record.backupPath = path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`);
     } else if (definition.strategy === 'symlink') {
       record.parentCreated = !await exists(path.dirname(operation.linkPath));
+      record.stagedPath = path.join(operationRoot, 'staged', `${index}-${definition.storageSuffix}`);
+      record.backupPath = path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`);
+      record.afterTarget = path.relative(path.dirname(operation.linkPath), operation.targetPath);
+      await fs.symlink(record.afterTarget, record.stagedPath, 'dir');
     }
     records.push(record);
   }
@@ -313,16 +317,20 @@ async function executeRecord(record, onBoundary, journal, recordIndex) {
     if (await exists(operation.linkPath)) {
       const stat = await fs.lstat(operation.linkPath);
       const resolved = stat.isSymbolicLink() ? path.resolve(path.dirname(operation.linkPath), await fs.readlink(operation.linkPath)) : null;
-      if (resolved !== path.resolve(operation.targetPath)) throw new ApplyError('harness exposure changed during recovery', 'replan');
-      record.created = operation.expected.state === 'absent';
-      record.afterTarget = await fs.readlink(operation.linkPath);
-      return;
+      if (resolved === path.resolve(operation.targetPath)) return;
+      if (await exists(record.backupPath)) throw new ApplyError('both harness exposure and backup exist before placement', 'recovery-invalid');
+      await fs.rename(operation.linkPath, record.backupPath);
+      await boundary(onBoundary, `mutation:${recordIndex}:backed-up`, journal);
     }
     await fs.mkdir(path.dirname(operation.linkPath), { recursive: true });
-    const relativeTarget = path.relative(path.dirname(operation.linkPath), operation.targetPath);
-    await fs.symlink(relativeTarget, operation.linkPath, 'dir');
-    record.created = true;
-    record.afterTarget = relativeTarget;
+    if (!await exists(record.stagedPath)) {
+      const resolved = await fs.lstat(operation.linkPath).then(async (stat) => stat.isSymbolicLink()
+        ? path.resolve(path.dirname(operation.linkPath), await fs.readlink(operation.linkPath)) : null).catch(() => null);
+      if (resolved === path.resolve(operation.targetPath)) return;
+      throw new ApplyError('staged harness exposure is missing and destination is not complete', 'recovery-invalid');
+    }
+    await fs.rename(record.stagedPath, operation.linkPath);
+    record.created = operation.expected.state === 'absent';
     await boundary(onBoundary, `mutation:${recordIndex}:linked`, journal);
     return;
   }
@@ -426,17 +434,23 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
   const strategy = definition?.strategy;
   const originalExpected = expectedFor(operation);
   if (strategy === 'symlink') {
-    if (record.created || originalExpected.state === 'absent') {
-      const stat = await fs.lstat(operation.linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-      const resolved = stat && stat.isSymbolicLink()
-        ? path.resolve(path.dirname(operation.linkPath), await fs.readlink(operation.linkPath))
-        : null;
-      if (stat && resolved !== path.resolve(operation.targetPath)) throw new ApplyError('cannot roll back modified exposure', 'replan');
-      if (stat) {
-        await fs.unlink(operation.linkPath);
-        await boundary(onBoundary, `rollback-mutation:${recordIndex}:unlinked`, journal);
-      }
-      if (record.parentCreated) await fs.rmdir(path.dirname(operation.linkPath)).catch((error) => {
+    const live = await snapshotSymlink(operation.linkPath);
+    const isPlaced = live.state === 'symlink' && live.resolvedTarget === path.resolve(operation.targetPath);
+    const isOriginal = live.state === 'symlink' && originalExpected.state === 'symlink'
+      && live.target === originalExpected.target;
+    if (live.state !== 'absent' && !isPlaced && !isOriginal) {
+      throw new ApplyError('cannot roll back modified exposure', 'replan');
+    }
+    if (await exists(record.backupPath)) {
+      if (live.state !== 'absent') await fs.unlink(operation.linkPath);
+      await fs.rename(record.backupPath, operation.linkPath);
+      await boundary(onBoundary, `rollback-mutation:${recordIndex}:restored-link`, journal);
+    } else if (originalExpected.state === 'absent' && live.state !== 'absent') {
+      await fs.unlink(operation.linkPath);
+      await boundary(onBoundary, `rollback-mutation:${recordIndex}:unlinked`, journal);
+    }
+    if (originalExpected.state === 'absent' && record.parentCreated) {
+      await fs.rmdir(path.dirname(operation.linkPath)).catch((error) => {
         if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error;
       });
     }
@@ -473,6 +487,14 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
       await boundary(onBoundary, `rollback-mutation:${recordIndex}:restored`, journal);
     }
   }
+}
+
+async function snapshotSymlink(candidate) {
+  const stat = await fs.lstat(candidate).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat) return { state: 'absent' };
+  if (!stat.isSymbolicLink()) return { state: 'other' };
+  const target = await fs.readlink(candidate);
+  return { state: 'symlink', target, resolvedTarget: path.resolve(path.dirname(candidate), target) };
 }
 
 async function assertMutationAncestors(plan) {

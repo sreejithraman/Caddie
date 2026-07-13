@@ -42,9 +42,10 @@ function baseCandidate(kind, before, after) {
  * possibilities; deciding identity, behavior, lineage, split, or merge remains an
  * agent/user responsibility.
  */
-export function compareSkillEvidence({ before = [], after = [], maxCandidates = 100 }) {
+export function compareSkillEvidence({ before = [], after = [], maxCandidates = 100, semanticAssessments = [] }) {
   if (!Array.isArray(before) || !Array.isArray(after)) throw new TypeError('before and after must be arrays');
   if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) throw new TypeError('maxCandidates must be a positive integer');
+  const assessments = semanticAssessmentsByPath(semanticAssessments);
 
   const previous = [...before].sort((a, b) => compareText(identity(a), identity(b)));
   const current = [...after].sort((a, b) => compareText(identity(a), identity(b)));
@@ -69,13 +70,13 @@ export function compareSkillEvidence({ before = [], after = [], maxCandidates = 
     matchedAfter.add(newSkill);
     if (completeFingerprint(oldSkill) && completeFingerprint(newSkill)
       && oldSkill.fingerprint.digest !== newSkill.fingerprint.digest) {
-      candidates.push({
-        ...baseCandidate('content-update', oldSkill, newSkill),
-        requiresUserChoice: false,
-        evidence: [{ type: 'same-selection-path' }, { type: 'fingerprint-changed' }],
-      });
+      const assessment = assessments.get(identity(oldSkill));
+      if (assessment) assessments.delete(identity(oldSkill));
+      candidates.push(contentChangeCandidate(oldSkill, newSkill, assessment));
     }
   }
+
+  if (assessments.size > 0) throw new TypeError('Every semantic assessment must identify a changed same-path selection');
 
   const added = current.filter((skill) => !matchedAfter.has(skill));
   const pairedRemoved = new Set();
@@ -192,4 +193,50 @@ export function compareSkillEvidence({ before = [], after = [], maxCandidates = 
       inspectedArtifacts: 'untrusted-data',
     },
   };
+}
+
+function contentChangeCandidate(before, after, assessment) {
+  const evidence = [{ type: 'same-selection-path' }, { type: 'fingerprint-changed' }];
+  if (assessment?.kind === 'routine-content-update') {
+    return {
+      ...baseCandidate('content-update', before, after),
+      semanticCertainty: 'confirmed-by-caller',
+      semanticAssessment: assessment.kind,
+      requiresUserChoice: false,
+      evidence,
+    };
+  }
+  if (assessment?.kind === 'behavior-change') {
+    return {
+      ...baseCandidate('behavior-change', before, after),
+      semanticCertainty: 'confirmed-by-caller',
+      semanticAssessment: assessment.kind,
+      requiresUserChoice: true,
+      alternatives: ['accept-semantic-migration', 'keep-current-selection', 'defer'],
+      evidence,
+    };
+  }
+  return {
+    ...baseCandidate('content-change', before, after),
+    requiresUserChoice: true,
+    alternatives: ['confirm-routine-content-update', 'treat-as-behavior-change', 'defer'],
+    evidence,
+  };
+}
+
+function semanticAssessmentsByPath(value) {
+  if (!Array.isArray(value)) throw new TypeError('semanticAssessments must be an array');
+  const result = new Map();
+  for (const assessment of value) {
+    if (!assessment || typeof assessment !== 'object' || Array.isArray(assessment)
+      || Object.keys(assessment).some((key) => !['path', 'kind', 'confirmed'].includes(key))
+      || typeof assessment.path !== 'string' || !assessment.path
+      || !['routine-content-update', 'behavior-change'].includes(assessment.kind)
+      || assessment.confirmed !== true
+      || result.has(assessment.path)) {
+      throw new TypeError('Every semantic assessment must be a distinct, confirmed path and supported kind');
+    }
+    result.set(assessment.path, assessment);
+  }
+  return result;
 }

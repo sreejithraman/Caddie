@@ -166,7 +166,14 @@ async function validateRecord(record, operation, operationRoot, index, journal, 
     return;
   }
   if (strategy === 'symlink') {
-    failUnless(record.stagedPath === undefined && record.backupPath === undefined, `record ${index} exposure paths are invalid`);
+    requirePath(record.stagedPath, path.join(operationRoot, 'staged', `${index}-${definition.storageSuffix}`), `record ${index} staged exposure path`);
+    requirePath(record.backupPath, path.join(operationRoot, 'backups', `${index}-${definition.storageSuffix}`), `record ${index} exposure backup path`);
+    const expectedTarget = path.relative(path.dirname(operation.linkPath), operation.targetPath);
+    failUnless(record.afterTarget === expectedTarget, `record ${index} exposure target is invalid`);
+    if (await exists(record.stagedPath)) {
+      const stat = await fs.lstat(record.stagedPath);
+      failUnless(stat.isSymbolicLink() && await fs.readlink(record.stagedPath) === expectedTarget, `record ${index} staged exposure changed`);
+    }
     return;
   }
   throw new JournalValidationError(`record ${index} has an unsupported operation`);

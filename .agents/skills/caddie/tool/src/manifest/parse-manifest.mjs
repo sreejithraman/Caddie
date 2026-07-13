@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { ToolError, invalid } from '../protocol/errors.mjs';
 import { validateGitRef, validateGitUrl } from '../sources/git-client.mjs';
+import { validateSelectionMetadata } from './selection-metadata.mjs';
 
 export const MANIFEST_VERSION = 1;
 
@@ -48,6 +49,11 @@ export async function parseManifest(manifestPath, expectedScope) {
   const skills = value.skills ?? value.selections ?? [];
   if (!Array.isArray(skills)) {
     throw invalid('invalid-skill-selections', 'Caddie Manifest skills must be an array', { manifestPath });
+  }
+  for (const selection of skills) {
+    if (selection && typeof selection === 'object' && !Array.isArray(selection)) {
+      validateSelectionMetadata(selection, sources, manifestPath);
+    }
   }
 
   return { manifestVersion: version, scope: value.scope, sources, skills, manifestPath };

@@ -212,6 +212,78 @@ export function parsePullRequestMarkers(body) {
   return { changeSetId, changeId, dependencies: dependencyText ? dependencyText.split(',').filter(Boolean) : [] };
 }
 
+export function reconstructChangeSets({ pullRequests = [], localChanges = [] } = {}) {
+  if (!Array.isArray(pullRequests) || !Array.isArray(localChanges)) {
+    throw invalid('invalid-change-set-evidence', 'Change Set evidence must provide pullRequests and localChanges arrays');
+  }
+  const groups = new Map();
+  const findings = [];
+  const mergeChangeEvidence = (changeSetId, changeId, value) => {
+    if (!groups.has(changeSetId)) groups.set(changeSetId, new Map());
+    const changes = groups.get(changeSetId);
+    const current = changes.get(changeId) ?? { id: changeId, dependencies: [] };
+    changes.set(changeId, {
+      ...current,
+      ...value,
+      referencedOnly: false,
+      dependencies: [...new Set([...(current.dependencies ?? []), ...(value.dependencies ?? [])])].sort(),
+    });
+  };
+  for (const item of localChanges) {
+    if (!item || typeof item.changeSetId !== 'string' || typeof item.changeId !== 'string') {
+      findings.push({ code: 'invalid-local-change-evidence' });
+      continue;
+    }
+    mergeChangeEvidence(item.changeSetId, item.changeId, {
+      local: true,
+      preparation: item.preparation ?? null,
+      dependencies: Array.isArray(item.dependencies) ? item.dependencies : [],
+    });
+  }
+  for (const pullRequest of pullRequests) {
+    const body = typeof pullRequest?.body === 'string' ? pullRequest.body : '';
+    const markers = parsePullRequestMarkers(body);
+    if (!markers) {
+      if (body.includes('caddie-change-set:')) findings.push({ code: 'invalid-pull-request-markers', url: pullRequest?.url ?? null });
+      continue;
+    }
+    mergeChangeEvidence(markers.changeSetId, markers.changeId, {
+      pullRequest: {
+        url: pullRequest.url ?? null,
+        state: pullRequest.state ?? 'unknown',
+        mergedCommit: pullRequest.mergedCommit ?? null,
+      },
+      dependencies: markers.dependencies,
+    });
+  }
+  for (const changes of groups.values()) {
+    const dependencyIds = new Set([...changes.values()].flatMap((change) => change.dependencies ?? []));
+    for (const dependencyId of dependencyIds) {
+      if (!changes.has(dependencyId)) {
+        changes.set(dependencyId, { id: dependencyId, dependencies: [], referencedOnly: true });
+      }
+    }
+  }
+  const changeSets = [...groups].sort(([left], [right]) => left.localeCompare(right)).map(([id, changes]) => {
+    const listed = [...changes.values()].sort((left, right) => left.id.localeCompare(right.id));
+    const incomplete = listed.filter((change) => change.pullRequest?.state !== 'merged');
+    return {
+      id,
+      status: incomplete.length === 0 ? 'complete' : 'incomplete',
+      changes: listed,
+      remainingChanges: incomplete.map(({ id: changeId }) => changeId),
+    };
+  });
+  return {
+    changeSets,
+    coverage: {
+      complete: findings.length === 0,
+      reason: findings.length ? 'change-set-evidence-partial' : null,
+      findings,
+    },
+  };
+}
+
 function publicationEntry(changeSetId, preparation, dependencies) {
   if (preparation.kind === 'sandbox') {
     return { id: preparation.id, workflow: 'review-apply-plan', applyPlan: preparation.applyPlan, dependencies };

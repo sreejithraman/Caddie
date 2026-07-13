@@ -23,6 +23,91 @@ test('inspect-source exposes bounded untrusted local evidence through the public
   assert.equal(envelope.result.skill.name, 'fixture');
 });
 
+test('inspect surfaces single- and multi-origin declared Lineage with its Migration Record', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-lineage-'));
+  const source = path.join(root, 'skills');
+  await mkdir(path.join(source, 'derived-one'), { recursive: true });
+  await mkdir(path.join(source, 'derived-many'), { recursive: true });
+  await writeFile(path.join(source, 'derived-one', 'SKILL.md'), '---\nname: derived-one\n---\n');
+  await writeFile(path.join(source, 'derived-many', 'SKILL.md'), '---\nname: derived-many\n---\n');
+  await writeFile(path.join(root, 'caddie.json'), `${JSON.stringify({
+    version: 1,
+    scope: 'project',
+    sources: {
+      authored: { type: 'local', path: './skills' },
+      upstream: { type: 'git', url: 'https://example.test/upstream.git' },
+    },
+    selections: [
+      {
+        source: 'authored', path: 'derived-one',
+        derivedFrom: [{ source: 'upstream', path: 'skills/original' }],
+      },
+      {
+        source: 'authored', path: 'derived-many',
+        derivedFrom: [
+          { source: 'upstream', path: 'skills/first' },
+          { source: 'authored', path: 'foundations/second' },
+        ],
+        migrationRecord: 'docs/migrations/derived-many.md',
+      },
+    ],
+  }, null, 2)}\n`);
+
+  const envelope = invoke('inspect', {
+    cwd: root,
+    userManifestPath: path.join(root, 'missing-user.json'),
+  });
+
+  assert.equal(envelope.ok, true, JSON.stringify(envelope));
+  const one = envelope.result.availableSkills.find(({ name }) => name === 'derived-one');
+  const many = envelope.result.availableSkills.find(({ name }) => name === 'derived-many');
+  assert.deepEqual(one.provenance.derivedFrom, [{ source: 'upstream', path: 'skills/original' }]);
+  assert.deepEqual(many.provenance.derivedFrom, [
+    { source: 'upstream', path: 'skills/first' },
+    { source: 'authored', path: 'foundations/second' },
+  ]);
+  assert.equal(many.provenance.migrationRecord, 'docs/migrations/derived-many.md');
+});
+
+test('inspect rejects malformed declared Lineage through the public tool', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-lineage-invalid-'));
+  const source = path.join(root, 'skills', 'derived');
+  await mkdir(source, { recursive: true });
+  await writeFile(path.join(source, 'SKILL.md'), '---\nname: derived\n---\n');
+  await writeFile(path.join(root, 'caddie.json'), `${JSON.stringify({
+    version: 1,
+    scope: 'project',
+    sources: { authored: { type: 'local', path: './skills' } },
+    selections: [{ source: 'authored', path: 'derived', derivedFrom: { source: 'authored', path: 'original' } }],
+  })}\n`);
+
+  const envelope = invoke('inspect', { cwd: root, userManifestPath: path.join(root, 'missing-user.json') });
+
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error.code, 'invalid-lineage');
+  assert.equal(envelope.error.disposition, 'invalid');
+});
+
+test('public compare keeps behavior unknown until a confirmed semantic assessment', () => {
+  const before = [{ name: 'fixture', path: 'skills/fixture', fingerprint: complete('old') }];
+  const after = [{ name: 'fixture', path: 'skills/fixture', fingerprint: complete('new') }];
+
+  const unknown = invoke('compare', { before, after });
+  const routine = invoke('compare', {
+    before,
+    after,
+    semanticAssessments: [{ path: 'skills/fixture', kind: 'routine-content-update', confirmed: true }],
+  });
+
+  assert.equal(unknown.ok, true);
+  assert.equal(unknown.result.candidates[0].kind, 'content-change');
+  assert.equal(unknown.result.candidates[0].requiresUserChoice, true);
+  assert.equal(routine.ok, true);
+  assert.equal(routine.result.candidates[0].kind, 'content-update');
+  assert.equal(routine.result.candidates[0].semanticCertainty, 'confirmed-by-caller');
+  assert.equal(routine.result.candidates[0].requiresUserChoice, false);
+});
+
 test('compare and plan are available while planning performs no mutation', async () => {
   const scopeRoot = await mkdtemp(path.join(tmpdir(), 'caddie-operation-plan-'));
   const before = [{ name: 'to-prd', path: 'to-prd', fingerprint: complete('a'), files: ['SKILL.md'] }];

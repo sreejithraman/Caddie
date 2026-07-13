@@ -44,6 +44,31 @@ test('manifest rejects source fields from the other discriminator', async () => 
   await assert.rejects(() => parseManifest(gitPath, 'project'), (error) => error.code === 'invalid-git-source');
 });
 
+test('manifest rejects malformed Lineage and unsafe Migration Record pointers', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-manifest-lineage-invalid-'));
+  const cases = [
+    [{ source: 'local', path: 'derived', derivedFrom: [] }, 'invalid-lineage'],
+    [{ source: 'local', path: 'derived', derivedFrom: [{ source: 'local' }] }, 'invalid-lineage'],
+    [{ source: 'local', path: 'derived', derivedFrom: [{ source: 'missing', path: 'original' }] }, 'invalid-lineage'],
+    [{
+      source: 'local', path: 'derived',
+      derivedFrom: [{ source: 'local', path: 'original' }, { source: 'local', path: 'original' }],
+    }, 'invalid-lineage'],
+    [{ source: 'local', path: 'derived', migrationRecord: '../outside.md' }, 'invalid-migration-record'],
+  ];
+
+  for (const [index, [selection, code]] of cases.entries()) {
+    const manifestPath = path.join(root, `${index}.json`);
+    await json(manifestPath, {
+      version: 1,
+      scope: 'project',
+      sources: { local: { type: 'local', path: './skills' } },
+      selections: [selection],
+    });
+    await assert.rejects(() => parseManifest(manifestPath, 'project'), (error) => error.code === code);
+  }
+});
+
 test('one realpath containment seam rejects selected symlinks escaping a source', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-source-symlink-'));
   const source = path.join(root, 'source');
@@ -73,7 +98,12 @@ test('Git selections use the exact lock commit after the declared branch moves',
     version: 1,
     scope: 'user',
     sources: { upstream: { type: 'git', url: fixture.remote, ref: 'refs/heads/trunk' } },
-    skills: [{ source: 'upstream', path: 'skills/alpha' }],
+    skills: [{
+      source: 'upstream',
+      path: 'skills/alpha',
+      derivedFrom: [{ source: 'upstream', path: 'skills/basis' }],
+      migrationRecord: 'docs/migrations/alpha.md',
+    }],
   });
   const manifest = await parseManifest(manifestPath, 'user');
   const firstCommit = await commitSkill(fixture.working, 'old-name', 'first');
@@ -89,6 +119,8 @@ test('Git selections use the exact lock commit after the declared branch moves',
   assert.equal(result.coverage.complete, true);
   assert.equal(result.skills[0].name, 'old-name');
   assert.equal(result.skills[0].commit, firstCommit);
+  assert.deepEqual(result.skills[0].derivedFrom, [{ source: 'upstream', path: 'skills/basis' }]);
+  assert.equal(result.skills[0].migrationRecord, 'docs/migrations/alpha.md');
 
   await rename(fixture.remote, `${fixture.remote}.offline`);
   const stale = await resolveSelectionsWithEvidence(manifest, {
