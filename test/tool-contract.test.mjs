@@ -133,6 +133,21 @@ test('unsupported manifests are bounded partial evidence and unsupported protoco
   assert.equal(protocolResult.stdout.trim().split('\n').length, 1);
 });
 
+test('explicit project manifests must use the fixed manifest filename', async () => {
+  const fixture = await mkdtemp(path.join(tmpdir(), 'caddie-fixed-manifest-'));
+  const project = path.join(fixture, 'project');
+  const other = path.join(project, '.agents', '.caddie', 'other.json');
+  await json(other, manifest('project', './source', 'fixture'));
+  const result = invoke({
+    version: 1,
+    operation: 'locate',
+    input: { cwd: project, home: path.join(fixture, 'home'), projectManifestPath: other },
+  });
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error.code, 'invalid-project-manifest-path');
+});
+
 test('invalid input and selections cannot contaminate stdout or escape a source', async () => {
   const malformed = spawnSync(process.execPath, [tool], { cwd: repositoryRoot, input: '{no', encoding: 'utf8' });
   assert.equal(malformed.status, 1);

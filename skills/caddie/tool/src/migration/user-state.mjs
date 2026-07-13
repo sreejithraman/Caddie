@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { parseManifest } from '../manifest/parse-manifest.mjs';
 import { invalid } from '../protocol/errors.mjs';
+import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
 
 const require = createRequire(import.meta.url);
 const { fingerprint } = require('../apply/filesystem');
@@ -37,12 +38,12 @@ export async function inspectUserStateMigration(input = {}, runtime = {}) {
     });
   }
 
-  const source = {
+  const legacyDocuments = {
     manifestPath: path.resolve(config.userManifest),
   };
-  source.root = path.dirname(source.manifestPath);
-  source.lockPath = path.join(source.root, 'caddie.lock');
-  source.ledgerPath = path.join(source.root, '.agents', '.caddie', 'ledger.json');
+  legacyDocuments.root = path.dirname(legacyDocuments.manifestPath);
+  legacyDocuments.lockPath = path.join(legacyDocuments.root, 'caddie.lock');
+  legacyDocuments.ledgerPath = path.join(legacyDocuments.root, '.agents', '.caddie', 'ledger.json');
 
   const collisions = [];
   for (const candidate of [destination.manifestPath, destination.lockPath, destination.ledgerPath, destination.registryPath]) {
@@ -54,7 +55,7 @@ export async function inspectUserStateMigration(input = {}, runtime = {}) {
       home,
       configHome,
       legacyRoot,
-      source,
+      legacyDocuments,
       destination: publicDestination(destination),
       removable: false,
       findings: collisions.map((candidate) => ({ code: 'migration-target-exists', path: candidate })),
@@ -62,41 +63,53 @@ export async function inspectUserStateMigration(input = {}, runtime = {}) {
   }
 
   const [manifestValue, lockValue, ledgerValue] = await Promise.all([
-    readJsonFile(source.manifestPath, { label: 'legacy User Skills manifest' }),
-    readJsonFile(source.lockPath, { label: 'legacy Caddie lock' }),
-    readJsonFile(source.ledgerPath, { label: 'legacy Caddie ledger' }),
+    readJsonFile(legacyDocuments.manifestPath, { label: 'legacy User Skills manifest' }),
+    readJsonFile(legacyDocuments.lockPath, { label: 'legacy Caddie lock' }),
+    readJsonFile(legacyDocuments.ledgerPath, { label: 'legacy Caddie ledger' }),
   ]);
-  await parseManifest(source.manifestPath, 'user', source.root);
-  if (lockValue.version !== 1 || !lockValue.sources || typeof lockValue.sources !== 'object') {
-    throw invalid('unsupported-legacy-lock', `Legacy Caddie Lock is not supported: ${source.lockPath}`, { path: source.lockPath });
-  }
-  if (ledgerValue.version !== 1 || ledgerValue.scopeId !== 'user' || !Array.isArray(ledgerValue.entries)) {
-    throw invalid('unsupported-legacy-ledger', `Legacy Caddie Ledger is not supported: ${source.ledgerPath}`, { path: source.ledgerPath });
+  const parsedManifest = await parseManifest(legacyDocuments.manifestPath, 'user', legacyDocuments.root);
+  validateLegacyLock(lockValue, parsedManifest, legacyDocuments.lockPath);
+  validateOwnershipLedger(ledgerValue, { expectedScopeId: 'user', label: 'legacy Caddie Ledger' });
+  const internalLocalSources = Object.values(parsedManifest.sources)
+    .filter((skillSource) => skillSource.type === 'local' && isInside(legacyRoot, skillSource.path))
+    .map((skillSource) => skillSource.path)
+    .sort();
+  if (internalLocalSources.length > 0) {
+    return {
+      status: 'blocked',
+      home,
+      configHome,
+      legacyRoot,
+      legacyDocuments,
+      destination: publicDestination(destination),
+      removable: false,
+      findings: [{ code: 'legacy-local-source-inside-state', paths: internalLocalSources }],
+    };
   }
 
   const [legacyFingerprint, manifestFingerprint, lockFingerprint, ledgerFingerprint] = await Promise.all([
     fingerprint(legacyRoot),
-    fingerprint(source.manifestPath),
-    fingerprint(source.lockPath),
-    fingerprint(source.ledgerPath),
+    fingerprint(legacyDocuments.manifestPath),
+    fingerprint(legacyDocuments.lockPath),
+    fingerprint(legacyDocuments.ledgerPath),
   ]);
-  const externalSourceState = !isInside(legacyRoot, source.root);
+  const externalLegacyDocuments = !isInside(legacyRoot, legacyDocuments.root);
   return {
     status: 'ready',
     home,
     configHome,
     legacyRoot,
     legacyFingerprint,
-    source: {
-      ...source,
+    legacyDocuments: {
+      ...legacyDocuments,
       manifestFingerprint,
       lockFingerprint,
       ledgerFingerprint,
-      external: externalSourceState,
+      external: externalLegacyDocuments,
     },
     destination: publicDestination(destination),
     documents: {
-      manifest: rebaseLocalSources(manifestValue, source.root),
+      manifest: rebaseLocalSources(manifestValue, legacyDocuments.root),
       lock: lockValue,
       ledger: ledgerValue,
       registry: {
@@ -105,8 +118,8 @@ export async function inspectUserStateMigration(input = {}, runtime = {}) {
       },
     },
     removable: true,
-    findings: externalSourceState
-      ? [{ code: 'external-legacy-source-preserved', paths: [source.manifestPath, source.lockPath, source.ledgerPath] }]
+    findings: externalLegacyDocuments
+      ? [{ code: 'external-legacy-documents-preserved', paths: [legacyDocuments.manifestPath, legacyDocuments.lockPath, legacyDocuments.ledgerPath] }]
       : [],
   };
 }
@@ -128,10 +141,10 @@ export async function createUserStateMigrationPlan(input = {}, runtime = {}) {
     { type: 'remove-legacy-state', path: evidence.legacyRoot, expected: { state: 'fingerprint', fingerprint: evidence.legacyFingerprint } },
     { type: 'write-ledger', path: evidence.destination.ledgerPath, content: content(evidence.documents.ledger), expected: { state: 'absent' } },
   ];
-  const preconditions = evidence.source.external ? [
-    { path: evidence.source.manifestPath, expected: { state: 'file', fingerprint: evidence.source.manifestFingerprint } },
-    { path: evidence.source.lockPath, expected: { state: 'file', fingerprint: evidence.source.lockFingerprint } },
-    { path: evidence.source.ledgerPath, expected: { state: 'file', fingerprint: evidence.source.ledgerFingerprint } },
+  const preconditions = evidence.legacyDocuments.external ? [
+    { path: evidence.legacyDocuments.manifestPath, expected: { state: 'file', fingerprint: evidence.legacyDocuments.manifestFingerprint } },
+    { path: evidence.legacyDocuments.lockPath, expected: { state: 'file', fingerprint: evidence.legacyDocuments.lockFingerprint } },
+    { path: evidence.legacyDocuments.ledgerPath, expected: { state: 'file', fingerprint: evidence.legacyDocuments.ledgerFingerprint } },
   ] : [];
   return { evidence, plan: createPlan({ kind: 'migrate', home: evidence.home, scope, operations, preconditions }) };
 }
@@ -159,6 +172,22 @@ function rebaseLocalSources(manifest, sourceRoot) {
     ]));
   }
   return copy;
+}
+
+function validateLegacyLock(lock, manifest, lockPath) {
+  const entries = lock?.sources;
+  const validDocument = lock && typeof lock === 'object' && !Array.isArray(lock)
+    && lock.version === 1 && entries && typeof entries === 'object' && !Array.isArray(entries);
+  const validEntry = (entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
+    && entry.type === 'git' && typeof entry.url === 'string'
+    && typeof entry.commit === 'string' && /^[0-9a-f]{40,64}$/i.test(entry.commit);
+  const entriesValid = validDocument && Object.values(entries).every(validEntry);
+  const manifestPinsValid = entriesValid && Object.values(manifest.sources)
+    .filter((skillSource) => skillSource.type === 'git')
+    .every((skillSource) => entries[skillSource.name]?.url === skillSource.url);
+  if (!manifestPinsValid) {
+    throw invalid('unsupported-legacy-lock', `Legacy Caddie Lock is not supported: ${lockPath}`, { path: lockPath });
+  }
 }
 
 async function readJsonFile(candidate, { allowMissing = false, label } = {}) {

@@ -10,9 +10,9 @@ const { validateJournal } = require('../recovery/journal');
 const { parseSkillMetadata } = require('../skill-metadata');
 const { expectedFor, isUserHarnessAnchored, isUserStateAnchored, strategyFor, targetFor } = require('../mutations/strategies');
 const userHarnessReservation = require('../coordination/user-harness-reservation');
+const { approvedMutationAnchor } = require('../mutations/anchors');
 const {
   canonicalSkillsRoot,
-  claudeSkillsRoot,
   runtimeUserCoordinationRoot,
   scopeLayout,
 } = require('../layout');
@@ -598,21 +598,7 @@ async function assertMutationAncestors(plan) {
     ].filter(Boolean);
     for (const candidate of candidates) {
       const resolved = path.resolve(candidate);
-      const legacyConfigHome = plan.scope.legacyConfigHome && path.resolve(plan.scope.legacyConfigHome);
-      const userSkillsRoot = plan.scope.id === 'user' ? canonicalSkillsRoot(plan.scope, home) : null;
-      const harnessRoot = isUserHarnessAnchored(operation) && plan.scope.id === 'user'
-        ? claudeSkillsRoot(plan.scope, home)
-        : null;
-      const userStateRoot = isUserStateAnchored(operation)
-        ? scopeLayout({ id: 'user', root: home }, home).agentsRoot
-        : null;
-      const anchor = isInside(scopeRoot, resolved)
-        ? scopeRoot
-        : legacyConfigHome && isInside(legacyConfigHome, resolved) ? legacyConfigHome : null;
-      const approvedAnchor = anchor
-        || (userSkillsRoot && isInside(userSkillsRoot, resolved) ? home : null)
-        || (harnessRoot && isInside(harnessRoot, resolved) ? home : null)
-        || (userStateRoot && isInside(userStateRoot, resolved) ? home : null);
+      const approvedAnchor = approvedMutationAnchor(plan, operation, resolved, home);
       if (!approvedAnchor) throw new ApplyError('mutation path is outside its approved scope', 'invalid-plan', { path: resolved });
       await assertNoSymlinkAncestors(approvedAnchor, path.dirname(resolved));
     }

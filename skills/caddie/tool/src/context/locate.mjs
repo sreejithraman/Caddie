@@ -70,7 +70,8 @@ async function findUp(fileName, start, excludedPath) {
 
 function projectRootFromManifest(manifestPath) {
   const stateRoot = path.dirname(manifestPath);
-  if (path.basename(stateRoot) !== '.caddie' || path.basename(path.dirname(stateRoot)) !== '.agents') {
+  if (path.basename(manifestPath) !== 'manifest.json'
+    || path.basename(stateRoot) !== '.caddie' || path.basename(path.dirname(stateRoot)) !== '.agents') {
     throw invalid('invalid-project-manifest-path', `Project manifest must live at .agents/.caddie/manifest.json: ${manifestPath}`, {
       manifestPath,
     });

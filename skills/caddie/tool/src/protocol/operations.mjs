@@ -54,11 +54,25 @@ async function inspectOperation(input, runtime) {
       throw invalid('unsupported-inspect-view', `Unsupported inspect view: ${String(input.view)}`);
     }
     const result = await inspectAvailableSkills(input, runtime);
-    result.legacyManagerState = await inspectLegacyManagerState(input, runtime);
+    result.legacyManagerState = await inspectLegacyManagerState(input, {
+      ...runtime,
+      installedFingerprints: userInstallationFingerprints(result),
+    });
     return result;
   } catch (error) {
     throw normaliseOperationError(error);
   }
+}
+
+function userInstallationFingerprints(inspection) {
+  const fingerprints = new Map();
+  for (const skill of inspection.scopes?.user?.skills ?? []) {
+    const installation = skill.reconciliation?.evidence?.installation;
+    if (installation?.complete === true && typeof installation.digest === 'string') {
+      fingerprints.set(skill.name, installation.digest);
+    }
+  }
+  return fingerprints;
 }
 
 async function inspectSourceOperation(input) {

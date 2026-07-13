@@ -5,8 +5,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { canonicalize, planHome, verifyPlanIntegrity } = require('../plans');
 const { exists, fingerprint } = require('../apply/filesystem');
-const { expectedFor, isUserHarnessAnchored, isUserStateAnchored, strategyFor, targetFor } = require('../mutations/strategies');
-const { canonicalSkillsRoot, claudeSkillsRoot, scopeLayout } = require('../layout');
+const { expectedFor, strategyFor, targetFor } = require('../mutations/strategies');
+const { scopeLayout } = require('../layout');
+const { approvedMutationAnchor } = require('../mutations/anchors');
 const PHASES = new Set(['staged', 'applying', 'verified', 'rolling-back', 'rolled-back']);
 
 class JournalValidationError extends Error {
@@ -52,21 +53,7 @@ async function validateJournal(journal, scope) {
   for (const operation of journal.plan.operations) {
     for (const candidate of [operation.destinationPath, operation.linkPath, operation.targetPath, operation.path].filter(Boolean)) {
       const resolved = path.resolve(candidate);
-      const scopeRoot = path.resolve(scope.root);
-      const legacyConfigHome = scope.legacyConfigHome && path.resolve(scope.legacyConfigHome);
-      const anchor = isInside(scopeRoot, resolved) ? scopeRoot
-        : legacyConfigHome && isInside(legacyConfigHome, resolved) ? legacyConfigHome : null;
-      const userSkillsRoot = scope.id === 'user' ? canonicalSkillsRoot(scope, home) : null;
-      const harnessRoot = isUserHarnessAnchored(operation) && scope.id === 'user'
-        ? claudeSkillsRoot(scope, home)
-        : null;
-      const userStateRoot = isUserStateAnchored(operation)
-        ? scopeLayout({ id: 'user', root: home }, home).agentsRoot
-        : null;
-      const approvedAnchor = anchor
-        || (userSkillsRoot && isInside(userSkillsRoot, resolved) ? home : null)
-        || (harnessRoot && isInside(harnessRoot, resolved) ? home : null)
-        || (userStateRoot && isInside(userStateRoot, resolved) ? home : null);
+      const approvedAnchor = approvedMutationAnchor(journal.plan, operation, resolved, home);
       failUnless(approvedAnchor, 'embedded plan mutation path is outside its approved scope');
       await requireRealAncestors(approvedAnchor, path.dirname(resolved), 'embedded plan mutation path');
     }

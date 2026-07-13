@@ -15,7 +15,7 @@ When `locate` reports `legacy-state-present`, call `inspect` with `view: "migrat
 - invalid or unsupported evidence: preserve it and report the blocker.
 - `ready`: call `plan` with `workflow: "state-migration"`.
 
-Present the exact plan identifier, its source and destination paths, local-source rebasing, preconditions, and the fingerprint-bound removal of the legacy Caddie tree. Apply only after approval bound to that plan. Then run normal inspection and confirm `~/.config/caddie` is absent. Never migrate with shell moves, copies, or deletion commands, and never remove an external legacy source tree that the plan reports as preserved.
+Present the exact plan identifier, its source and destination paths, local-source rebasing, preconditions, and the fingerprint-bound removal of the legacy Caddie tree. Apply only after approval bound to that plan. Then run normal inspection and confirm `~/.config/caddie` is absent. Never migrate with shell moves, copies, or deletion commands, and never remove external legacy documents that the plan reports as preserved.
 
 ## Legacy manager cleanup
 

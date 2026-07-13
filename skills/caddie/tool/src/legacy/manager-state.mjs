@@ -29,7 +29,9 @@ export async function inspectLegacyManagerState(input = {}, runtime = {}) {
   }
   const legacy = legacyFile.value;
   const skills = legacy.skills;
-  if (!skills || typeof skills !== 'object' || Array.isArray(skills)) {
+  const malformedEntry = legacy.version !== 3 || !skills || typeof skills !== 'object' || Array.isArray(skills)
+    || Object.entries(skills).find(([name, entry]) => !validLegacyEntry(name, entry));
+  if (malformedEntry) {
     return {
       status: 'unsupported',
       path: layout.legacySkillLockPath,
@@ -59,7 +61,9 @@ export async function inspectLegacyManagerState(input = {}, runtime = {}) {
   const entries = [];
   for (const name of Object.keys(skills).sort()) {
     const installedPath = path.join(layout.canonicalSkillsRoot, name);
-    const installedFingerprint = await fingerprintIfPresent(installedPath);
+    const installedFingerprint = runtime.installedFingerprints?.has(name)
+      ? runtime.installedFingerprints.get(name)
+      : await fingerprintIfPresent(installedPath);
     const managed = ledgerEntries.get(name);
     if (!managed) {
       entries.push({
@@ -70,14 +74,15 @@ export async function inspectLegacyManagerState(input = {}, runtime = {}) {
       });
       continue;
     }
-    const exact = typeof managed.fingerprint === 'string'
-      && installedFingerprint === managed.fingerprint
+    const managedFingerprint = ledgerFingerprint(managed.fingerprint);
+    const exact = managedFingerprint !== null
+      && installedFingerprint === managedFingerprint
       && path.resolve(managed.path ?? '') === installedPath;
     entries.push({
       name,
       classification: exact ? 'managed' : 'conflict',
       installedPath,
-      ledgerFingerprint: managed.fingerprint ?? null,
+      ledgerFingerprint: managedFingerprint,
       installedFingerprint,
     });
   }
@@ -150,4 +155,20 @@ async function realFileFingerprint(candidate) {
   const stat = await fs.lstat(candidate).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!stat || !stat.isFile() || stat.isSymbolicLink()) return null;
   return fingerprint(candidate);
+}
+
+function ledgerFingerprint(value) {
+  if (typeof value === 'string') return value;
+  if (value?.complete === true && typeof value.digest === 'string') return value.digest;
+  return null;
+}
+
+function validLegacyEntry(name, entry) {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)
+    && entry && typeof entry === 'object' && !Array.isArray(entry)
+    && typeof entry.source === 'string'
+    && typeof entry.sourceType === 'string'
+    && typeof entry.sourceUrl === 'string'
+    && typeof entry.skillPath === 'string'
+    && typeof entry.skillFolderHash === 'string';
 }

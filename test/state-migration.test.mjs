@@ -17,7 +17,7 @@ test('approved migration preserves User Skills state while moving Caddie documen
   const inspected = invoke('inspect', { view: 'migration' }, fixture);
   assert.equal(inspected.ok, true, JSON.stringify(inspected));
   assert.equal(inspected.result.migration.status, 'ready');
-  assert.equal(inspected.result.migration.source.external, false);
+  assert.equal(inspected.result.migration.legacyDocuments.external, false);
 
   const planned = invoke('plan', { workflow: 'state-migration' }, fixture);
   assert.equal(planned.ok, true, JSON.stringify(planned));
@@ -41,7 +41,7 @@ test('approved migration preserves User Skills state while moving Caddie documen
   assert.equal(await readFile(path.join(fixture.installed, 'SKILL.md'), 'utf8'), fixture.skillContent);
 });
 
-test('migration preserves an external legacy source tree and binds it as a precondition', async () => {
+test('migration preserves external legacy documents and binds them as preconditions', async () => {
   const fixture = await legacyFixture({ externalState: true });
   const planned = invoke('plan', { workflow: 'state-migration' }, fixture);
   assert.equal(planned.ok, true, JSON.stringify(planned));
@@ -62,11 +62,38 @@ test('migration refuses to overwrite any destination state', async () => {
   assert.equal(planned.error.code, 'user-state-migration-not-ready');
 });
 
+test('migration blocks local Skill Sources that would be removed with legacy state', async () => {
+  const fixture = await legacyFixture({ internalLocalSource: true });
+  const inspected = invoke('inspect', { view: 'migration' }, fixture);
+  assert.equal(inspected.result.migration.status, 'blocked');
+  assert.equal(inspected.result.migration.findings[0].code, 'legacy-local-source-inside-state');
+  assert.equal(invoke('plan', { workflow: 'state-migration' }, fixture).ok, false);
+});
+
+test('migration rejects malformed lock and ledger documents', async (t) => {
+  await t.test('lock entries', async () => {
+    const fixture = await legacyFixture();
+    await json(path.join(path.dirname(fixture.manifestPath), 'caddie.lock'), { version: 1, sources: [] });
+    const inspected = invoke('inspect', { view: 'migration' }, fixture);
+    assert.equal(inspected.ok, false);
+    assert.equal(inspected.error.code, 'unsupported-legacy-lock');
+  });
+  await t.test('ledger entries', async () => {
+    const fixture = await legacyFixture();
+    await json(path.join(path.dirname(fixture.manifestPath), '.agents', '.caddie', 'ledger.json'), {
+      version: 1, scopeId: 'user', entries: [null],
+    });
+    const inspected = invoke('inspect', { view: 'migration' }, fixture);
+    assert.equal(inspected.ok, false);
+    assert.equal(inspected.error.code, 'invalid-ledger-content');
+  });
+});
+
 test('legacy manager cleanup removes only a verified Vercel lock', async () => {
   const fixture = await currentFixture();
   await json(path.join(fixture.home, '.agents', '.skill-lock.json'), {
     version: 3,
-    skills: { shared: { source: 'example/shared' }, removed: { source: 'example/removed' } },
+    skills: { shared: legacyEntry('shared'), removed: legacyEntry('removed') },
   });
   const inspected = invoke('inspect', { view: 'legacy-manager' }, fixture);
   assert.equal(inspected.ok, true, JSON.stringify(inspected));
@@ -94,7 +121,7 @@ test('legacy manager cleanup is blocked by malformed or unowned live entries', a
   await t.test('unowned installed skill', async () => {
     const fixture = await currentFixture();
     await skill(path.join(fixture.home, '.agents', 'skills', 'mine'), 'mine', 'human owned\n');
-    await json(path.join(fixture.home, '.agents', '.skill-lock.json'), { skills: { mine: {} } });
+    await json(path.join(fixture.home, '.agents', '.skill-lock.json'), { version: 3, skills: { mine: legacyEntry('mine') } });
     const inspected = invoke('inspect', { view: 'legacy-manager' }, fixture);
     assert.equal(inspected.result.legacyManagerState.status, 'blocked');
     assert.equal(inspected.result.legacyManagerState.entries[0].classification, 'unmanaged');
@@ -102,14 +129,33 @@ test('legacy manager cleanup is blocked by malformed or unowned live entries', a
     assert.equal(planned.ok, false);
     assert.equal(planned.error.code, 'legacy-manager-cleanup-not-ready');
   });
+  await t.test('malformed entry', async () => {
+    const fixture = await currentFixture();
+    await json(path.join(fixture.home, '.agents', '.skill-lock.json'), { version: 3, skills: { '../outside': {} } });
+    const inspected = invoke('inspect', { view: 'legacy-manager' }, fixture);
+    assert.equal(inspected.result.legacyManagerState.status, 'unsupported');
+    assert.equal(inspected.result.legacyManagerState.removalRecommended, false);
+  });
 });
 
-async function legacyFixture({ externalState = false } = {}) {
+test('legacy manager cleanup accepts the supported structured ledger fingerprint', async () => {
+  const fixture = await currentFixture();
+  const ledgerPath = path.join(fixture.home, '.agents', '.caddie', 'ledger.json');
+  const ledger = JSON.parse(await readFile(ledgerPath, 'utf8'));
+  ledger.entries[0].fingerprint = { complete: true, digest: ledger.entries[0].fingerprint };
+  await json(ledgerPath, ledger);
+  await json(path.join(fixture.home, '.agents', '.skill-lock.json'), { version: 3, skills: { shared: legacyEntry('shared') } });
+  const inspected = invoke('inspect', { view: 'legacy-manager' }, fixture);
+  assert.equal(inspected.result.legacyManagerState.status, 'ready');
+  assert.equal(inspected.result.legacyManagerState.entries[0].classification, 'managed');
+});
+
+async function legacyFixture({ externalState = false, internalLocalSource = false } = {}) {
   const fixture = await currentFixture({ writeCurrentState: false });
   const legacyRoot = path.join(fixture.configHome, 'caddie');
   const sourceRoot = externalState ? path.join(fixture.root, 'SreeStack') : path.join(legacyRoot, 'user');
   fixture.manifestPath = path.join(sourceRoot, 'caddie.json');
-  fixture.authoredRoot = path.join(fixture.root, 'authored-skills');
+  fixture.authoredRoot = internalLocalSource ? path.join(legacyRoot, 'authored-skills') : path.join(fixture.root, 'authored-skills');
   fixture.project = path.join(fixture.root, 'Project');
   await mkdir(fixture.project, { recursive: true });
   await json(fixture.manifestPath, {
@@ -175,4 +221,14 @@ async function skill(directory, name, body) {
 async function json(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function legacyEntry(name) {
+  return {
+    source: 'example/skills',
+    sourceType: 'github',
+    sourceUrl: 'https://example.test/skills.git',
+    skillPath: `skills/${name}/SKILL.md`,
+    skillFolderHash: '0123456789abcdef0123456789abcdef01234567',
+  };
 }
