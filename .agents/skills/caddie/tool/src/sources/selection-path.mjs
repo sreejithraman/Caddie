@@ -1,4 +1,4 @@
-import { realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 export class SelectionOutsideSourceError extends TypeError {
@@ -28,8 +28,32 @@ export async function resolveSelectionWithinSource(sourceRoot, selectionPath) {
   return { sourceRoot: resolvedRoot, selectedPath: resolvedSelection, relativePath: normalized };
 }
 
+export async function assertContainedSymlinks(root) {
+  const resolvedRoot = await realpath(root);
+  async function visit(directory) {
+    for (const entry of await readdir(directory)) {
+      const candidate = path.join(directory, entry);
+      const stat = await lstat(candidate);
+      if (stat.isSymbolicLink()) {
+        let target;
+        try { target = await realpath(candidate); } catch {
+          throw externalSymlink(candidate, 'dangling');
+        }
+        if (!isWithin(resolvedRoot, target)) throw externalSymlink(candidate, target);
+      } else if (stat.isDirectory()) await visit(candidate);
+    }
+  }
+  await visit(resolvedRoot);
+}
+
+function externalSymlink(candidate, target) {
+  const error = new TypeError(`Skill contains a symlink outside its selected directory: ${candidate}`);
+  error.code = 'external-symlink';
+  error.target = target;
+  return error;
+}
+
 function isWithin(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
-

@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { verifyApprovedPlan } = require('../plans');
+const { canonicalize, verifyApprovedPlan } = require('../plans');
 const { copyDirectory, exists, fingerprint, fingerprintIfPresent, writeJsonAtomic } = require('./filesystem');
 const { validateJournal } = require('../recovery/journal');
 const { parseSkillMetadata } = require('../skill-metadata');
@@ -66,7 +66,7 @@ async function reclaimStaleOwner(lockPath, staleRaw, owner, attempt) {
     if (!Number.isInteger(existingClaim.pid) || processIsRunning(existingClaim.pid)) {
       throw new ApplyError('stale-owner recovery is already in progress', 'scope-locked', existingClaim);
     }
-    await fs.unlink(claimPath).catch((unlinkError) => { if (unlinkError.code !== 'ENOENT') throw unlinkError; });
+    await releaseOwnerFile(claimPath, existingClaim.nonce);
     return reclaimStaleOwner(lockPath, staleRaw, owner, attempt + 1);
   }
   try {
@@ -106,6 +106,7 @@ function processIsRunning(pid) {
 
 async function applyPlan({ plan, approval, onBoundary }) {
   verifyApprovedPlan(plan, approval);
+  await assertMutationAncestors(plan);
   const release = await acquireScopeLock(plan.scope.root);
   try {
     if (plan.kind === 'recovery') return await applyRecovery(plan, onBoundary);
@@ -161,6 +162,12 @@ async function stageOperations(plan, operationRoot) {
     if (operation.type === 'materialize-skill') {
       record.stagedPath = path.join(operationRoot, 'staged', `${index}-skill`);
       await copyDirectory(operation.sourcePath, record.stagedPath);
+      const { assertContainedSymlinks } = await import('../sources/selection-path.mjs');
+      try { await assertContainedSymlinks(record.stagedPath); } catch (error) {
+        throw new ApplyError('selected skill contains an external or dangling symlink', 'invalid-source', {
+          path: error.message,
+        });
+      }
       const stagedFingerprint = await fingerprint(record.stagedPath);
       if (stagedFingerprint !== operation.sourceFingerprint) throw new ApplyError('source changed while staging', 'stale-plan', { path: operation.sourcePath });
       const stagedName = await readSkillName(record.stagedPath);
@@ -337,6 +344,9 @@ async function applyRecovery(plan, onBoundary) {
   if (actual !== operation.journalFingerprint) throw new ApplyError('recovery journal changed', 'stale-plan');
   const journal = JSON.parse(await fs.readFile(operation.journalPath, 'utf8'));
   try { await validateJournal(journal, plan.scope); } catch (error) { throw new ApplyError(error.message, 'recovery-invalid'); }
+  if (canonicalize(operation.interruptedPlan) !== canonicalize(journal.plan)) {
+    throw new ApplyError('recovery approval does not bind the interrupted plan', 'stale-plan');
+  }
   for (const condition of plan.preconditions || []) await verifyCondition(condition);
   if (operation.type === 'recover-finish') {
     if (journal.phase === 'rolling-back') throw new ApplyError('a rollback already started and can only be resumed', 'recovery-invalid');
@@ -414,6 +424,58 @@ async function rollbackRecord(record, onBoundary, journal, recordIndex) {
       await boundary(onBoundary, `rollback-mutation:${recordIndex}:restored`, journal);
     }
   }
+}
+
+async function assertMutationAncestors(plan) {
+  const scopeRoot = path.resolve(plan.scope.root);
+  await assertRealDirectory(scopeRoot, 'scope root');
+  for (const operation of plan.operations) {
+    const candidates = [
+      operation.destinationPath,
+      operation.linkPath,
+      operation.targetPath,
+      operation.path,
+      operation.journalPath,
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      const resolved = path.resolve(candidate);
+      const configRoot = plan.scope.configRoot && path.resolve(plan.scope.configRoot);
+      const anchor = isInside(scopeRoot, resolved)
+        ? scopeRoot
+        : configRoot && isInside(configRoot, resolved) ? configRoot : null;
+      if (!anchor) throw new ApplyError('mutation path is outside its approved scope', 'invalid-plan', { path: resolved });
+      await assertNoSymlinkAncestors(anchor, path.dirname(resolved));
+    }
+  }
+}
+
+async function assertRealDirectory(candidate, label) {
+  const stat = await fs.lstat(candidate).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new ApplyError(`${label} must be an existing real directory`, 'invalid-state', { path: candidate });
+  }
+}
+
+async function assertNoSymlinkAncestors(anchor, candidate) {
+  await assertRealDirectory(anchor, 'mutation anchor');
+  const relative = path.relative(anchor, candidate);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new ApplyError('mutation parent escapes its approved anchor', 'invalid-plan', { path: candidate });
+  }
+  let current = anchor;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!stat) return;
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new ApplyError('mutation path has a non-directory or symlink ancestor', 'invalid-state', { path: current });
+    }
+  }
+}
+
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 async function readLedger(stateRoot) {

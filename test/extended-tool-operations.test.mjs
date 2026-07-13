@@ -145,6 +145,63 @@ test('adoption inspection and preservation-first planning are reachable through 
   assert.equal(await readFile(path.join(installed, 'SKILL.md'), 'utf8'), '---\nname: fixture\n---\n');
 });
 
+test('adoption planning recomputes live evidence instead of trusting a caller proposal', async () => {
+  const scopeRoot = await mkdtemp(path.join(tmpdir(), 'caddie-operation-forged-adopt-'));
+  const installed = path.join(scopeRoot, '.agents', 'skills', 'unknown');
+  await mkdir(installed, { recursive: true });
+  await writeFile(path.join(installed, 'SKILL.md'), '---\nname: unknown\n---\n');
+  const planned = invoke('plan', {
+    workflow: 'adoption',
+    scopeRoot,
+    candidates: [],
+    proposal: {
+      entries: [{ name: 'unknown', installedPath: installed, classification: 'exact', preselected: true }],
+      legacy: { present: false },
+    },
+    scope: { id: `project:${scopeRoot}`, root: scopeRoot },
+    ensureClaude: false,
+  });
+
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+  const ledgerOperation = planned.result.plan.operations.find((operation) => operation.type === 'write-ledger');
+  assert.deepEqual(JSON.parse(ledgerOperation.content).entries, []);
+});
+
+test('JSON workflow prepares and applies a non-Git Change Sandbox after exact approvals', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-sandbox-workflow-'));
+  const source = path.join(root, 'source');
+  await mkdir(source);
+  await writeFile(path.join(source, 'value.txt'), 'before\n');
+  const planned = invoke('plan', {
+    workflow: 'prepare-change-sandbox',
+    source,
+    slug: 'change-value',
+    workspaceRoot: path.join(root, 'sandboxes'),
+    changes: [{ path: 'value.txt', content: 'after\n' }],
+    validationCommands: [[process.execPath, '-e', "require('node:fs').accessSync('value.txt')"]],
+  });
+  assert.equal(planned.ok, true, JSON.stringify(planned));
+
+  const prepared = invoke('apply-plan', {
+    plan: planned.result.plan,
+    approval: { version: 1, planId: planned.result.plan.id, approval: 'explicit' },
+  });
+  assert.equal(prepared.ok, true, JSON.stringify(prepared));
+  assert.equal(await readFile(path.join(prepared.result.preparation.directory, 'value.txt'), 'utf8'), 'after\n');
+  assert.equal(await readFile(path.join(source, 'value.txt'), 'utf8'), 'before\n');
+
+  const applyPlan = invoke('plan', {
+    workflow: 'sandbox-apply',
+    preparation: prepared.result.preparation,
+  });
+  const applied = invoke('apply-plan', {
+    plan: applyPlan.result.plan,
+    approval: { version: 1, planId: applyPlan.result.plan.id, approval: 'explicit' },
+  });
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  assert.equal(await readFile(path.join(source, 'value.txt'), 'utf8'), 'after\n');
+});
+
 function complete(digest) {
   return { complete: true, digest };
 }

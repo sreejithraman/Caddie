@@ -1,4 +1,5 @@
 import { rm } from 'node:fs/promises';
+import path from 'node:path';
 
 import { GitClient } from './git-client.mjs';
 import { inspectSelectedDirectory } from './inspect.mjs';
@@ -47,7 +48,24 @@ export async function inspectLockedGitSource({
   return inspectResolvedGitSource({ sourceId, url, selectionPath, resolution, gitClient, limits });
 }
 
-async function inspectResolvedGitSource({ sourceId, url, selectionPath, resolution, gitClient, limits }) {
+export async function materializeLockedGitSource({
+  sourceId,
+  url,
+  commit,
+  selectionPath,
+  cacheDir,
+  gitClient = new GitClient(),
+  ...limits
+}) {
+  const resolution = await gitClient.resolveExact({ url, commit, cacheDir });
+  return inspectResolvedGitSource({
+    sourceId, url, selectionPath, resolution, gitClient, limits, retainCheckout: true,
+  });
+}
+
+async function inspectResolvedGitSource({
+  sourceId, url, selectionPath, resolution, gitClient, limits, retainCheckout = false,
+}) {
   if (!resolution.commit) {
     return {
       resolution,
@@ -70,7 +88,7 @@ async function inspectResolvedGitSource({ sourceId, url, selectionPath, resoluti
       ...limits,
     });
   } finally {
-    await rm(checkoutRoot, { recursive: true, force: true });
+    if (!retainCheckout) await rm(checkoutRoot, { recursive: true, force: true });
   }
   return {
     resolution,
@@ -80,6 +98,10 @@ async function inspectResolvedGitSource({ sourceId, url, selectionPath, resoluti
       reason: !resolution.coverage.complete ? resolution.coverage.reason : evidence.coverage.reason,
     },
     findings: [...resolution.findings, ...evidence.coverage.findings],
+    ...(retainCheckout ? {
+      sourcePath: path.resolve(checkoutRoot, selectionPath),
+      checkoutRoot,
+    } : {}),
   };
 }
 
@@ -98,4 +120,4 @@ export function createGitLockEntry({ sourceId, url, ref = null, commit }) {
 
 export { GitClient } from './git-client.mjs';
 export { inspectSelectedDirectory } from './inspect.mjs';
-export { resolveSelectionWithinSource, SelectionOutsideSourceError } from './selection-path.mjs';
+export { assertContainedSymlinks, resolveSelectionWithinSource, SelectionOutsideSourceError } from './selection-path.mjs';

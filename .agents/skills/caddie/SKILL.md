@@ -17,6 +17,8 @@ For Adoption, run `inspect` with `view: "adoption"`, the scope root, and indepen
 
 Inspection is complete when the answer identifies the relevant User Skills, Project Skills, source revisions, ownership, and any Upstream Change, Drift, or Divergence without writing state.
 
+For an approved Git reconciliation, call `inspect-source` with the exact locked `commit` and `materialize: true`. Use its content-bound `sourcePath` and fingerprint in the immutable reconciliation plan; never plan from a moving ref.
+
 ## Interpret
 
 - Present routine content updates as exact source-to-revision updates.
@@ -55,6 +57,7 @@ Use `plan.workflow` to reach preservation-first workflows through the same appro
 - `unmanagement` removes registration and ownership state while keeping installed skills and Agent Harness exposure.
 - `cleanup` is the separate destructive follow-up to Unmanagement.
 - `sandbox-apply` binds a prepared non-Git Change Sandbox.
+- `prepare-git-change` and `prepare-change-sandbox` bind exact file changes and parent validation commands before isolated preparation runs through `apply-plan`.
 - `publication` orders a prepared Change Set into dependency waves and returns GitHub draft-PR markers or honest non-GitHub fallbacks.
 
 For skill-content changes, obtain approval for the management outcome before preparation. Prepare every repository-local worktree or Change Sandbox, validate each result, then request the publication plan. Publish source waves before resolving consumer locks. Reverify Git base and head commits immediately before each external write; replan on remote movement.

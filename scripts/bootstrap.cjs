@@ -38,6 +38,9 @@ async function main() {
     ledger: path.join(userHome, '.agents', '.caddie', 'ledger.json'),
     config: path.join(caddieHome, 'config.json'),
   };
+  const journalPath = path.join(caddieHome, '.bootstrap-journal.json');
+  const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
+  await recoverBootstrap(journalPath, outputs, fingerprintDirectory);
 
   // Preflight every final path and all existing ancestors before staging or
   // creating any destination directory.
@@ -57,7 +60,6 @@ async function main() {
     fs.mkdirSync(path.dirname(staged.exposure), { recursive: true });
     fs.symlinkSync('../.agents/skills', staged.exposure, 'dir');
 
-    const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
     const fingerprint = await fingerprintDirectory(staged.destination);
     if (!fingerprint.complete) fail('The staged Caddie Skill could not be fingerprinted completely.');
     const source = { type: 'git', url: repository, ref: commit };
@@ -65,7 +67,7 @@ async function main() {
       version: 1, scope: 'user', sources: { caddie: source },
       selections: [{ source: 'caddie', path: '.agents/skills/caddie' }],
     });
-    writeJson(staged.lock, { version: 1, sources: { caddie: { url: repository, commit } } });
+    writeJson(staged.lock, { version: 1, sources: { caddie: { type: 'git', url: repository, commit } } });
     writeJson(staged.ledger, {
       version: 1,
       scopeId: 'user',
@@ -83,15 +85,27 @@ async function main() {
       registeredProjects: [],
     });
 
+    const expected = {};
+    for (const [name, candidate] of Object.entries(staged)) {
+      const evidence = await fingerprintDirectory(candidate);
+      if (!evidence.complete) fail(`Bootstrap could not bind staged artifact: ${name}`);
+      expected[name] = evidence.digest;
+    }
+    ensureParents(journalPath, createdDirectories);
+    writeJson(journalPath, { version: 1, expected });
+
     for (const name of ['destination', 'exposure', 'manifest', 'lock', 'ledger', 'config']) {
       ensureParents(outputs[name], createdDirectories);
       fs.renameSync(staged[name], outputs[name]);
       published.push(outputs[name]);
       maybeInjectFailure(published.length);
+      maybeCrash(published.length);
     }
+    fs.rmSync(journalPath, { force: true });
     process.stdout.write(`${userHome}\n`);
   } catch (error) {
     for (const candidate of published.reverse()) fs.rmSync(candidate, { recursive: true, force: true });
+    fs.rmSync(journalPath, { force: true });
     for (const directory of createdDirectories.reverse()) {
       try { fs.rmdirSync(directory); } catch {}
     }
@@ -99,6 +113,24 @@ async function main() {
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
   }
+}
+
+async function recoverBootstrap(journalPath, outputs, fingerprintDirectory) {
+  if (!fs.existsSync(journalPath)) return;
+  let journal;
+  try { journal = JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch { fail('Bootstrap recovery journal is invalid.'); }
+  if (journal.version !== 1 || !journal.expected || typeof journal.expected !== 'object') {
+    fail('Bootstrap recovery journal has an unsupported shape.');
+  }
+  for (const [name, candidate] of Object.entries(outputs)) {
+    if (!fs.lstatSync(candidate, { throwIfNoEntry: false })) continue;
+    const evidence = await fingerprintDirectory(candidate);
+    if (!evidence.complete || evidence.digest !== journal.expected[name]) {
+      fail(`Bootstrap recovery preserves changed artifact: ${candidate}`);
+    }
+    fs.rmSync(candidate, { recursive: true, force: true });
+  }
+  fs.rmSync(journalPath, { force: true });
 }
 
 function preflightParents(candidate) {
@@ -131,6 +163,11 @@ function ensureParents(candidate, created) {
 function maybeInjectFailure(publishedCount) {
   const requested = Number(process.env.CADDIE_BOOTSTRAP_FAIL_AFTER || 0);
   if (requested === publishedCount) fail(`Injected bootstrap failure after artifact ${publishedCount}`);
+}
+
+function maybeCrash(publishedCount) {
+  const requested = Number(process.env.CADDIE_BOOTSTRAP_CRASH_AFTER || 0);
+  if (requested === publishedCount) process.exit(97);
 }
 
 main().catch((error) => {

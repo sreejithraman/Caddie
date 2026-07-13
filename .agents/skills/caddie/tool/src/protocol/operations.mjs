@@ -2,8 +2,14 @@ import { createRequire } from 'node:module';
 import { compareSkillEvidence } from '../compare/index.mjs';
 import { inspect as inspectAvailableSkills } from '../context/inspect.mjs';
 import { applyChangeSandbox, buildPublicationPlan } from '../changeset/index.mjs';
-import { inspectGitSource, inspectLocalSource } from '../sources/index.mjs';
+import {
+  inspectGitSource,
+  inspectLocalSource,
+  inspectLockedGitSource,
+  materializeLockedGitSource,
+} from '../sources/index.mjs';
 import { ToolError, invalid } from './errors.mjs';
+import { applyPreparationWorkflow, createPreparationWorkflowPlan } from './preparation-workflows.mjs';
 
 const require = createRequire(import.meta.url);
 const { createPlan } = require('../plans');
@@ -38,11 +44,13 @@ async function inspectOperation(input, runtime) {
 
 async function inspectSourceOperation(input) {
   try {
-    const result = input.type === 'local'
-      ? await inspectLocalSource(input)
-      : input.type === 'git'
-        ? await inspectGitSource(input)
-        : (() => { throw invalid('unsupported-source-type', 'Source type must be local or git'); })();
+    let result;
+    if (input.type === 'local') result = await inspectLocalSource(input);
+    else if (input.type === 'git' && input.commit && input.materialize === true) {
+      result = await materializeLockedGitSource(input);
+    } else if (input.type === 'git' && input.commit) result = await inspectLockedGitSource(input);
+    else if (input.type === 'git') result = await inspectGitSource(input);
+    else throw invalid('unsupported-source-type', 'Source type must be local or git');
     return withProtocolCoverage(result, result.coverage);
   } catch (error) {
     throw normaliseOperationError(error);
@@ -62,7 +70,7 @@ async function planOperation(input) {
   try {
     let plan;
     if (input.workflow === 'adoption') {
-      const proposal = input.proposal ?? await inspectAdoption(input);
+      const proposal = await inspectAdoption(input);
       plan = createAdoptionPlan({ ...input, proposal });
     } else if (input.workflow === 'unmanagement') {
       plan = createUnmanagementPlan(input);
@@ -73,6 +81,8 @@ async function planOperation(input) {
     } else if (input.workflow === 'sandbox-apply') {
       if (!input.preparation?.applyPlan) throw invalid('sandbox-preparation-required', 'A prepared Change Sandbox is required');
       plan = input.preparation.applyPlan;
+    } else if (['prepare-git-change', 'prepare-change-sandbox'].includes(input.workflow)) {
+      plan = createPreparationWorkflowPlan(input);
     } else {
       plan = createPlan(input);
     }
@@ -84,6 +94,9 @@ async function planOperation(input) {
 
 async function applyPlanOperation(input) {
   try {
+    if (['prepare-git-change', 'prepare-change-sandbox'].includes(input.plan?.kind)) {
+      return { preparation: await applyPreparationWorkflow(input.plan, input.approval), coverage: completeCoverage() };
+    }
     if (input.plan?.stageRoot && input.plan?.precondition && input.plan?.result) {
       const approval = typeof input.approval === 'string' ? input.approval : input.approval?.planId;
       return { ...(await applyChangeSandbox(input.plan, { approval })), coverage: completeCoverage() };

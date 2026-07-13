@@ -152,6 +152,8 @@ function provenance(skill, source, entry) {
     sourceType: source?.type ?? null,
     selectedPath: skill.selectedPath,
     resolvedCommit: skill.resolvedCommit ?? null,
+    repositoryRoot: skill.repositoryRoot ?? null,
+    repositoryDirty: skill.repositoryDirty ?? null,
     lastReconciledFingerprint: entry?.fingerprint ?? null,
   };
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import skillMetadata from '../skill-metadata.js';
 
 import { fingerprintDirectory } from '../fingerprint/index.mjs';
-import { resolveSelectionWithinSource } from './selection-path.mjs';
+import { assertContainedSymlinks, resolveSelectionWithinSource } from './selection-path.mjs';
 
 const { parseSkillMetadata } = skillMetadata;
 
@@ -29,6 +29,7 @@ export async function inspectSelectedDirectory({
   if (!Number.isSafeInteger(maxContentBytes) || maxContentBytes < 1) throw new TypeError('maxContentBytes must be a positive integer');
 
   const { normalized, selectedPath } = await selectedDirectory(root, selectionPath);
+  await assertContainedSymlinks(selectedPath);
   const fingerprint = await fingerprintDirectory(selectedPath);
   const entries = [];
   let totalEntries = 0;

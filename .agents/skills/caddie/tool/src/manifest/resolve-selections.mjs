@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import skillMetadata from '../skill-metadata.js';
 
 import { invalid } from '../protocol/errors.mjs';
@@ -7,6 +9,7 @@ import { inspectLockedGitSource } from '../sources/index.mjs';
 import { resolveSelectionWithinSource } from '../sources/selection-path.mjs';
 
 const { parseSkillMetadata } = skillMetadata;
+const execFileAsync = promisify(execFile);
 
 export async function resolveSelections(manifest, options = {}) {
   return (await resolveSelectionsWithEvidence(manifest, options)).skills;
@@ -140,6 +143,7 @@ async function resolveLocalSelection(manifest, source, selection) {
     throw cause;
   }
   const name = extractSkillName(content, skillFile);
+  const git = await localGitProvenance(skillPath);
   return {
     name,
     scope: manifest.scope,
@@ -148,7 +152,25 @@ async function resolveLocalSelection(manifest, source, selection) {
     selectedPath: selection.path,
     skillPath,
     skillFile,
+    ...(git ?? {}),
   };
+}
+
+async function localGitProvenance(skillPath) {
+  try {
+    const [{ stdout: root }, { stdout: commit }, { stdout: status }] = await Promise.all([
+      execFileAsync('git', ['-C', skillPath, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }),
+      execFileAsync('git', ['-C', skillPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+      execFileAsync('git', ['-C', skillPath, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' }),
+    ]);
+    return {
+      repositoryRoot: root.trim(),
+      resolvedCommit: commit.trim(),
+      repositoryDirty: status.trim().length > 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function validateSelection(selection, manifest) {

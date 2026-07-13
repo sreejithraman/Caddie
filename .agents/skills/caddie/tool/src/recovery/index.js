@@ -31,12 +31,18 @@ async function recover({ scope }) {
   const finishPlan = journal.phase === 'rolling-back' ? null : createPlan({
       ...base,
       kind: 'recovery',
-      operations: [{ type: 'recover-finish', journalPath, journalFingerprint }],
+      operations: [{
+        type: 'recover-finish', journalPath, journalFingerprint,
+        interruptedPlan: journal.plan,
+      }],
     });
   const rollbackPlan = createPlan({
     ...base,
     kind: 'recovery',
-    operations: [{ type: 'recover-rollback', journalPath, journalFingerprint }],
+    operations: [{
+      type: 'recover-rollback', journalPath, journalFingerprint,
+      interruptedPlan: journal.plan,
+    }],
   });
   return {
     status: 'interrupted',

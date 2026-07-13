@@ -151,6 +151,14 @@ function validateOperation(operation, scope, kind) {
       throw new PlanError('recovery must target the fixed scope journal');
     }
     if (typeof operation.journalFingerprint !== 'string') throw new PlanError('recovery must bind the exact journal fingerprint');
+    if (!operation.interruptedPlan || operation.interruptedPlan.kind === 'recovery') {
+      throw new PlanError('recovery must expose and bind the interrupted non-recovery plan');
+    }
+    verifyPlanIntegrity(operation.interruptedPlan);
+    if (operation.interruptedPlan.scope.id !== scope.id
+      || path.resolve(operation.interruptedPlan.scope.root) !== path.resolve(scope.root)) {
+      throw new PlanError('interrupted plan scope does not match recovery scope');
+    }
   }
 }
 

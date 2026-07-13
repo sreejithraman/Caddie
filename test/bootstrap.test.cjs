@@ -10,7 +10,7 @@ const repoRoot = path.resolve(__dirname, '..');
 test('bootstrap creates a self-managed User Skills home and shared Claude exposure', async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'caddie-bootstrap-'));
   const configHome = path.join(home, 'config');
-  const commit = '0123456789abcdef0123456789abcdef01234567';
+  const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
   const result = spawnSync('sh', [path.join(repoRoot, 'scripts/bootstrap.sh')], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -20,7 +20,7 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
       XDG_CONFIG_HOME: configHome,
       CADDIE_SOURCE_DIR: repoRoot,
       CADDIE_COMMIT: commit,
-      CADDIE_REPOSITORY: 'https://example.test/caddie.git',
+      CADDIE_REPOSITORY: repoRoot,
     },
   });
 
@@ -63,6 +63,24 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   );
   assert.equal(installedTool.status, 0, installedTool.stderr);
   assert.equal(JSON.parse(installedTool.stdout).ok, true);
+  const selfInspection = spawnSync(
+    process.execPath,
+    [path.join(userHome, '.agents/skills/caddie/tool/caddie.mjs')],
+    {
+      cwd: userHome,
+      encoding: 'utf8',
+      input: JSON.stringify({
+        version: 1,
+        operation: 'inspect',
+        input: { cwd: userHome, configHome, cacheHome: path.join(home, 'cache') },
+      }),
+      env: { ...process.env, HOME: home, XDG_CONFIG_HOME: configHome },
+    },
+  );
+  assert.equal(selfInspection.status, 0, selfInspection.stderr || selfInspection.stdout);
+  const inspected = JSON.parse(selfInspection.stdout);
+  assert.equal(inspected.result.availableSkills[0].name, 'caddie');
+  assert.equal(inspected.coverage.issues.some((issue) => issue.code === 'git-lock-invalid'), false);
 });
 
 test('bootstrap preflights every destination before mutating user state', async () => {
@@ -94,6 +112,23 @@ test('bootstrap rolls back every published artifact after an interrupted atomic 
       path.join(fixture.configHome, 'caddie', 'config.json'),
     ]) await assert.rejects(access(candidate));
   }
+});
+
+test('bootstrap recovers exact partial publication after process termination', async () => {
+  const fixture = await bootstrapFixture();
+  const interrupted = runBootstrap(fixture, { CADDIE_BOOTSTRAP_CRASH_AFTER: '3' });
+  assert.equal(interrupted.status, 97);
+  assert.equal(
+    await stat(path.join(fixture.configHome, 'caddie', '.bootstrap-journal.json')).then((value) => value.isFile()),
+    true,
+  );
+
+  const resumed = runBootstrap(fixture);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(
+    JSON.parse(await readFile(path.join(fixture.userHome, '.agents', '.caddie', 'ledger.json'), 'utf8')).entries[0].name,
+    'caddie',
+  );
 });
 
 async function bootstrapFixture() {

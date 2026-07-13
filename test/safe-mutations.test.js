@@ -74,6 +74,21 @@ test('unapproved, altered, stale, and colliding plans do not mutate content', as
   assert.equal(await exists(fx.ledgerPath), false);
 });
 
+test('mutation rejects symlinked scope ancestors before writing outside the scope', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'caddie-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  await fs.symlink(outside, path.join(fx.root, '.agents'));
+  const plan = await reconcilePlan(fx);
+
+  await assert.rejects(
+    applyPlan({ plan, approval: approvePlan(plan) }),
+    (error) => error.code === 'invalid-state',
+  );
+  assert.equal(await exists(path.join(outside, 'skills', 'chosen')), false);
+});
+
 test('scope mutations serialize without locking reads', async (t) => {
   const fx = await fixture();
   t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
