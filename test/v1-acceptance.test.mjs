@@ -32,14 +32,14 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
   });
   assert.equal(bootstrap.status, 0, bootstrap.stderr);
   const userHome = bootstrap.stdout.trim();
-  let tool = path.join(userHome, '.agents', 'skills', 'caddie', 'tool', 'caddie.mjs');
-  const canonicalCaddie = path.join(userHome, '.agents', 'skills', 'caddie');
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'caddie')), await realpath(canonicalCaddie));
+  const canonicalCaddie = path.join(home, '.agents', 'skills', 'caddie');
+  let tool = path.join(canonicalCaddie, 'tool', 'caddie.mjs');
   assert.equal(await realpath(path.join(home, '.claude', 'skills', 'caddie')), await realpath(canonicalCaddie));
 
   const sreeStack = path.join(root, 'SreeStack');
   const authoredSkill = path.join(sreeStack, '.agents', 'skills', 'review-sweep');
-  const nextCaddie = path.join(sreeStack, '.agents', 'skills', 'caddie');
+  const nextCaddie = canonicalCaddie;
+  const installedReviewSweep = path.join(home, '.agents', 'skills', 'review-sweep');
   await mkdir(authoredSkill, { recursive: true });
   await writeFile(path.join(authoredSkill, 'SKILL.md'), '---\nname: review-sweep\n---\nauthored in SreeStack\n');
   const manifestPath = path.join(sreeStack, 'caddie.json');
@@ -67,11 +67,10 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     workflow: 'adoption', configHome, scopeRoot: sreeStack,
     scope: { id: 'user', root: sreeStack },
     candidates: [{
-      name: 'review-sweep', sourcePath: authoredSkill, sourceId: 'authored', selectedPath: 'review-sweep',
+      name: 'caddie', sourcePath: canonicalCaddie, sourceId: 'caddie', selectedPath: '.agents/skills/caddie',
     }],
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
   assert.equal(adoption.ok, true, JSON.stringify(adoption));
-  assert.equal(adoption.result.plan.kind, 'adopt');
   const adopted = invoke(tool, 'apply-plan', {
     plan: adoption.result.plan, approval: approve(adoption.result.plan),
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
@@ -88,6 +87,11 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
       {
         type: 'materialize-skill', name: 'caddie', sourcePath: canonicalCaddie,
         destinationPath: nextCaddie, sourceFingerprint: await fingerprint(canonicalCaddie),
+        expectedDestination: { state: 'fingerprint', fingerprint: await fingerprint(canonicalCaddie) },
+      },
+      {
+        type: 'materialize-skill', name: 'review-sweep', sourcePath: authoredSkill,
+        destinationPath: installedReviewSweep, sourceFingerprint: await fingerprint(authoredSkill),
         expectedDestination: { state: 'absent' },
       },
       { type: 'write-manifest', path: manifestPath, content: manifestContent, expected: { state: 'absent' } },
@@ -104,11 +108,9 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     approval: approve(transfer.result.plan),
   }, sreeStack, { HOME: home, XDG_CONFIG_HOME: configHome });
   assert.equal(transferred.ok, true, JSON.stringify(transferred));
-  tool = path.join(nextCaddie, 'tool', 'caddie.mjs');
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'caddie')), await realpath(nextCaddie));
   assert.equal(await realpath(path.join(home, '.claude', 'skills', 'caddie')), await realpath(nextCaddie));
-  assert.equal(await realpath(path.join(home, '.agents', 'skills', 'review-sweep')), await realpath(authoredSkill));
-  assert.equal((await readFile(path.join(canonicalCaddie, 'SKILL.md'), 'utf8')).includes('name: caddie'), true);
+  assert.equal(await fingerprint(installedReviewSweep), await fingerprint(authoredSkill));
+  assert.equal(await realpath(path.join(home, '.claude', 'skills', 'review-sweep')), await realpath(installedReviewSweep));
 
   const companion = await projectFixture(root, 'Companion', 'project-helper');
   for (const project of [companion]) {
@@ -133,7 +135,7 @@ test('v1 lifecycle works end to end with SreeStack as the User Skills repository
     ['caddie', 'user'], ['review-sweep', 'user'], ['project-helper', 'project'],
   ]);
   const authoredInspection = composed.result.scopes.user.skills.find(({ name }) => name === 'review-sweep');
-  assert.equal(authoredInspection.reconciliation.kind, 'in-place', JSON.stringify(authoredInspection));
+  assert.equal(authoredInspection.reconciliation.kind, 'unchanged', JSON.stringify(authoredInspection));
   assert.equal(await fingerprint(companion.source), await fingerprint(companion.installed));
   const exposure = path.join(companion.root, '.claude', 'skills', companion.skillName);
   assert.equal(await realpath(exposure), await realpath(companion.installed));

@@ -10,6 +10,7 @@ const { validateJournal } = require('../recovery/journal');
 const { parseSkillMetadata } = require('../skill-metadata');
 const { expectedFor, isUserHarnessAnchored, strategyFor, targetFor } = require('../mutations/strategies');
 const userHarnessReservation = require('../coordination/user-harness-reservation');
+const { canonicalSkillsRoot, claudeSkillsRoot } = require('../layout');
 
 class ApplyError extends Error {
   constructor(message, code = 'apply-failed', details) {
@@ -180,7 +181,16 @@ async function reserveExistingUserJournal(plan) {
 function needsUserHarnessLock(plan) {
   if (plan.scope.id !== 'user') return false;
   return plan.operations.some((operation) => isUserHarnessAnchored(operation)
-    || operation.interruptedPlan?.operations?.some(isUserHarnessAnchored));
+    || operationTouchesUserSkills(operation, plan.scope)
+    || operation.interruptedPlan?.operations?.some((nested) => isUserHarnessAnchored(nested)
+      || operationTouchesUserSkills(nested, plan.scope)));
+}
+
+function operationTouchesUserSkills(operation, scope) {
+  const root = canonicalSkillsRoot(scope);
+  return [operation.destinationPath, operation.path]
+    .filter(Boolean)
+    .some((candidate) => isInside(root, path.resolve(candidate)));
 }
 
 async function applyFresh(plan, onBoundary) {
@@ -581,13 +591,16 @@ async function assertMutationAncestors(plan) {
     for (const candidate of candidates) {
       const resolved = path.resolve(candidate);
       const configRoot = plan.scope.configRoot && path.resolve(plan.scope.configRoot);
+      const userSkillsRoot = plan.scope.id === 'user' ? canonicalSkillsRoot(plan.scope) : null;
       const harnessRoot = isUserHarnessAnchored(operation) && plan.scope.id === 'user'
-        ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
+        ? claudeSkillsRoot(plan.scope)
         : null;
       const anchor = isInside(scopeRoot, resolved)
         ? scopeRoot
         : configRoot && isInside(configRoot, resolved) ? configRoot : null;
-      const approvedAnchor = anchor || (harnessRoot && isInside(harnessRoot, resolved) ? os.homedir() : null);
+      const approvedAnchor = anchor
+        || (userSkillsRoot && isInside(userSkillsRoot, resolved) ? os.homedir() : null)
+        || (harnessRoot && isInside(harnessRoot, resolved) ? os.homedir() : null);
       if (!approvedAnchor) throw new ApplyError('mutation path is outside its approved scope', 'invalid-plan', { path: resolved });
       await assertNoSymlinkAncestors(approvedAnchor, path.dirname(resolved));
     }

@@ -116,7 +116,8 @@ test('Git selections use the exact lock commit after the declared branch moves',
     cacheDir: path.join(fixture.root, 'cache'),
   });
 
-  assert.equal(result.coverage.complete, true);
+  assert.equal(result.coverage.complete, false);
+  assert.equal(result.coverage.findings.some(({ code }) => code === 'skill-name-directory-mismatch'), true);
   assert.equal(result.skills[0].name, 'old-name');
   assert.equal(result.skills[0].commit, firstCommit);
   assert.deepEqual(result.skills[0].derivedFrom, [{ source: 'upstream', path: 'skills/basis' }]);

@@ -1,13 +1,13 @@
 'use strict';
 
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const { createPlan } = require('../plans');
 const { fingerprint, fingerprintIfPresent } = require('../apply/filesystem');
+const { canonicalSkillsRoot, claudeSkillsRoot } = require('../layout');
 
-async function inspectAdoption({ scopeRoot, candidates = [], legacyLockPath = path.join(scopeRoot, '.skill-lock.json') }) {
-  const canonicalRoot = path.join(scopeRoot, '.agents', 'skills');
+async function inspectAdoption({ scopeRoot, scope = { id: 'project', root: scopeRoot }, candidates = [], legacyLockPath = path.join(scopeRoot, '.skill-lock.json') }) {
+  const canonicalRoot = canonicalSkillsRoot(scope);
   const duplicateNames = new Set();
   const candidateByName = new Map();
   for (const candidate of candidates) {
@@ -112,21 +112,16 @@ async function createAdoptionPlan({ scope, proposal, ledger, ledgerExpected = { 
   const adopted = proposal.entries.filter((entry) => entry.preselected && entry.classification === 'exact');
   const exposures = [];
   if (ensureClaude) {
-    const harnesses = scope.id === 'user' ? ['codex', 'claude'] : ['claude'];
     for (const entry of adopted) {
-      for (const harness of harnesses) {
-        const linkPath = scope.id === 'user'
-          ? path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills', entry.name)
-          : path.join(scope.root, '.claude', 'skills', entry.name);
-        exposures.push({
-          type: 'ensure-harness-exposure',
-          harness,
-          linkPath,
-          targetPath: entry.installedPath,
-          targetFingerprint: entry.installedFingerprint,
-          expected: await expectedExposure(linkPath, entry.installedPath),
-        });
-      }
+      const linkPath = path.join(claudeSkillsRoot(scope), entry.name);
+      exposures.push({
+        type: 'ensure-harness-exposure',
+        harness: 'claude',
+        linkPath,
+        targetPath: entry.installedPath,
+        targetFingerprint: entry.installedFingerprint,
+        expected: await expectedExposure(linkPath, entry.installedPath),
+      });
     }
   }
   const content = `${JSON.stringify({
@@ -182,7 +177,7 @@ function createUnmanagementPlan({ scope, ledgerFingerprint, registry }) {
 }
 
 async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure = false, removeHarnessExposure = removeClaudeExposure }) {
-  const canonicalRoot = path.join(scope.root, '.agents', 'skills');
+  const canonicalRoot = canonicalSkillsRoot(scope);
   const operations = [];
   for (const skillPath of skillPaths) {
     if (path.dirname(path.resolve(skillPath)) !== canonicalRoot) throw new Error('cleanup skills must be direct canonical children');
@@ -191,19 +186,14 @@ async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure 
     operations.push({ type: 'cleanup-preserved-skill', path: skillPath, expected: { state: 'fingerprint', fingerprint: current } });
   }
   if (removeHarnessExposure) {
-    const harnesses = scope.id === 'user' ? ['codex', 'claude'] : ['claude'];
-    for (const harness of harnesses) {
-      const exposurePath = scope.id === 'user'
-        ? path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills')
-        : path.join(scope.root, '.claude', 'skills');
-      for (const skillPath of skillPaths) {
-        const linkPath = path.join(exposurePath, path.basename(skillPath));
-        const target = await fs.readlink(linkPath);
-        if (path.resolve(path.dirname(linkPath), target) !== path.resolve(skillPath)) {
-          throw new Error(`${harness} exposure is not the matching Caddie-managed skill: ${linkPath}`);
-        }
-        operations.push({ type: 'cleanup-exposure', harness, path: linkPath, expected: { state: 'symlink', target } });
+    const exposurePath = claudeSkillsRoot(scope);
+    for (const skillPath of skillPaths) {
+      const linkPath = path.join(exposurePath, path.basename(skillPath));
+      const target = await fs.readlink(linkPath);
+      if (path.resolve(path.dirname(linkPath), target) !== path.resolve(skillPath)) {
+        throw new Error(`Claude exposure is not the matching Caddie-managed skill: ${linkPath}`);
       }
+      operations.push({ type: 'cleanup-exposure', harness: 'claude', path: linkPath, expected: { state: 'symlink', target } });
     }
   }
   return createPlan({ kind: 'cleanup', scope, operations });

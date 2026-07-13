@@ -77,6 +77,10 @@ export async function inspectSelectedDirectory({
     findings.push({ code: error?.code === 'ENOENT' ? 'missing-skill-file' : 'unreadable-skill-file', path: 'SKILL.md' });
   }
   const metadata = parseSkillMetadata(metadataContent);
+  findings.push(...metadata.standardFindings.map((finding) => ({ ...finding, path: 'SKILL.md' })));
+  if (metadata.name && metadata.name !== path.basename(selectedPath)) {
+    findings.push({ code: 'skill-name-directory-mismatch', path: 'SKILL.md', name: metadata.name });
+  }
   if (offset > totalEntries) throw continuationError('continuation-exhausted', 'Continuation starts beyond the available evidence', 'invalid');
   const nextOffset = offset + entries.length;
   const continuationCursor = nextOffset < totalEntries

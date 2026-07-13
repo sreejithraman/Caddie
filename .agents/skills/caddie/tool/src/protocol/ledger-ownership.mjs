@@ -42,12 +42,9 @@ export function authorizedUserHarnessLinks(ledger, { scopeRoot, home }) {
   const authorized = new Map();
   for (const link of ledger.harnessLinks ?? []) {
     const name = path.basename(link);
-    const allowed = [
-      path.join(home, '.agents', 'skills', name),
-      path.join(home, '.claude', 'skills', name),
-    ];
+    const allowed = [path.join(home, '.claude', 'skills', name)];
     if (allowed.some((candidate) => path.resolve(candidate) === path.resolve(link))) {
-      authorized.set(path.resolve(link), path.resolve(scopeRoot, '.agents', 'skills', name));
+      authorized.set(path.resolve(link), path.resolve(home, '.agents', 'skills', name));
     }
   }
   return authorized;

@@ -1,4 +1,5 @@
 import { locate } from './locate.mjs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
 import { readFile, realpath } from 'node:fs/promises';
@@ -6,6 +7,9 @@ import { parseManifest } from '../manifest/parse-manifest.mjs';
 import { resolveSelectionsWithEvidence } from '../manifest/resolve-selections.mjs';
 import { classifyFingerprints, fingerprintDirectory } from '../fingerprint/index.mjs';
 import { invalid } from '../protocol/errors.mjs';
+
+const require = createRequire(import.meta.url);
+const { canonicalSkillsRoot } = require('../layout');
 
 export async function inspect(input, runtime = {}) {
   const context = await locate(input, runtime);
@@ -46,7 +50,12 @@ export async function inspect(input, runtime = {}) {
       context.coverage.issues.push({ scope, ...finding });
     }
     if (!selectionEvidence.coverage.complete) context.coverage.status = 'partial';
-    const skills = await enrichLiveState(selectionEvidence.skills, manifest);
+    const skills = await enrichLiveState(
+      selectionEvidence.skills,
+      manifest,
+      scope,
+      env.HOME ?? os.homedir(),
+    );
     scopes[scope] = {
       status: 'inspected',
       manifestPath: manifest.manifestPath,
@@ -174,13 +183,14 @@ async function inspectRegisteredProject(input, runtime, root) {
   }
 }
 
-async function enrichLiveState(skills, manifest) {
+async function enrichLiveState(skills, manifest, scopeId, home) {
   const scopeRoot = path.dirname(manifest.manifestPath);
+  const scope = { id: scopeId, root: scopeRoot };
   const ledger = await readLedger(path.join(scopeRoot, '.agents', '.caddie', 'ledger.json'));
   const entries = new Map((ledger?.entries ?? []).map((entry) => [entry.name, entry]));
   return Promise.all(skills.map(async (skill) => {
     const source = manifest.sources[skill.source];
-    const installationPath = path.join(scopeRoot, '.agents', 'skills', skill.name);
+    const installationPath = path.join(canonicalSkillsRoot(scope, home), skill.name);
     const inPlace = source?.type === 'local' && await sameLocation(skill.skillPath, installationPath);
     if (inPlace) {
       return {

@@ -7,7 +7,7 @@ const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
 
-test('bootstrap creates a self-managed User Skills home and shared Claude exposure', async () => {
+test('bootstrap installs Caddie in the standard user root with Claude compatibility', async () => {
   const fixture = await bootstrapFixture();
   const { home, configHome, commit } = fixture;
   const result = runBootstrap(fixture);
@@ -28,20 +28,23 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   assert.equal(ledger.entries[0].source, 'caddie');
   assert.equal(typeof ledger.entries[0].fingerprint, 'string');
   const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
-  const installedFingerprint = await fingerprintDirectory(path.join(userHome, '.agents/skills/caddie'));
+  const canonical = path.join(home, '.agents/skills/caddie');
+  const installedFingerprint = await fingerprintDirectory(canonical);
   assert.equal(ledger.entries[0].fingerprint, installedFingerprint.digest);
+  assert.deepEqual(ledger.harnessLinks, [path.join(home, '.claude/skills/caddie')]);
+  assert.equal(ledger.entries[0].path, canonical);
   assert.equal(
     await readlink(path.join(home, '.claude/skills/caddie')),
-    path.relative(path.join(home, '.claude', 'skills'), path.join(userHome, '.agents', 'skills', 'caddie')),
+    path.relative(path.join(home, '.claude', 'skills'), canonical),
   );
-  assert.equal(await realpath(path.join(home, '.agents/skills/caddie')), await realpath(path.join(userHome, '.agents/skills/caddie')));
   assert.equal(
-    (await stat(path.join(userHome, '.agents/skills/caddie/SKILL.md'))).isFile(),
+    (await stat(path.join(canonical, 'SKILL.md'))).isFile(),
     true,
   );
+  assert.equal((await stat(canonical)).isDirectory(), true);
   const installedTool = spawnSync(
     process.execPath,
-    [path.join(userHome, '.agents/skills/caddie/tool/caddie.mjs')],
+    [path.join(canonical, 'tool/caddie.mjs')],
     {
       cwd: userHome,
       encoding: 'utf8',
@@ -53,7 +56,7 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   assert.equal(JSON.parse(installedTool.stdout).ok, true);
   const selfInspection = spawnSync(
     process.execPath,
-    [path.join(userHome, '.agents/skills/caddie/tool/caddie.mjs')],
+    [path.join(canonical, 'tool/caddie.mjs')],
     {
       cwd: userHome,
       encoding: 'utf8',
@@ -70,7 +73,7 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   assert.equal(inspected.result.availableSkills[0].name, 'caddie');
   assert.equal(inspected.coverage.issues.some((issue) => issue.code === 'git-lock-invalid'), false);
 
-  const installedToolPath = path.join(userHome, '.agents/skills/caddie/tool/caddie.mjs');
+  const installedToolPath = path.join(canonical, 'tool/caddie.mjs');
   const ledgerPath = path.join(userHome, '.agents/.caddie/ledger.json');
   const { fingerprint } = require('../.agents/skills/caddie/tool/src/apply/filesystem');
   const planned = spawnSync(process.execPath, [installedToolPath], {
@@ -87,7 +90,7 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
             type: 'materialize-skill',
             name: 'caddie',
             sourcePath: path.join(fixture.sourceRoot, '.agents/skills/caddie'),
-            destinationPath: path.join(userHome, '.agents/skills/caddie'),
+            destinationPath: canonical,
             sourceFingerprint: installedFingerprint.digest,
             expectedDestination: { state: 'fingerprint', fingerprint: installedFingerprint.digest },
           },
@@ -122,6 +125,43 @@ test('bootstrap creates a self-managed User Skills home and shared Claude exposu
   assert.equal(JSON.parse(applied.stdout).result.status, 'applied');
 });
 
+test('bootstrap migrates the exact legacy Caddie layout without touching unrelated skills', async () => {
+  const fixture = await bootstrapFixture();
+  await installLegacyBootstrap(fixture);
+  const unrelated = path.join(fixture.home, '.agents', 'skills', 'mine');
+  await mkdir(unrelated, { recursive: true });
+  await writeFile(path.join(unrelated, 'SKILL.md'), '---\nname: mine\ndescription: Mine.\n---\n');
+
+  const result = runBootstrap(fixture);
+  assert.equal(result.status, 0, result.stderr);
+
+  const canonical = path.join(fixture.home, '.agents', 'skills', 'caddie');
+  assert.equal((await stat(canonical)).isDirectory(), true);
+  assert.equal((await stat(canonical)).isSymbolicLink(), false);
+  assert.equal(await realpath(path.join(fixture.home, '.claude', 'skills', 'caddie')), await realpath(canonical));
+  await assert.rejects(access(path.join(fixture.userHome, '.agents', 'skills', 'caddie')));
+  assert.match(await readFile(path.join(unrelated, 'SKILL.md'), 'utf8'), /name: mine/);
+  const ledger = JSON.parse(await readFile(path.join(fixture.userHome, '.agents', '.caddie', 'ledger.json'), 'utf8'));
+  assert.deepEqual(ledger.harnessLinks, [path.join(fixture.home, '.claude', 'skills', 'caddie')]);
+  assert.equal(ledger.entries[0].path, canonical);
+});
+
+test('legacy migration recovers after process termination and resumes exactly', async () => {
+  const fixture = await bootstrapFixture();
+  await installLegacyBootstrap(fixture);
+
+  const interrupted = runBootstrap(fixture, { CADDIE_BOOTSTRAP_CRASH_AFTER: '3' });
+  assert.equal(interrupted.status, 97, interrupted.stderr);
+  const resumed = runBootstrap(fixture);
+  assert.equal(resumed.status, 0, resumed.stderr);
+
+  const canonical = path.join(fixture.home, '.agents', 'skills', 'caddie');
+  assert.equal((await stat(canonical)).isDirectory(), true);
+  assert.equal((await stat(canonical)).isSymbolicLink(), false);
+  assert.equal(await realpath(path.join(fixture.home, '.claude', 'skills', 'caddie')), await realpath(canonical));
+  await assert.rejects(access(path.join(fixture.configHome, 'caddie', '.bootstrap-journal.json')));
+});
+
 test('bootstrap preflights every destination before mutating user state', async () => {
   const fixture = await bootstrapFixture();
   const exposure = path.join(fixture.home, '.claude', 'skills', 'caddie');
@@ -132,7 +172,7 @@ test('bootstrap preflights every destination before mutating user state', async 
   assert.equal(result.status, 2);
   assert.match(result.stderr, /preserves existing state/);
   await assert.rejects(access(path.join(fixture.userHome, 'caddie.json')));
-  await assert.rejects(access(path.join(fixture.userHome, '.agents', 'skills', 'caddie')));
+  await assert.rejects(access(path.join(fixture.home, '.agents', 'skills', 'caddie')));
   assert.equal(await readlink(exposure), '../existing-skills');
 });
 
@@ -145,7 +185,6 @@ test('bootstrap rolls back every published artifact after an interrupted atomic 
     for (const candidate of [
       path.join(fixture.userHome, 'caddie.json'),
       path.join(fixture.userHome, 'caddie.lock'),
-      path.join(fixture.userHome, '.agents', 'skills', 'caddie'),
       path.join(fixture.home, '.agents', 'skills', 'caddie'),
       path.join(fixture.home, '.claude', 'skills', 'caddie'),
       path.join(fixture.userHome, '.agents', '.caddie', 'ledger.json'),
@@ -250,6 +289,34 @@ function runBootstrap(fixture, extraEnv = {}) {
       ...extraEnv,
     },
   });
+}
+
+async function installLegacyBootstrap(fixture) {
+  const legacy = path.join(fixture.userHome, '.agents', 'skills', 'caddie');
+  const codex = path.join(fixture.home, '.agents', 'skills', 'caddie');
+  const claude = path.join(fixture.home, '.claude', 'skills', 'caddie');
+  await cp(path.join(fixture.sourceRoot, '.agents', 'skills', 'caddie'), legacy, { recursive: true });
+  await mkdir(path.dirname(codex), { recursive: true });
+  await mkdir(path.dirname(claude), { recursive: true });
+  await symlink(path.relative(path.dirname(codex), legacy), codex, 'dir');
+  await symlink(path.relative(path.dirname(claude), legacy), claude, 'dir');
+  const { fingerprintDirectory } = await import('../.agents/skills/caddie/tool/src/fingerprint/index.mjs');
+  const fingerprint = (await fingerprintDirectory(legacy)).digest;
+  await writeFile(path.join(fixture.userHome, 'caddie.json'), `${JSON.stringify({
+    version: 1, scope: 'user', sources: { caddie: { type: 'git', url: fixture.sourceRoot, ref: fixture.commit } },
+    selections: [{ source: 'caddie', path: '.agents/skills/caddie' }],
+  }, null, 2)}\n`);
+  await writeFile(path.join(fixture.userHome, 'caddie.lock'), `${JSON.stringify({
+    version: 1, sources: { caddie: { type: 'git', url: fixture.sourceRoot, commit: fixture.commit } },
+  }, null, 2)}\n`);
+  await mkdir(path.join(fixture.userHome, '.agents', '.caddie'), { recursive: true });
+  await writeFile(path.join(fixture.userHome, '.agents', '.caddie', 'ledger.json'), `${JSON.stringify({
+    version: 1, scopeId: 'user', harnessLinks: [codex, claude],
+    entries: [{ name: 'caddie', path: legacy, source: 'caddie', selectedPath: '.agents/skills/caddie', fingerprint }],
+  }, null, 2)}\n`);
+  await writeFile(path.join(fixture.configHome, 'caddie', 'config.json'), `${JSON.stringify({
+    version: 1, userManifest: path.join(fixture.userHome, 'caddie.json'), registeredProjects: [],
+  }, null, 2)}\n`);
 }
 
 function runGit(directory, args) {

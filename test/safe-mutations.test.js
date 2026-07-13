@@ -163,7 +163,7 @@ test('interrupted user harness exposure can be recovered at the fixed runtime HO
   const home = path.join(base, 'home');
   const root = path.join(base, 'config', 'caddie', 'user');
   const source = path.join(base, 'source', 'chosen');
-  const destination = path.join(root, '.agents', 'skills', 'chosen');
+  const destination = path.join(home, '.agents', 'skills', 'chosen');
   await fs.mkdir(home, { recursive: true });
   await fs.mkdir(root, { recursive: true });
   await fs.mkdir(source, { recursive: true });
@@ -175,10 +175,7 @@ test('interrupted user harness exposure can be recovered at the fixed runtime HO
     await fs.rm(base, { recursive: true, force: true });
   });
   const sourceFingerprint = await fingerprint(source);
-  const links = [
-    { harness: 'codex', linkPath: path.join(home, '.agents', 'skills', 'chosen') },
-    { harness: 'claude', linkPath: path.join(home, '.claude', 'skills', 'chosen') },
-  ];
+  const links = [{ harness: 'claude', linkPath: path.join(home, '.claude', 'skills', 'chosen') }];
   const scope = { id: 'user', root };
   const plan = createPlan({
     kind: 'reconcile',
@@ -206,7 +203,6 @@ test('interrupted user harness exposure can be recovered at the fixed runtime HO
   assert.equal(recovery.status, 'interrupted');
   await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
   assert.equal(await fs.realpath(links[0].linkPath), await fs.realpath(destination));
-  assert.equal(await fs.realpath(links[1].linkPath), await fs.realpath(destination));
 });
 
 test('rollback restores the exact pre-mutation state', async (t) => {

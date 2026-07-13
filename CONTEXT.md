@@ -75,7 +75,7 @@ _Avoid_: Copy history, fork metadata
 ## Installation and ownership
 
 **Canonical Skills Directory**:
-The complete skill directories for a scope that Caddie makes available to supported Agent Harnesses.
+The cross-client skill root containing complete directories: `~/.agents/skills` for User Skills and `<project>/.agents/skills` for Project Skills.
 _Avoid_: Source repository, skill cache
 
 **In-place Skill**:

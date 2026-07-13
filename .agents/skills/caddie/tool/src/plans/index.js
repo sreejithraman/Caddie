@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
 const { MUTATION_OPERATION_TYPES, RECOVERY_OPERATION_TYPES } = require('../mutations/strategies');
-const { isAdoptionPair } = require('../mutations/relationships');
+const { canonicalSkillsRoot, claudeSkillsRoot } = require('../layout');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
@@ -61,7 +61,7 @@ function validateOperation(operation, scope, kind) {
   }
 
   const root = path.resolve(scope.root);
-  const canonicalRoot = path.join(root, '.agents', 'skills');
+  const canonicalRoot = canonicalSkillsRoot(scope);
   const caddieStateRoot = path.join(root, '.agents', '.caddie');
 
   if (operation.type === 'materialize-skill') {
@@ -70,7 +70,10 @@ function validateOperation(operation, scope, kind) {
     if (!isInside(canonicalRoot, operation.destinationPath) || path.dirname(operation.destinationPath) !== canonicalRoot) {
       throw new PlanError('materialized skills must be direct children of the Canonical Skills Directory');
     }
-    if (typeof operation.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(operation.name) || path.basename(operation.destinationPath) !== operation.name) {
+    if (typeof operation.name !== 'string'
+      || operation.name.length > 64
+      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(operation.name)
+      || path.basename(operation.destinationPath) !== operation.name) {
       throw new PlanError('materialization must bind a safe skill name matching its destination');
     }
     if (typeof operation.sourceFingerprint !== 'string') throw new PlanError('materialization must bind sourceFingerprint');
@@ -94,33 +97,9 @@ function validateOperation(operation, scope, kind) {
     return;
   }
 
-  if (operation.type === 'adopt-user-skill-exposure') {
-    if (scope.id !== 'user' || operation.harness !== 'codex') {
-      throw new PlanError('User Skill Adoption is limited to the Codex User Skills harness');
-    }
-    const exposureRoot = path.join(os.homedir(), '.agents', 'skills');
-    if (path.dirname(path.resolve(operation.linkPath)) !== exposureRoot
-      || path.dirname(path.resolve(operation.targetPath)) !== canonicalRoot
-      || path.basename(operation.linkPath) !== path.basename(operation.targetPath)
-      || path.resolve(operation.linkPath) === path.resolve(operation.targetPath)) {
-      throw new PlanError('User Skill Adoption must link matching direct children at the fixed Codex and canonical roots');
-    }
-    if (typeof operation.targetFingerprint !== 'string') throw new PlanError('User Skill Adoption must bind the exact target fingerprint');
-    validateExpected(operation.expected, 'User Skill Adoption expected state');
-    if (operation.expected.state !== 'fingerprint') {
-      throw new PlanError('User Skill Adoption must bind the exact existing directory fingerprint');
-    }
-    return;
-  }
-
   if (operation.type === 'ensure-harness-exposure') {
-    if (!['codex', 'claude'].includes(operation.harness)) throw new PlanError('harness exposure must name Codex or Claude');
-    if (scope.id !== 'user' && operation.harness !== 'claude') {
-      throw new PlanError('project skills are canonical for Codex and only require Claude exposure');
-    }
-    const exposureRoot = scope.id === 'user'
-      ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
-      : path.join(root, '.claude', 'skills');
+    if (operation.harness !== 'claude') throw new PlanError('harness exposure is limited to the Claude compatibility adapter');
+    const exposureRoot = claudeSkillsRoot(scope);
     if (path.dirname(path.resolve(operation.linkPath)) !== exposureRoot
       || path.dirname(path.resolve(operation.targetPath)) !== canonicalRoot
       || path.basename(operation.linkPath) !== path.basename(operation.targetPath)) {
@@ -176,11 +155,8 @@ function validateOperation(operation, scope, kind) {
   }
 
   if (operation.type === 'cleanup-exposure') {
-    if (!['codex', 'claude'].includes(operation.harness)) throw new PlanError('cleanup exposure must name Codex or Claude');
-    if (scope.id !== 'user' && operation.harness !== 'claude') throw new PlanError('project cleanup can only remove Claude exposure');
-    const exposureRoot = scope.id === 'user'
-      ? path.join(os.homedir(), operation.harness === 'codex' ? '.agents' : '.claude', 'skills')
-      : path.join(root, '.claude', 'skills');
+    if (operation.harness !== 'claude') throw new PlanError('cleanup exposure is limited to the Claude compatibility adapter');
+    const exposureRoot = claudeSkillsRoot(scope);
     if (kind !== 'cleanup' || path.dirname(path.resolve(operation.path)) !== exposureRoot) {
       throw new PlanError('exposure cleanup is limited to direct skill links under the fixed harness root');
     }
@@ -253,25 +229,7 @@ function verifyPlanIntegrity(plan) {
 }
 
 function validateOperationRelationships(operations) {
-  const adoptionLinks = new Set();
-  const adoptionTargets = new Set();
-  for (let index = 0; index < operations.length; index += 1) {
-    const operation = operations[index];
-    if (operation.type !== 'adopt-user-skill-exposure') continue;
-    const link = path.resolve(operation.linkPath);
-    const target = path.resolve(operation.targetPath);
-    if (adoptionLinks.has(link) || adoptionTargets.has(target)) {
-      throw new PlanError('User Skill Adoption paths must be unique within a plan');
-    }
-    adoptionLinks.add(link);
-    adoptionTargets.add(target);
-    const matchingMaterializations = operations
-      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
-      .filter(({ candidate }) => isAdoptionPair(candidate, operation));
-    if (matchingMaterializations.length !== 1 || matchingMaterializations[0].candidateIndex >= index) {
-      throw new PlanError('User Skill Adoption requires an earlier exact-copy materialization from the existing harness directory to an absent canonical destination');
-    }
-  }
+  return operations;
 }
 
 function verifyApprovedPlan(plan, approval) {

@@ -47,11 +47,11 @@ async function makeRemote() {
 
 test('inspectLocalSource returns bounded untrusted artifact evidence', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-local-'));
-  await mkdir(path.join(root, 'skill'), { recursive: true });
-  await writeFile(path.join(root, 'skill', 'SKILL.md'), '---\nname: sample\ndescription: Example\n---\n# Sample\nDo something.\n');
-  await writeFile(path.join(root, 'skill', 'extra.txt'), 'extra');
+  await mkdir(path.join(root, 'sample'), { recursive: true });
+  await writeFile(path.join(root, 'sample', 'SKILL.md'), '---\nname: sample\ndescription: Example\n---\n# Sample\nDo something.\n');
+  await writeFile(path.join(root, 'sample', 'extra.txt'), 'extra');
 
-  const evidence = await inspectLocalSource({ root, selectionPath: 'skill', maxEntries: 1, maxContentBytes: 24 });
+  const evidence = await inspectLocalSource({ root, selectionPath: 'sample', maxEntries: 1, maxContentBytes: 24 });
 
   assert.equal(evidence.source.type, 'local');
   assert.equal(evidence.artifact.trust, 'untrusted');

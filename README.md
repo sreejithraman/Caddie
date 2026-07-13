@@ -17,7 +17,7 @@ The specification is divided into agent-ready tracer-bullet tickets with native 
 
 - Keep User Skills available across projects.
 - Add project-owned capabilities through Project Skills.
-- Expose each canonical User Skill to the actual Codex and Claude user harness roots without duplicating its content.
+- Install User Skills in the cross-client `~/.agents/skills` convention and add only the Claude compatibility links that are needed.
 - Select complete skills from local or pinned Git sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
@@ -30,7 +30,7 @@ Caddie is an Agent App. Users interact through the Caddie Skill, which directs t
 
 - Preserve authored and installed content unless the user explicitly approves its removal.
 - Separate deterministic evidence, agent interpretation, user choice, and durable state.
-- Store complete skill copies in canonical skill directories; use harness-specific links only when a harness cannot read the canonical directory directly.
+- Store complete User Skills in `~/.agents/skills` and complete Project Skills in `<project>/.agents/skills`; use harness-specific links only for compatibility.
 - Recommend Git without requiring it.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 

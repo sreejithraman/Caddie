@@ -20,8 +20,8 @@ const require = createRequire(import.meta.url);
 const { createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
 const { fingerprint } = require('../apply/filesystem');
-const { isAdoptionPair } = require('../mutations/relationships');
 const { ownsHarnessLink } = require('../mutations/strategies');
+const { claudeSkillsRoot } = require('../layout');
 const { recover } = require('../recovery');
 const {
   createAdoptionPlan,
@@ -101,7 +101,7 @@ async function planOperation(input, runtime) {
         const registration = await planProjectRegistration(input, runtime);
         const operations = registration.operation ? [registration.operation, ...input.operations] : input.operations;
         const harnessOwnership = await loadUserHarnessOwnership(input, runtime, registration.scope);
-        const exposedOperations = await withUserHarnessExposures(registration.scope, operations, harnessOwnership);
+        const exposedOperations = await withClaudeCompatibility(registration.scope, operations, harnessOwnership);
         plan = createPlan({
           ...input,
           scope: registration.scope,
@@ -178,54 +178,25 @@ function sameLedgerEntry(entry, name, candidatePath) {
       && path.resolve(entry.path) === path.resolve(candidatePath));
 }
 
-async function withUserHarnessExposures(scope, operations, harnessOwnership = {}) {
-  if (scope.id !== 'user') return operations;
+async function withClaudeCompatibility(scope, operations, harnessOwnership = {}) {
   const replaceableHarnessLinks = harnessOwnership.replaceable ?? new Map();
-  const currentHarnessLinks = harnessOwnership.current ?? new Map();
   const result = [...operations];
   const existing = new Set(operations
     .filter(ownsHarnessLink)
     .map(({ linkPath }) => path.resolve(linkPath)));
   for (const materialization of operations.filter(({ type }) => type === 'materialize-skill')) {
-    const adoptedCodexExposure = operations.find((operation) => isAdoptionPair(materialization, operation));
-    for (const harness of ['codex', 'claude']) {
-      const linkPath = path.join(os.homedir(), harness === 'codex' ? '.agents' : '.claude', 'skills', materialization.name);
-      if (existing.has(path.resolve(linkPath))) continue;
-      if (harness === 'claude' && await isPreservableClaudePassthrough({
-        claudeLinkPath: linkPath,
-        materialization,
-        adoptedCodexExposure,
-        currentHarnessLinks,
-      })) continue;
-      result.push({
-        type: 'ensure-harness-exposure',
-        harness,
-        linkPath,
-        targetPath: materialization.destinationPath,
-        targetFingerprint: materialization.sourceFingerprint,
-        expected: await expectedExposure(linkPath, materialization.destinationPath, replaceableHarnessLinks),
-      });
-    }
+    const linkPath = path.join(claudeSkillsRoot(scope), materialization.name);
+    if (existing.has(path.resolve(linkPath))) continue;
+    result.push({
+      type: 'ensure-harness-exposure',
+      harness: 'claude',
+      linkPath,
+      targetPath: materialization.destinationPath,
+      targetFingerprint: materialization.sourceFingerprint,
+      expected: await expectedExposure(linkPath, materialization.destinationPath, replaceableHarnessLinks),
+    });
   }
   return result;
-}
-
-async function isPreservableClaudePassthrough({
-  claudeLinkPath, materialization, adoptedCodexExposure, currentHarnessLinks,
-}) {
-  const codexLinkPath = adoptedCodexExposure?.linkPath
-    ?? path.join(os.homedir(), '.agents', 'skills', materialization.name);
-  if (!await isSymlinkTo(claudeLinkPath, codexLinkPath)) return false;
-  if (adoptedCodexExposure) return true;
-  const canonicalPath = materialization.destinationPath;
-  return currentHarnessLinks.get(path.resolve(codexLinkPath)) === path.resolve(canonicalPath)
-    && await isSymlinkTo(codexLinkPath, canonicalPath);
-}
-
-async function isSymlinkTo(linkPath, targetPath) {
-  const stat = await fs.lstat(linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-  if (!stat?.isSymbolicLink()) return false;
-  return path.resolve(path.dirname(linkPath), await fs.readlink(linkPath)) === path.resolve(targetPath);
 }
 
 async function expectedExposure(linkPath, targetPath, replaceableHarnessLinks = new Map()) {
