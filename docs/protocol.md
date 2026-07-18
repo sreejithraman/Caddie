@@ -4,7 +4,7 @@ Caddie v1 uses one JSON request on standard input and emits exactly one JSON res
 
 Requests contain `version`, `operation`, and operation-specific input. Supported operations are `locate`, `inspect`, `inspect-source`, `compare`, `plan`, `apply-plan`, and `recover`.
 
-`inspect` supports focused Available Skills, explicit bird's-eye, Adoption, `migration`, and `legacy-manager` views. Exact locked Git inspection may retain a content-bound disposable materialization for reconciliation. `plan` supports reconciliation plus `adoption`, `unmanagement`, `cleanup`, `state-migration`, and `legacy-manager-cleanup` workflow variants. Every mutating `apply-plan` request carries approval bound to the exact returned plan identifier.
+`inspect` supports focused Available Skills, explicit bird's-eye, Adoption, `migration`, and `legacy-manager` views. Exact locked Git inspection may retain a content-bound disposable materialization for reconciliation. `plan` supports reconciliation plus `adoption`, `unmanagement`, `cleanup`, `state-migration`, and `legacy-manager-cleanup` workflow variants. Every Caddie Plan has a deterministic human-readable `title` and approval prompt for conversation plus an immutable `id` for machine binding. Every mutating `apply-plan` request carries approval bound internally to that exact identifier.
 
 The protocol manages only Caddie-owned state. Repository authoring, worktrees, validation commands, commits, pushes, and pull requests remain ordinary agent work and are not Caddie Tool operations. See [ADR 0002](adr/0002-leave-repository-workflows-to-agents.md).
 

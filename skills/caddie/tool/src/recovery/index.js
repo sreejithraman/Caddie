@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { scopeLayout } = require('../layout');
 const { createPlan } = require('../plans');
+const { effectivePlanTitle, planPresentation } = require('../plans/presentation');
 const { fingerprint } = require('../apply/filesystem');
 const { snapshotLivePreconditions, validateJournal } = require('./journal');
 
@@ -47,12 +48,15 @@ async function recover({ scope }) {
   });
   return {
     status: 'interrupted',
+    interruptedPlanTitle: effectivePlanTitle(journal.plan),
     interruptedPlanId: journal.planId,
     phase: journal.phase,
     completedOperations: journal.next,
     totalOperations: journal.order.length,
     finishPlan,
+    finishPresentation: finishPlan ? planPresentation(finishPlan) : null,
     rollbackPlan,
+    rollbackPresentation: planPresentation(rollbackPlan),
   };
 }
 

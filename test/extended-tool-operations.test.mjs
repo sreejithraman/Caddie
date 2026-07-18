@@ -9,6 +9,24 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tool = path.join(repositoryRoot, 'bin', 'caddie-tool.mjs');
 
+test('public plan presentation neutralizes misleading Unicode in filesystem names', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-presentation-'));
+  const skillPath = path.join(root, '.agents', 'skills', 'bad”\u202ename\u2028next\u00ad\u2061\u034f');
+  const envelope = invoke('plan', {
+    home: root,
+    kind: 'cleanup',
+    scope: { id: `project:${root}`, root },
+    operations: [{
+      type: 'cleanup-preserved-skill', path: skillPath,
+      expected: { state: 'fingerprint', fingerprint: 'current' },
+    }],
+  });
+
+  assert.equal(envelope.ok, true, JSON.stringify(envelope));
+  assert.equal(envelope.result.presentation.title, 'Remove Project Skill: bad��name�next���');
+  assert.equal(envelope.result.presentation.approvalPrompt, 'Apply “Remove Project Skill: bad��name�next���”?');
+});
+
 test('inspect-source exposes bounded untrusted local evidence through the public tool', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-operation-source-'));
   const selected = path.join(root, 'skills', 'fixture');

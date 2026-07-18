@@ -17,6 +17,7 @@ import { createUserStateMigrationPlan, inspectUserStateMigration } from '../migr
 import { createLegacyManagerCleanupPlan, inspectLegacyManagerState } from '../legacy/manager-state.mjs';
 
 const require = createRequire(import.meta.url);
+const { planPresentation } = require('../plans/presentation');
 const { createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
 const { fingerprint } = require('../apply/filesystem');
@@ -108,7 +109,7 @@ async function planOperation(input, runtime) {
       const registration = await planProjectRegistration(input, runtime);
       plan = await createAdoptionPlan({ ...input, home, scope: registration.scope, proposal, registration: registration.operation });
     } else if (input.workflow === 'unmanagement') {
-      plan = createUnmanagementPlan({ ...input, home });
+      plan = await createUnmanagementPlan({ ...input, home });
     } else if (input.workflow === 'cleanup') {
       plan = await createCleanupPlan({ ...input, home });
     } else if (input.workflow === 'state-migration') {
@@ -134,7 +135,7 @@ async function planOperation(input, runtime) {
         plan = createPlan({ ...input, home });
       }
     }
-    return { plan, coverage: completeCoverage() };
+    return { plan, presentation: planPresentation(plan), coverage: completeCoverage() };
   } catch (error) {
     throw normaliseOperationError(error);
   }

@@ -75,6 +75,7 @@ test('exact approval materializes only the complete selected skill and writes le
   const boundaries = [];
   const result = await applyPlan({ plan, approval: approvePlan(plan), onBoundary: (name) => boundaries.push(name) });
   assert.equal(result.status, 'applied');
+  assert.equal(result.planTitle, 'Install Project Skill: chosen');
   assert.equal(await fs.readFile(path.join(fx.destination, 'scripts', 'run.js'), 'utf8'), 'console.log("ok")\n');
   assert.equal(await fs.readFile(path.join(unrelated, 'keep.txt'), 'utf8'), 'mine');
   assert.equal(path.resolve(path.dirname(path.join(fx.root, '.claude', 'skills', 'chosen')), await fs.readlink(path.join(fx.root, '.claude', 'skills', 'chosen'))), fx.destination);
@@ -177,7 +178,11 @@ test('interruption exposes immutable finish and rollback plans; finish resumes e
   const recovery = await recover({ scope: fx.scope });
   assert.equal(recovery.status, 'interrupted');
   assert.equal(Object.isFrozen(recovery.finishPlan), true);
-  await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
+  const result = await applyPlan({ plan: recovery.finishPlan, approval: approvePlan(recovery.finishPlan) });
+  assert.equal(result.planTitle, recovery.finishPlan.title);
+  assert.equal(result.planId, recovery.finishPlan.id);
+  assert.equal(result.interruptedPlanTitle, plan.title);
+  assert.equal(result.interruptedPlanId, plan.id);
   assert.equal(await exists(fx.ledgerPath), true);
   assert.equal((await recover({ scope: fx.scope })).status, 'clean');
 });
@@ -240,7 +245,11 @@ test('rollback restores the exact pre-mutation state', async (t) => {
     onBoundary(name) { if (name === 'mutation:1:linked') throw new Error('power loss'); },
   }), /power loss/);
   const recovery = await recover({ scope: fx.scope });
-  await applyPlan({ plan: recovery.rollbackPlan, approval: approvePlan(recovery.rollbackPlan) });
+  const result = await applyPlan({ plan: recovery.rollbackPlan, approval: approvePlan(recovery.rollbackPlan) });
+  assert.equal(result.planTitle, recovery.rollbackPlan.title);
+  assert.equal(result.planId, recovery.rollbackPlan.id);
+  assert.equal(result.interruptedPlanTitle, plan.title);
+  assert.equal(result.interruptedPlanId, plan.id);
   assert.equal(await exists(fx.destination), false);
   assert.equal(await exists(path.join(fx.root, '.claude', 'skills')), false);
   assert.equal(await exists(fx.ledgerPath), false);
@@ -548,7 +557,7 @@ test('unmanagement removes ownership and registration while preserving skills an
   const registryPath = path.join(fx.root, '.agents', '.caddie', 'registry.json');
   await fs.mkdir(path.dirname(registryPath), { recursive: true });
   await fs.writeFile(registryPath, '{"version":1,"registeredProjects":["here"]}\n');
-  const unmanage = createUnmanagementPlan({
+  const unmanage = await createUnmanagementPlan({
     scope: fx.scope,
     home: fx.root,
     ledgerFingerprint: await fingerprint(fx.ledgerPath),
@@ -559,4 +568,25 @@ test('unmanagement removes ownership and registration while preserving skills an
   assert.equal(await exists(fx.destination), true);
   assert.equal(await fs.lstat(path.join(fx.root, '.claude', 'skills', 'chosen')).then((stat) => stat.isSymbolicLink()), true);
   assert.deepEqual(JSON.parse(await fs.readFile(registryPath, 'utf8')), { version: 1, registeredProjects: [] });
+});
+
+test('one unmanagement plan can remove explicitly requested skills and exposure', async (t) => {
+  const fx = await fixture();
+  t.after(() => fs.rm(fx.root, { recursive: true, force: true }));
+  const reconcile = await reconcilePlan(fx);
+  await applyPlan({ plan: reconcile, approval: approvePlan(reconcile) });
+
+  const unmanage = await createUnmanagementPlan({
+    scope: fx.scope,
+    home: fx.root,
+    ledgerFingerprint: await fingerprint(fx.ledgerPath),
+    skillPaths: [fx.destination],
+    removeHarnessExposure: true,
+  });
+  assert.equal(unmanage.title, 'Stop Managing and Remove Project Skill: chosen');
+  await applyPlan({ plan: unmanage, approval: approvePlan(unmanage) });
+
+  assert.equal(await exists(fx.ledgerPath), false);
+  assert.equal(await exists(fx.destination), false);
+  assert.equal(await exists(path.join(fx.root, '.claude', 'skills', 'chosen')), false);
 });
