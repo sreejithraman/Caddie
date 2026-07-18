@@ -1,6 +1,6 @@
 ---
 name: caddie
-description: Preservation-first management of User Skills and additive Project Skills. Use for installation or reconciliation, Adoption, drift or upstream review, Caddie state migration, verified legacy-lock cleanup, bird's-eye registered-project review, and Unmanagement.
+description: Manage User Skills and additive Project Skills. Use for installation or reconciliation, Adoption, drift or upstream review, Caddie state migration, verified legacy-lock cleanup, bird's-eye registered-project review, and Unmanagement.
 license: LICENSE.txt
 ---
 
