@@ -11,6 +11,7 @@ const { parseSkillMetadata } = require('../skill-metadata');
 const { expectedFor, isUserHarnessAnchored, isUserStateAnchored, strategyFor, targetFor } = require('../mutations/strategies');
 const userHarnessReservation = require('../coordination/user-harness-reservation');
 const { approvedMutationAnchor } = require('../mutations/anchors');
+const { effectivePlanTitle } = require('../plans/presentation');
 const {
   canonicalSkillsRoot,
   runtimeUserCoordinationRoot,
@@ -358,7 +359,12 @@ async function finishJournal(journalPath, journal, onBoundary) {
   if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.markTerminal(journal.plan);
   await fs.rm(journalPath, { force: true });
   if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.clear(journal.plan);
-  return { status: 'applied', planId: journal.planId, operationsApplied: journal.records.length };
+  return {
+    status: 'applied',
+    planTitle: effectivePlanTitle(journal.plan),
+    planId: journal.planId,
+    operationsApplied: journal.records.length,
+  };
 }
 
 async function executeRecord(record, onBoundary, journal, recordIndex) {
@@ -466,10 +472,24 @@ async function applyRecovery(plan, onBoundary) {
   if (needsUserHarnessLock(journal.plan)) await userHarnessReservation.activate(journal.plan);
   if (operation.type === 'recover-finish') {
     if (journal.phase === 'rolling-back') throw new ApplyError('a rollback already started and can only be resumed', 'recovery-invalid');
-    return finishJournal(operation.journalPath, journal, onBoundary);
+    const result = await finishJournal(operation.journalPath, journal, onBoundary);
+    return {
+      ...result,
+      planTitle: effectivePlanTitle(plan),
+      planId: plan.id,
+      interruptedPlanTitle: effectivePlanTitle(journal.plan),
+      interruptedPlanId: journal.planId,
+    };
   }
   await rollbackJournal(operation.journalPath, journal, onBoundary);
-  return { status: 'rolled-back', planId: journal.planId, operationsRolledBack: journal.next };
+  return {
+    status: 'rolled-back',
+    planTitle: effectivePlanTitle(plan),
+    planId: plan.id,
+    interruptedPlanTitle: effectivePlanTitle(journal.plan),
+    interruptedPlanId: journal.planId,
+    operationsRolledBack: journal.next,
+  };
 }
 
 async function rollbackJournal(journalPath, journal, onBoundary) {
