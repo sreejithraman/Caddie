@@ -12,6 +12,7 @@ const {
   supportsHarnessSettings,
   userLayout,
 } = require('../layout');
+const { createPlanTitle, validPlanTitle } = require('./presentation');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
@@ -183,7 +184,7 @@ function validateOperation(operation, scope, kind, home) {
   }
 
   if (operation.type === 'cleanup-preserved-skill') {
-    if (kind !== 'cleanup' || path.dirname(path.resolve(operation.path)) !== canonicalRoot) {
+    if (!['cleanup', 'unmanage'].includes(kind) || path.dirname(path.resolve(operation.path)) !== canonicalRoot) {
       throw new PlanError('preserved-skill cleanup is limited to direct canonical skill children');
     }
     validateExpected(operation.expected, 'cleanup expected state');
@@ -193,7 +194,7 @@ function validateOperation(operation, scope, kind, home) {
   if (operation.type === 'cleanup-exposure') {
     if (operation.harness !== 'claude') throw new PlanError('cleanup exposure is limited to the Claude compatibility adapter');
     const exposureRoot = claudeSkillsRoot(scope, home);
-    if (kind !== 'cleanup' || path.dirname(path.resolve(operation.path)) !== exposureRoot) {
+    if (!['cleanup', 'unmanage'].includes(kind) || path.dirname(path.resolve(operation.path)) !== exposureRoot) {
       throw new PlanError('exposure cleanup is limited to direct skill links under the fixed harness root');
     }
     validateExpected(operation.expected, 'cleanup exposure expected state');
@@ -239,9 +240,11 @@ function createPlan(input) {
   }
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new PlanError('plan requires at least one operation');
   input.operations.forEach((operation) => validateOperation(operation, input.scope, input.kind, home));
+  validatePlanShape(input.kind, input.operations);
 
   const payload = {
     version: PLAN_VERSION,
+    title: createPlanTitle(input),
     kind: input.kind,
     home,
     scope: structuredClone(input.scope),
@@ -270,9 +273,35 @@ function verifyPlanIntegrity(plan) {
   const actual = hashValue(payload);
   if (id !== actual) throw new PlanError('plan content does not match its immutable id', 'altered-plan');
   if (!PLAN_KINDS.has(plan.kind) || !plan.scope || !Array.isArray(plan.operations)) throw new PlanError('plan shape is invalid');
+  if (plan.title !== undefined && !validPlanTitle(plan.title)) throw new PlanError('Caddie Plan title is invalid');
   const home = planHome(plan);
   plan.operations.forEach((operation) => validateOperation(operation, plan.scope, plan.kind, home));
+  validatePlanShape(plan.kind, plan.operations);
   return true;
+}
+
+function validatePlanShape(kind, operations) {
+  if (kind !== 'unmanage') return;
+  const allowed = new Set(['write-registry', 'remove-ledger', 'cleanup-preserved-skill', 'cleanup-exposure']);
+  if (operations.some(({ type }) => !allowed.has(type))) {
+    throw new PlanError('unmanagement plans may contain only ownership removal and requested cleanup');
+  }
+  if (operations.filter(({ type }) => type === 'remove-ledger').length !== 1) {
+    throw new PlanError('unmanagement plans require exactly one ledger removal');
+  }
+  if (operations.at(-1).type !== 'remove-ledger') {
+    throw new PlanError('unmanagement ledger removal must be the final operation');
+  }
+  if (operations.filter(({ type }) => type === 'write-registry').length > 1) {
+    throw new PlanError('unmanagement plans may update the registry at most once');
+  }
+  const cleanupPaths = new Map(operations
+    .filter(({ type }) => type === 'cleanup-preserved-skill')
+    .map(({ path: skillPath }) => [path.basename(skillPath), path.resolve(skillPath)]));
+  if (operations.some((operation) => operation.type === 'cleanup-exposure'
+    && cleanupPaths.get(path.basename(operation.path)) !== path.resolve(path.dirname(operation.path), operation.expected.target))) {
+    throw new PlanError('unmanagement exposure cleanup must match a removed skill');
+  }
 }
 
 function planHome(plan) {

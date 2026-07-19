@@ -30,7 +30,7 @@ When `locate` reports `legacy-state-present`, call `inspect` with `view: "migrat
 - invalid or unsupported evidence: preserve it and report the blocker.
 - `ready`: call `plan` with `workflow: "state-migration"`.
 
-Present the exact plan identifier, its source and destination paths, local-source rebasing, preconditions, and the fingerprint-bound removal of the legacy Caddie tree. Apply only after approval bound to that plan. Caddie Plans are the sole mutation path for migration; external legacy documents reported as preserved remain unchanged.
+Present the source and destination paths, local-source rebasing, preconditions, and fingerprint-bound removal of the legacy Caddie tree with the Caddie Plan. Apply through that plan, then run normal inspection and confirm `~/.config/caddie` is absent. Preserve every external legacy document named by the plan.
 
 This branch is complete when normal inspection reads the migrated fixed-root state, `~/.config/caddie` is absent, and every preserved external document still matches its pre-migration evidence.
 
@@ -42,14 +42,14 @@ Use `inspect` with `view: "legacy-manager"` for `~/.agents/.skill-lock.json`.
 - `unsupported`, `unverified`, or `blocked`: preserve the lock and report each finding.
 - `ready` with `removalRecommended: true`: call `plan` with `workflow: "legacy-manager-cleanup"`.
 
-Only the dedicated cleanup plan may remove the lock. Present its exact identifier, manifest and ledger preconditions, lock fingerprint, and entry classifications before requesting approval. Apply it separately from Adoption. An unmanaged installed skill or fingerprint conflict keeps the lock in place.
+Use the dedicated cleanup Caddie Plan as the only lock-removal path. Present its manifest and ledger preconditions, lock fingerprint, and entry classifications. Apply it separately from Adoption when the user requested this destructive outcome, then verify both the lock's absence and the unchanged managed skills. Preserve any lock containing an unmanaged installed skill or fingerprint conflict.
 
 This branch is complete when inspection confirms the lock is absent and every managed skill still matches its pre-cleanup evidence.
 
 ## Unmanagement and cleanup
 
-Use `unmanagement` to remove Caddie ownership and registration while retaining Materialized Skills and Agent Harness exposure.
+By default, use `unmanagement` to remove Caddie ownership and registration while retaining Materialized Skills and Agent Harness exposure.
 
-Use `cleanup` as a separate destructive follow-up for Materialized Skills and Claude exposure, with its own exact approval. State migration and legacy-manager state remain in their dedicated branches.
+When the user explicitly requests ending management and removing skills together, include the requested Materialized Skills and Claude exposure cleanup in the same complete `unmanagement` Caddie Plan. Use `cleanup` only as a destructive follow-up after an earlier Unmanagement preserved those files. Reserve state migration and legacy-manager state for their dedicated workflows.
 
 Unmanagement is complete when Caddie ownership and registration are absent while Materialized Skills and Agent Harness exposure remain. Cleanup is complete when only the exactly approved matching skills and exposure are absent.

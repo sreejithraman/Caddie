@@ -191,8 +191,11 @@ async function expectedExposure(linkPath, targetPath) {
   return { state: 'symlink', target };
 }
 
-function createUnmanagementPlan({ scope, ledgerFingerprint, registry, home = os.homedir() }) {
-  const operations = [];
+async function createUnmanagementPlan({
+  scope, ledgerFingerprint, registry, skillPaths = [], removeClaudeExposure = false,
+  removeHarnessExposure = removeClaudeExposure, home = os.homedir(),
+}) {
+  const operations = await cleanupOperations({ scope, skillPaths, removeHarnessExposure, home });
   if (registry) operations.push({
     type: 'write-registry',
     path: registry.path,
@@ -208,6 +211,11 @@ function createUnmanagementPlan({ scope, ledgerFingerprint, registry, home = os.
 }
 
 async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure = false, removeHarnessExposure = removeClaudeExposure, home = os.homedir() }) {
+  const operations = await cleanupOperations({ scope, skillPaths, removeHarnessExposure, home });
+  return createPlan({ kind: 'cleanup', home, scope, operations });
+}
+
+async function cleanupOperations({ scope, skillPaths, removeHarnessExposure, home }) {
   const canonicalRoot = canonicalSkillsRoot(scope, home);
   const operations = [];
   for (const skillPath of skillPaths) {
@@ -227,7 +235,7 @@ async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure 
       operations.push({ type: 'cleanup-exposure', harness: 'claude', path: linkPath, expected: { state: 'symlink', target } });
     }
   }
-  return createPlan({ kind: 'cleanup', home, scope, operations });
+  return operations;
 }
 
 module.exports = { createAdoptionPlan, createCleanupPlan, createUnmanagementPlan, inspectAdoption };

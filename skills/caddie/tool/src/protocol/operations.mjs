@@ -22,6 +22,7 @@ import {
 } from '../harness/enablement.mjs';
 
 const require = createRequire(import.meta.url);
+const { planPresentation } = require('../plans/presentation');
 const { createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
 const { fingerprint } = require('../apply/filesystem');
@@ -119,7 +120,7 @@ async function planOperation(input, runtime) {
       }, runtime);
       return { ...enablement, coverage: completeCoverage() };
     } else if (input.workflow === 'unmanagement') {
-      plan = createUnmanagementPlan({ ...input, home });
+      plan = await createUnmanagementPlan({ ...input, home });
     } else if (input.workflow === 'cleanup') {
       plan = await createCleanupPlan({ ...input, home });
     } else if (input.workflow === 'state-migration') {
@@ -146,7 +147,7 @@ async function planOperation(input, runtime) {
         plan = createPlan({ ...input, home });
       }
     }
-    return { plan, coverage: completeCoverage() };
+    return { plan, presentation: planPresentation(plan), coverage: completeCoverage() };
   } catch (error) {
     throw normaliseOperationError(error);
   }
