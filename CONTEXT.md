@@ -78,6 +78,10 @@ _Avoid_: Package, registry
 A choice of one skill directory from a Skill Source for inclusion at a scope.
 _Avoid_: Dependency, package install
 
+**Skill Enablement**:
+The Caddie Manifest declaration controlling whether a Skill Selection is exposed by Agent Harnesses. Omitted and `true` mean enabled; `false` retains the selection and installation while requesting harness-native disablement.
+_Avoid_: Uninstall, deselection, invocation policy
+
 **Lineage**:
 The declared or inferred semantic ancestry between a skill and one or more originating skills.
 _Avoid_: Copy history, fork metadata
@@ -97,7 +101,7 @@ A complete skill directory Caddie copies from a Skill Source into a Canonical Sk
 _Avoid_: In-place Skill, vendored skill, symlinked skill
 
 **Caddie Ledger**:
-The machine-local record of Materialized Skills and harness-specific links Caddie owns, including their last reconciled state.
+The machine-local record of Materialized Skills, harness-specific links, and harness settings Caddie owns, including their last reconciled state.
 _Avoid_: Caddie Lock, manifest, inventory
 
 **Adoption**:

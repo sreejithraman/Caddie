@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { canonicalSkillsRoot, claudeSkillsRoot, scopeLayout } = require('../layout');
+const { canonicalSkillsRoot, claudeSkillsRoot, harnessSettingsLayout, scopeLayout } = require('../layout');
 const { isUserHarnessAnchored, isUserStateAnchored } = require('./strategies');
 
 function approvedMutationAnchor(plan, operation, candidate, home) {
@@ -13,6 +13,10 @@ function approvedMutationAnchor(plan, operation, candidate, home) {
   if (plan.scope.id === 'user' && isInside(canonicalSkillsRoot(plan.scope, home), resolved)) return home;
   if (plan.scope.id === 'user' && isUserHarnessAnchored(operation)
     && isInside(claudeSkillsRoot(plan.scope, home), resolved)) return home;
+  if (operation.type === 'write-harness-settings') {
+    const settings = harnessSettingsLayout(operation.harness, plan.scope, home);
+    if (resolved === path.resolve(settings.path)) return settings.anchorRoot;
+  }
   if (isUserStateAnchored(operation)
     && isInside(scopeLayout({ id: 'user', root: home }, home).agentsRoot, resolved)) return home;
   return null;

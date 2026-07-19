@@ -5,7 +5,7 @@ import path from 'node:path';
 import { invalid } from './errors.mjs';
 
 const require = createRequire(import.meta.url);
-const { canonicalSkillsRoot, claudeSkillsRoot } = require('../layout');
+const { canonicalSkillsRoot, claudeSkillsRoot, supportsHarnessSettings, validHarnessSettingValue } = require('../layout');
 
 export async function loadOwnershipLedger(candidate, { expectedScopeId, allowMissing = false, label = 'reconciliation ledger' }) {
   let value;
@@ -35,11 +35,22 @@ function validateLedgerValue(value, { expectedScopeId, label, allowMissingScopeI
     || (allowMissingScopeId ? value.scopeId !== undefined && value.scopeId !== expectedScopeId : value.scopeId !== expectedScopeId)
     || !Array.isArray(value.entries)
     || (value.harnessLinks !== undefined && !Array.isArray(value.harnessLinks))
+    || (value.harnessSettings !== undefined && !Array.isArray(value.harnessSettings))
     || value.entries.some((entry) => !validEntry(entry))
-    || (value.harnessLinks ?? []).some((link) => typeof link !== 'string' || !path.isAbsolute(link))) {
+    || (value.harnessLinks ?? []).some((link) => typeof link !== 'string' || !path.isAbsolute(link))
+    || (value.harnessSettings ?? []).some((entry) => !validHarnessSetting(entry))) {
     throw invalid('invalid-ledger-content', `The ${label} has an invalid version, scope, or shape`);
   }
   return value;
+}
+
+function validHarnessSetting(entry) {
+  return entry && typeof entry === 'object' && !Array.isArray(entry)
+    && supportsHarnessSettings(entry.harness)
+    && typeof entry.skill === 'string' && entry.skill.length > 0
+    && typeof entry.settingsPath === 'string' && path.isAbsolute(entry.settingsPath)
+    && typeof entry.key === 'string' && entry.key.length > 0
+    && validHarnessSettingValue(entry.harness, entry.value);
 }
 
 export function authorizedUserHarnessLinks(ledger, { scopeRoot, home }) {
@@ -60,5 +71,24 @@ function validEntry(entry) {
     && typeof entry.path === 'string' && path.isAbsolute(entry.path)
     && (typeof entry.fingerprint === 'string'
       || (entry.fingerprint && typeof entry.fingerprint === 'object' && entry.fingerprint.complete === true
-        && typeof entry.fingerprint.digest === 'string'));
+        && typeof entry.fingerprint.digest === 'string'))
+    && validEntryProvenance(entry);
+}
+
+function validEntryProvenance(entry) {
+  const hasSourceId = Object.hasOwn(entry, 'sourceId');
+  const hasLegacySource = Object.hasOwn(entry, 'source');
+  const hasSelectedPath = Object.hasOwn(entry, 'selectedPath');
+  const sourceId = ledgerEntrySourceId(entry);
+  return !hasSourceId && !hasLegacySource && !hasSelectedPath
+    || (!hasSourceId !== !hasLegacySource) && hasSelectedPath
+      && typeof sourceId === 'string' && sourceId.length > 0
+      && typeof entry.selectedPath === 'string' && entry.selectedPath.length > 0
+      && !path.isAbsolute(entry.selectedPath)
+      && path.normalize(entry.selectedPath) !== '..'
+      && !path.normalize(entry.selectedPath).startsWith(`..${path.sep}`);
+}
+
+export function ledgerEntrySourceId(entry) {
+  return entry?.sourceId ?? entry?.source;
 }

@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { cp, mkdtemp, mkdir, rm, symlink } = require('node:fs/promises');
+const { cp, mkdtemp, mkdir, rm, symlink, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -32,6 +32,12 @@ test('installed Claude Code discovers a skill exposed by an individual directory
   const result = spawnSync('claude', args, { encoding: 'utf8', env: { ...process.env, HOME: home } });
   const output = `${result.stdout}${result.stderr}`;
   assert.doesNotMatch(output, /Unknown command:\s*\/caddie/);
+
+  await writeFile(path.join(home, '.claude', 'settings.json'), `${JSON.stringify({
+    skillOverrides: { caddie: 'off' },
+  }, null, 2)}\n`);
+  const disabled = spawnSync('claude', args, { encoding: 'utf8', env: { ...process.env, HOME: home } });
+  assert.match(`${disabled.stdout}${disabled.stderr}`, /Skill "caddie" is disabled via skillOverrides/);
 });
 
 test('installed Codex discovers a real skill in the standard user root', async (t) => {
@@ -59,4 +65,15 @@ test('installed Codex discovers a real skill in the standard user root', async (
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /- caddie:/);
   assert.match(result.stdout, /\.agents\/skills\/caddie\/SKILL\.md/);
+
+  await mkdir(path.join(home, '.codex'), { recursive: true });
+  await writeFile(path.join(home, '.codex', 'config.toml'), [
+    '[[skills.config]]',
+    `path = ${JSON.stringify(path.join(exposure, 'SKILL.md'))}`,
+    'enabled = false',
+    '',
+  ].join('\n'));
+  const disabled = spawnSync('codex', args, { cwd: home, encoding: 'utf8', env });
+  assert.equal(disabled.status, 0, disabled.stderr);
+  assert.doesNotMatch(disabled.stdout, /- caddie:/);
 });

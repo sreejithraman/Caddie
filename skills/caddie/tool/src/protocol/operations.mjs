@@ -15,6 +15,11 @@ import { authorizedUserHarnessLinks, loadOwnershipLedger, validateLedgerProposal
 import { planProjectRegistration } from '../registry/plan-registration.mjs';
 import { createUserStateMigrationPlan, inspectUserStateMigration } from '../migration/user-state.mjs';
 import { createLegacyManagerCleanupPlan, inspectLegacyManagerState } from '../legacy/manager-state.mjs';
+import {
+  createEnablementPlan,
+  enablementForMaterialization,
+  planHarnessSettings,
+} from '../harness/enablement.mjs';
 
 const require = createRequire(import.meta.url);
 const { createPlan } = require('../plans');
@@ -107,6 +112,12 @@ async function planOperation(input, runtime) {
       const proposal = await inspectAdoption({ ...input, home });
       const registration = await planProjectRegistration(input, runtime);
       plan = await createAdoptionPlan({ ...input, home, scope: registration.scope, proposal, registration: registration.operation });
+    } else if (input.workflow === 'skill-enablement') {
+      const registration = await planProjectRegistration(input, runtime);
+      const enablement = await createEnablementPlan({
+        ...input, scope: registration.scope, registration: registration.operation,
+      }, runtime);
+      return { ...enablement, coverage: completeCoverage() };
     } else if (input.workflow === 'unmanagement') {
       plan = createUnmanagementPlan({ ...input, home });
     } else if (input.workflow === 'cleanup') {
@@ -124,11 +135,12 @@ async function planOperation(input, runtime) {
         const operations = registration.operation ? [registration.operation, ...input.operations] : input.operations;
         const harnessOwnership = await loadUserHarnessOwnership(input, runtime, registration.scope, home);
         const exposedOperations = await withClaudeCompatibility(registration.scope, operations, harnessOwnership, home);
+        const boundOperations = await bindHarnessOwnershipInLedger(registration.scope, exposedOperations, home);
         plan = createPlan({
           ...input,
           home,
           scope: registration.scope,
-        operations: await bindHarnessOwnershipInLedger(registration.scope, exposedOperations, home),
+          operations: await bindMaterializedEnablement(registration.scope, boundOperations, home),
         });
       } else {
         plan = createPlan({ ...input, home });
@@ -140,13 +152,80 @@ async function planOperation(input, runtime) {
   }
 }
 
+async function bindMaterializedEnablement(scope, operations, home) {
+  const materializations = operations.filter(({ type }) => type === 'materialize-skill');
+  if (materializations.length === 0) return operations;
+  const ledgerOperation = operations.find(({ type }) => type === 'write-ledger');
+  if (!ledgerOperation) throw invalid('missing-ledger-operation', 'Materialized Skill Enablement requires a planned Caddie Ledger');
+  let ledger;
+  try { ledger = JSON.parse(ledgerOperation.content); } catch {
+    throw invalid('invalid-ledger-content', 'Materialized Skill Enablement requires valid planned Ledger content');
+  }
+  validateLedgerProposal(ledger, { expectedScopeId: scope.id });
+  const manifest = await desiredManifest(scope, operations, home);
+  let ownership = [...(ledger.harnessSettings ?? [])];
+  const harnessOperations = new Map();
+  const harnessStates = new Map();
+  for (const materialization of materializations) {
+    const enabled = enablementForMaterialization(manifest, materialization, scope.root, ledger);
+    if (enabled === null) continue;
+    const planned = await planHarnessSettings({
+      scope,
+      home,
+      skill: materialization.name,
+      skillFile: path.join(materialization.destinationPath, 'SKILL.md'),
+      enabled,
+      ownership,
+      states: harnessStates,
+    });
+    for (const operation of planned.operations) {
+      const previous = harnessOperations.get(operation.path);
+      harnessOperations.set(operation.path, previous
+        ? { ...operation, expected: previous.expected }
+        : operation);
+    }
+    ownership = planned.ownership;
+  }
+  const nextLedgerOperation = {
+    ...ledgerOperation,
+    content: `${JSON.stringify({ ...ledger, harnessSettings: ownership }, null, 2)}\n`,
+  };
+  return [
+    ...operations.filter((operation) => operation !== ledgerOperation),
+    ...harnessOperations.values(),
+    nextLedgerOperation,
+  ];
+}
+
+async function desiredManifest(scope, operations, home) {
+  const planned = operations.find(({ type }) => type === 'write-manifest');
+  const manifestPath = scopeLayout(scope, home).manifestPath;
+  let text;
+  if (planned) text = planned.content;
+  else {
+    text = await fs.readFile(manifestPath, 'utf8').catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+  }
+  if (text === null) return null;
+  let value;
+  try { value = JSON.parse(text); } catch {
+    throw invalid('invalid-manifest-json', `Caddie Manifest is not valid JSON: ${manifestPath}`);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid('invalid-manifest', `Caddie Manifest must be an object: ${manifestPath}`);
+  }
+  return value;
+}
+
 async function bindHarnessOwnershipInLedger(scope, operations, home) {
   const plannedHarnessLinks = operations
     .filter(ownsHarnessLink)
     .map(({ linkPath }) => linkPath);
-  if (plannedHarnessLinks.length === 0) return operations;
-  const ledgerPath = scopeLayout(scope, home).ledgerPath;
   const plannedLedger = operations.find(({ type }) => type === 'write-ledger');
+  if (plannedHarnessLinks.length === 0 && !plannedLedger) return operations;
+  const ledgerPath = scopeLayout(scope, home).ledgerPath;
   const existingLedger = await loadOwnershipLedger(ledgerPath, {
     expectedScopeId: scope.id,
     allowMissing: true,
@@ -168,11 +247,17 @@ async function bindHarnessOwnershipInLedger(scope, operations, home) {
   for (const materialization of operations.filter(({ type }) => type === 'materialize-skill')) {
     const index = entries.findIndex((entry) => sameLedgerEntry(entry, materialization.name, materialization.destinationPath));
     const current = index >= 0 ? entries[index] : {};
+    const canonicalCurrent = { ...current };
+    if (materialization.sourceId) delete canonicalCurrent.source;
     const next = {
-      ...current,
+      ...canonicalCurrent,
       name: materialization.name,
       path: materialization.destinationPath,
       fingerprint: materialization.sourceFingerprint,
+      ...(materialization.sourceId ? {
+        sourceId: materialization.sourceId,
+        selectedPath: materialization.selectedPath,
+      } : {}),
     };
     if (index >= 0) entries[index] = next;
     else entries.push(next);
@@ -182,7 +267,10 @@ async function bindHarnessOwnershipInLedger(scope, operations, home) {
     ...(desiredLedger.harnessLinks ?? []),
     ...plannedHarnessLinks,
   ])].sort();
-  const content = `${JSON.stringify({ ...desiredLedger, version: 1, scopeId: scope.id, harnessLinks, entries }, null, 2)}\n`;
+  const harnessSettings = [...(existingLedger?.harnessSettings ?? [])];
+  const content = `${JSON.stringify({
+    ...desiredLedger, version: 1, scopeId: scope.id, harnessLinks, harnessSettings, entries,
+  }, null, 2)}\n`;
   if (!plannedLedger) {
     return [...operations, { type: 'write-ledger', path: ledgerPath, content, expected: existingExpected }];
   }

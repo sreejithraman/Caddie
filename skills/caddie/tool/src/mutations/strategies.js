@@ -10,6 +10,7 @@ const DEFINITIONS = Object.freeze({
   'write-lock': descriptor('file-replace', 'path', 'expected', 'file'),
   'write-registry': descriptor('file-replace', 'path', 'expected', 'file', { userStateAnchored: true }),
   'write-ledger': descriptor('file-replace', 'path', 'expected', 'file'),
+  'write-harness-settings': descriptor('file-replace', 'path', 'expected', 'harness-settings'),
   'remove-ledger': descriptor('remove', 'path', 'expected', 'removed'),
   'remove-legacy-state': descriptor('remove', 'path', 'expected', 'legacy-state'),
   'remove-legacy-manager-state': descriptor('remove', 'path', 'expected', 'legacy-manager', { userStateAnchored: true }),

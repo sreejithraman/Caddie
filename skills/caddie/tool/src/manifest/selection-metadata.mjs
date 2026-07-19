@@ -3,6 +3,9 @@ import path from 'node:path';
 import { invalid } from '../protocol/errors.mjs';
 
 export function validateSelectionMetadata(selection, sources, manifestPath) {
+  if (Object.hasOwn(selection, 'enabled') && typeof selection.enabled !== 'boolean') {
+    throw invalid('invalid-skill-enabled', 'Skill Selection enabled must be a boolean when present', { manifestPath });
+  }
   if (Object.hasOwn(selection, 'derivedFrom')) {
     validateDerivedFrom(selection.derivedFrom, sources, manifestPath);
   }

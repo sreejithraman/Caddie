@@ -4,7 +4,14 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
 const { MUTATION_OPERATION_TYPES, RECOVERY_OPERATION_TYPES } = require('../mutations/strategies');
-const { canonicalSkillsRoot, claudeSkillsRoot, scopeLayout, userLayout } = require('../layout');
+const {
+  canonicalSkillsRoot,
+  claudeSkillsRoot,
+  harnessSettingsPath,
+  scopeLayout,
+  supportsHarnessSettings,
+  userLayout,
+} = require('../layout');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
@@ -77,6 +84,16 @@ function validateOperation(operation, scope, kind, home) {
       throw new PlanError('materialization must bind a safe skill name matching its destination');
     }
     if (typeof operation.sourceFingerprint !== 'string') throw new PlanError('materialization must bind sourceFingerprint');
+    if (Object.hasOwn(operation, 'enabled')) {
+      throw new PlanError('Skill Enablement belongs to the Caddie Manifest, not materialization');
+    }
+    const hasSourceId = Object.hasOwn(operation, 'sourceId');
+    const hasSelectedPath = Object.hasOwn(operation, 'selectedPath');
+    if (hasSourceId !== hasSelectedPath
+      || (hasSourceId && (typeof operation.sourceId !== 'string' || operation.sourceId.length === 0
+        || typeof operation.selectedPath !== 'string' || !safeRelativePath(operation.selectedPath)))) {
+      throw new PlanError('materialization provenance requires exact sourceId and selectedPath');
+    }
     if (looksEphemeralSource(operation.sourcePath) && operation.sourceCleanup === undefined) {
       throw new PlanError('ephemeral materialization must bind sourceCleanup');
     }
@@ -122,6 +139,19 @@ function validateOperation(operation, scope, kind, home) {
     if (path.resolve(operation.path) !== path.join(caddieStateRoot, 'ledger.json')) throw new PlanError('ledger path is outside its fixed location');
     validateExpected(operation.expected, 'ledger expected state');
     if (operation.type === 'write-ledger' && typeof operation.content !== 'string') throw new PlanError('write-ledger requires exact content');
+    return;
+  }
+
+  if (operation.type === 'write-harness-settings') {
+    if (!supportsHarnessSettings(operation.harness)) throw new PlanError('harness settings require a supported harness');
+    if (path.resolve(operation.path) !== harnessSettingsPath(operation.harness, scope, home)) {
+      throw new PlanError('harness settings path is outside its fixed location');
+    }
+    if (typeof operation.skill !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(operation.skill)) {
+      throw new PlanError('harness settings require a safe skill name');
+    }
+    validateExpected(operation.expected, 'harness settings expected state');
+    if (typeof operation.content !== 'string') throw new PlanError('write-harness-settings requires exact content');
     return;
   }
 
@@ -185,6 +215,12 @@ function validateOperation(operation, scope, kind, home) {
       throw new PlanError('interrupted plan scope does not match recovery scope');
     }
   }
+}
+
+function safeRelativePath(candidate) {
+  if (!candidate || path.isAbsolute(candidate)) return false;
+  const normal = path.normalize(candidate);
+  return normal === '.' || (!normal.startsWith(`..${path.sep}`) && normal !== '..');
 }
 
 function looksEphemeralSource(sourcePath) {

@@ -14,6 +14,7 @@ const { approvedMutationAnchor } = require('../mutations/anchors');
 const {
   canonicalSkillsRoot,
   runtimeUserCoordinationRoot,
+  harnessSettingsLayout,
   scopeLayout,
 } = require('../layout');
 
@@ -186,11 +187,18 @@ async function reserveExistingUserJournal(plan) {
 function needsUserHarnessLock(plan) {
   const home = planHome(plan);
   return plan.operations.some((operation) => isUserStateAnchored(operation)
+    || userCoordinatedHarnessSetting(operation, plan.scope, home)
     || (plan.scope.id === 'user' && (isUserHarnessAnchored(operation)
       || operationTouchesUserSkills(operation, plan.scope, home)))
     || operation.interruptedPlan?.operations?.some((nested) => isUserStateAnchored(nested)
+      || userCoordinatedHarnessSetting(nested, plan.scope, home)
       || (plan.scope.id === 'user' && (isUserHarnessAnchored(nested)
         || operationTouchesUserSkills(nested, plan.scope, home)))));
+}
+
+function userCoordinatedHarnessSetting(operation, scope, home) {
+  return operation.type === 'write-harness-settings'
+    && harnessSettingsLayout(operation.harness, scope, home).userCoordinated;
 }
 
 function operationTouchesUserSkills(operation, scope, home) {
