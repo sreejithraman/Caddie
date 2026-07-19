@@ -10,8 +10,9 @@ import { settingsAdapters } from './settings-adapters.mjs';
 
 const require = createRequire(import.meta.url);
 const { fingerprint } = require('../apply/filesystem');
-const { createPlan } = require('../plans');
+const { createInternalPlan } = require('../plans');
 const { harnessSettingsLayout, scopeLayout } = require('../layout');
+const { unmanagementOperations } = require('../adoption');
 
 export async function createEnablementPlan(input, runtime = {}) {
   const home = runtimeHome(input, runtime);
@@ -77,7 +78,10 @@ export async function createEnablementPlan(input, runtime = {}) {
   if (operations.length === 0) return { status: 'unchanged', enabled: input.enabled, skill: selected.name, plan: null };
   return {
     status: 'planned', enabled: input.enabled, skill: selected.name,
-    plan: createPlan({ kind: 'reconcile', home, scope, operations }),
+    plan: createInternalPlan({
+      kind: 'reconcile', home, scope, operations,
+      intent: { type: 'skill-enablement', enabled: input.enabled, skill: selected.name },
+    }),
   };
 }
 
@@ -93,6 +97,42 @@ export async function planHarnessSettings({ scope, home, skill, skillFile, enabl
     nextOwnership = rendered.ownership;
   }
   return { operations, ownership: nextOwnership.sort(compareOwnership), states };
+}
+
+export async function planHarnessSettingsBatch({ scope, home, targets, ownership = [], states = new Map() }) {
+  let nextOwnership = ownership;
+  const operations = new Map();
+  for (const target of targets) {
+    const planned = await planHarnessSettings({ scope, home, ...target, ownership: nextOwnership, states });
+    for (const operation of planned.operations) {
+      const previous = operations.get(operation.path);
+      operations.set(operation.path, previous ? { ...operation, expected: previous.expected } : operation);
+    }
+    nextOwnership = planned.ownership;
+  }
+  return { operations: [...operations.values()], ownership: nextOwnership, states };
+}
+
+export async function createUnmanagementWithEnablementCleanup(input, home) {
+  let settingsOperations = [];
+  if (Array.isArray(input.skillPaths) && input.skillPaths.length > 0) {
+    const ledger = await loadOwnershipLedger(scopeLayout(input.scope, home).ledgerPath, {
+      expectedScopeId: input.scope.id, label: 'unmanagement ledger',
+    });
+    const planned = await planHarnessSettingsBatch({
+      scope: input.scope,
+      home,
+      ownership: [...(ledger.harnessSettings ?? [])],
+      targets: input.skillPaths.map((skillPath) => ({
+        skill: path.basename(skillPath), skillFile: path.join(skillPath, 'SKILL.md'), enabled: true,
+      })),
+    });
+    settingsOperations = planned.operations;
+  }
+  const operations = await unmanagementOperations({ ...input, home });
+  return createInternalPlan({
+    kind: 'unmanage', home, scope: input.scope, operations: [...settingsOperations, ...operations],
+  });
 }
 
 export function enablementForMaterialization(manifest, materialization, scopeRoot, ledger) {

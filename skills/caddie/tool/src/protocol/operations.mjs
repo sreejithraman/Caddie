@@ -17,13 +17,14 @@ import { createUserStateMigrationPlan, inspectUserStateMigration } from '../migr
 import { createLegacyManagerCleanupPlan, inspectLegacyManagerState } from '../legacy/manager-state.mjs';
 import {
   createEnablementPlan,
+  createUnmanagementWithEnablementCleanup,
   enablementForMaterialization,
-  planHarnessSettings,
+  planHarnessSettingsBatch,
 } from '../harness/enablement.mjs';
 
 const require = createRequire(import.meta.url);
 const { planPresentation } = require('../plans/presentation');
-const { createPlan } = require('../plans');
+const { createInternalPlan, createPlan } = require('../plans');
 const { applyPlan } = require('../apply');
 const { fingerprint } = require('../apply/filesystem');
 const { ownsHarnessLink } = require('../mutations/strategies');
@@ -32,7 +33,6 @@ const { recover } = require('../recovery');
 const {
   createAdoptionPlan,
   createCleanupPlan,
-  createUnmanagementPlan,
   inspectAdoption,
 } = require('../adoption');
 
@@ -107,8 +107,10 @@ async function compareOperation(input) {
 
 async function planOperation(input, runtime) {
   try {
+    rejectInternalPlanInput(input);
     const home = runtimeHome(input, runtime);
     let plan;
+    let result = {};
     if (input.workflow === 'adoption') {
       const proposal = await inspectAdoption({ ...input, home });
       const registration = await planProjectRegistration(input, runtime);
@@ -118,9 +120,11 @@ async function planOperation(input, runtime) {
       const enablement = await createEnablementPlan({
         ...input, scope: registration.scope, registration: registration.operation,
       }, runtime);
-      return { ...enablement, coverage: completeCoverage() };
+      if (!enablement.plan) return { ...enablement, coverage: completeCoverage() };
+      plan = enablement.plan;
+      result = enablement;
     } else if (input.workflow === 'unmanagement') {
-      plan = await createUnmanagementPlan({ ...input, home });
+      plan = await createUnmanagementWithEnablementCleanup(input, home);
     } else if (input.workflow === 'cleanup') {
       plan = await createCleanupPlan({ ...input, home });
     } else if (input.workflow === 'state-migration') {
@@ -137,7 +141,7 @@ async function planOperation(input, runtime) {
         const harnessOwnership = await loadUserHarnessOwnership(input, runtime, registration.scope, home);
         const exposedOperations = await withClaudeCompatibility(registration.scope, operations, harnessOwnership, home);
         const boundOperations = await bindHarnessOwnershipInLedger(registration.scope, exposedOperations, home);
-        plan = createPlan({
+        plan = createInternalPlan({
           ...input,
           home,
           scope: registration.scope,
@@ -147,9 +151,16 @@ async function planOperation(input, runtime) {
         plan = createPlan({ ...input, home });
       }
     }
-    return { plan, presentation: planPresentation(plan), coverage: completeCoverage() };
+    return { ...result, plan, presentation: planPresentation(plan), coverage: completeCoverage() };
   } catch (error) {
     throw normaliseOperationError(error);
+  }
+}
+
+function rejectInternalPlanInput(input) {
+  if (Object.hasOwn(input, 'intent')
+    || input.operations?.some(({ type }) => type === 'write-harness-settings')) {
+    throw invalid('internal-plan-field', 'Skill Enablement intent and harness settings operations are derived by Caddie');
   }
 }
 
@@ -164,36 +175,26 @@ async function bindMaterializedEnablement(scope, operations, home) {
   }
   validateLedgerProposal(ledger, { expectedScopeId: scope.id });
   const manifest = await desiredManifest(scope, operations, home);
-  let ownership = [...(ledger.harnessSettings ?? [])];
-  const harnessOperations = new Map();
-  const harnessStates = new Map();
+  const targets = [];
   for (const materialization of materializations) {
     const enabled = enablementForMaterialization(manifest, materialization, scope.root, ledger);
     if (enabled === null) continue;
-    const planned = await planHarnessSettings({
-      scope,
-      home,
+    targets.push({
       skill: materialization.name,
       skillFile: path.join(materialization.destinationPath, 'SKILL.md'),
       enabled,
-      ownership,
-      states: harnessStates,
     });
-    for (const operation of planned.operations) {
-      const previous = harnessOperations.get(operation.path);
-      harnessOperations.set(operation.path, previous
-        ? { ...operation, expected: previous.expected }
-        : operation);
-    }
-    ownership = planned.ownership;
   }
+  const planned = await planHarnessSettingsBatch({
+    scope, home, targets, ownership: [...(ledger.harnessSettings ?? [])],
+  });
   const nextLedgerOperation = {
     ...ledgerOperation,
-    content: `${JSON.stringify({ ...ledger, harnessSettings: ownership }, null, 2)}\n`,
+    content: `${JSON.stringify({ ...ledger, harnessSettings: planned.ownership }, null, 2)}\n`,
   };
   return [
     ...operations.filter((operation) => operation !== ledgerOperation),
-    ...harnessOperations.values(),
+    ...planned.operations,
     nextLedgerOperation,
   ];
 }

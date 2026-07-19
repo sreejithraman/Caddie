@@ -52,4 +52,6 @@ By default, use `unmanagement` to remove Caddie ownership and registration while
 
 When the user explicitly requests ending management and removing skills together, include the requested Materialized Skills and Claude exposure cleanup in the same complete `unmanagement` Caddie Plan. Use `cleanup` only as a destructive follow-up after an earlier Unmanagement preserved those files. Reserve state migration and legacy-manager state for their dedicated workflows.
 
+When combined Unmanagement removes a disabled skill, remove its Caddie-owned native harness disablement before removing the Caddie Ledger. Preservation-only Unmanagement leaves native harness policy in place and relinquishes ownership with the rest of the Ledger.
+
 Unmanagement is complete when Caddie ownership and registration are absent while Materialized Skills and Agent Harness exposure remain. Cleanup is complete when only the exactly approved matching skills and exposure are absent.

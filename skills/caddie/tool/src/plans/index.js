@@ -63,6 +63,19 @@ function validateExpected(expected, label) {
   }
 }
 
+function validateIntent(intent, kind) {
+  if (intent === undefined) return;
+  if (kind !== 'reconcile'
+    || !intent || typeof intent !== 'object' || Array.isArray(intent)
+    || Object.keys(intent).sort().join(',') !== 'enabled,skill,type'
+    || intent.type !== 'skill-enablement'
+    || typeof intent.enabled !== 'boolean'
+    || typeof intent.skill !== 'string'
+    || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(intent.skill)) {
+    throw new PlanError('plan intent is invalid');
+  }
+}
+
 function validateOperation(operation, scope, kind, home) {
   if (!operation || !OPERATION_SET.has(operation.type)) {
     throw new PlanError(`operation type is not allowlisted: ${operation && operation.type}`);
@@ -231,6 +244,14 @@ function looksEphemeralSource(sourcePath) {
 }
 
 function createPlan(input) {
+  return buildPlan(input, false);
+}
+
+function createInternalPlan(input) {
+  return buildPlan(input, true);
+}
+
+function buildPlan(input, internal) {
   if (!input || !PLAN_KINDS.has(input.kind)) throw new PlanError('plan kind is invalid');
   if (!input.scope || typeof input.scope.id !== 'string') throw new PlanError('scope.id is required');
   assertAbsolute(input.scope.root, 'scope.root');
@@ -239,8 +260,13 @@ function createPlan(input) {
     throw new PlanError('User Skills scope root must equal the plan home');
   }
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new PlanError('plan requires at least one operation');
+  if (!internal && (input.intent !== undefined
+    || input.operations.some(({ type }) => type === 'write-harness-settings'))) {
+    throw new PlanError('internal plan fields must be derived by Caddie');
+  }
   input.operations.forEach((operation) => validateOperation(operation, input.scope, input.kind, home));
   validatePlanShape(input.kind, input.operations);
+  validateIntent(input.intent, input.kind);
 
   const payload = {
     version: PLAN_VERSION,
@@ -250,6 +276,7 @@ function createPlan(input) {
     scope: structuredClone(input.scope),
     operations: structuredClone(input.operations),
     preconditions: structuredClone(input.preconditions || []),
+    ...(input.intent === undefined ? {} : { intent: structuredClone(input.intent) }),
   };
   const plan = { ...payload, id: hashValue(payload) };
   return deepFreeze(plan);
@@ -277,12 +304,13 @@ function verifyPlanIntegrity(plan) {
   const home = planHome(plan);
   plan.operations.forEach((operation) => validateOperation(operation, plan.scope, plan.kind, home));
   validatePlanShape(plan.kind, plan.operations);
+  validateIntent(plan.intent, plan.kind);
   return true;
 }
 
 function validatePlanShape(kind, operations) {
   if (kind !== 'unmanage') return;
-  const allowed = new Set(['write-registry', 'remove-ledger', 'cleanup-preserved-skill', 'cleanup-exposure']);
+  const allowed = new Set(['write-registry', 'write-harness-settings', 'remove-ledger', 'cleanup-preserved-skill', 'cleanup-exposure']);
   if (operations.some(({ type }) => !allowed.has(type))) {
     throw new PlanError('unmanagement plans may contain only ownership removal and requested cleanup');
   }
@@ -327,6 +355,7 @@ module.exports = {
   approvePlan,
   canonicalize,
   createPlan,
+  createInternalPlan,
   hashValue,
   planHome,
   verifyApprovedPlan,

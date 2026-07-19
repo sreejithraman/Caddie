@@ -91,6 +91,10 @@ test('Skill Enablement disables and re-enables through native harness settings',
     enabled: false,
   }, { HOME: home });
   assert.equal(disabled.ok, true, JSON.stringify(disabled));
+  assert.deepEqual(disabled.result.presentation, {
+    title: 'Disable User Skill: fixture',
+    approvalPrompt: 'Apply “Disable User Skill: fixture”?',
+  });
   assert.deepEqual(
     disabled.result.plan.operations.filter(({ type }) => type === 'write-harness-settings').map(({ harness }) => harness).sort(),
     ['claude', 'codex'],
@@ -157,6 +161,10 @@ test('Skill Enablement disables and re-enables through native harness settings',
     enabled: true,
   }, { HOME: home });
   assert.equal(enabled.ok, true, JSON.stringify(enabled));
+  assert.deepEqual(enabled.result.presentation, {
+    title: 'Enable User Skill: fixture',
+    approvalPrompt: 'Apply “Enable User Skill: fixture”?',
+  });
   assert.equal(apply(enabled, home).ok, true);
 
   const enabledManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -197,6 +205,25 @@ test('Skill Enablement derives identity and rejects a caller-supplied name', asy
 
   assert.equal(planned.ok, false);
   assert.equal(planned.error.code, 'invalid-enablement-selection');
+});
+
+test('public planning rejects caller-supplied enablement intent and harness writes', () => {
+  const home = '/tmp/caddie-internal-plan-fields';
+  const scope = { id: 'user', root: home };
+  const intent = invoke('plan', {
+    kind: 'reconcile', scope, intent: { type: 'skill-enablement', enabled: false, skill: 'fixture' }, operations: [],
+  }, { HOME: home });
+  assert.equal(intent.ok, false);
+  assert.equal(intent.error.code, 'internal-plan-field');
+
+  const harnessWrite = invoke('plan', {
+    kind: 'reconcile', scope, operations: [{
+      type: 'write-harness-settings', harness: 'claude', skill: 'fixture',
+      path: path.join(home, '.claude', 'settings.json'), content: '{}\n', expected: { state: 'absent' },
+    }],
+  }, { HOME: home });
+  assert.equal(harnessWrite.ok, false);
+  assert.equal(harnessWrite.error.code, 'internal-plan-field');
 });
 
 test('Codex collision detection handles valid TOML paths containing a hash', async () => {
@@ -269,6 +296,24 @@ test('initial reconciliation atomically installs a disabled skill and configures
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.match(await readFile(path.join(home, '.codex', 'config.toml'), 'utf8'), /enabled = false/);
   assert.equal(JSON.parse(await readFile(path.join(home, '.claude', 'settings.json'), 'utf8')).skillOverrides.fixture, 'off');
+
+  const ledgerPath = path.join(home, '.agents', '.caddie', 'ledger.json');
+  const unmanaged = invoke('plan', {
+    workflow: 'unmanagement', scope: { id: 'user', root: home },
+    ledgerFingerprint: await fingerprint(ledgerPath),
+    skillPaths: [installed], removeHarnessExposure: true,
+  }, { HOME: home });
+  assert.equal(unmanaged.ok, true, JSON.stringify(unmanaged));
+  assert.deepEqual(
+    unmanaged.result.plan.operations.filter(({ type }) => type === 'write-harness-settings').map(({ harness }) => harness).sort(),
+    ['claude', 'codex'],
+  );
+  assert.equal(apply(unmanaged, home).ok, true);
+  assert.doesNotMatch(await readFile(path.join(home, '.codex', 'config.toml'), 'utf8'), /enabled = false/);
+  assert.deepEqual(JSON.parse(await readFile(path.join(home, '.claude', 'settings.json'), 'utf8')), {});
+  await assert.rejects(readFile(path.join(installed, 'SKILL.md')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(home, '.claude', 'skills', 'fixture', 'SKILL.md')), { code: 'ENOENT' });
+  await assert.rejects(readFile(ledgerPath), { code: 'ENOENT' });
 });
 
 test('one reconciliation composes multiple disabled skills into one write per harness', async () => {
