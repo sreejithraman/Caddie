@@ -20,6 +20,7 @@ The specification and its tracer-bullet tickets remain the baseline v1 product r
 - Install User Skills in the cross-client `~/.agents/skills` convention and add only the Claude compatibility links that are needed.
 - Keep Caddie's User Skills state together in `~/.agents/.caddie`; keep each project's state in `<project>/.agents/.caddie`.
 - Select complete skills from local or pinned Git sources.
+- Enable or disable a selected skill without uninstalling it, using each harness's native settings.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
 - Review an exact plan before Caddie mutates managed state.
 - Inspect every registered project from one conversational bird's-eye view.

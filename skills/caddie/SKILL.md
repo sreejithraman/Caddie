@@ -1,6 +1,6 @@
 ---
 name: caddie
-description: Manage User Skills and additive Project Skills. Use for installation or reconciliation, Adoption, drift or upstream review, Caddie state migration, verified legacy-lock cleanup, bird's-eye registered-project review, and Unmanagement.
+description: Manage User Skills and additive Project Skills. Use for installation or reconciliation, enabling or disabling skills, Adoption, drift or upstream review, Caddie state migration, verified legacy-lock cleanup, bird's-eye registered-project review, and Unmanagement.
 license: LICENSE.txt
 ---
 
@@ -18,9 +18,9 @@ User state is fixed under `~/.agents/.caddie`; project state is fixed under `<pr
 
 For Adoption, call `inspect` with `view: "adoption"`, the scope root, and independently resolved candidates. For reconciliation, use fingerprints, provenance, and `reconciliation.kind`; modification times are supporting evidence only.
 
-Inspection is complete when every state and provenance claim maps to returned evidence and every coverage gap is named.
+Default inspection includes legacy-manager evidence. If `locate` reports `legacy-state-present`, read the State migration branch before reconciliation. Legacy conditions become mutable only through their dedicated approved workflow.
 
-Default inspection includes legacy-manager evidence. If `locate` reports `legacy-state-present`, read the State migration branch before any reconciliation. Preserve both legacy conditions until the matching branch authorizes a Caddie Plan.
+Inspection is complete when every state and provenance claim maps to returned evidence and every coverage gap is named.
 
 ## Interpret
 
@@ -44,6 +44,8 @@ Interpretation is complete when the evidence, semantic assessment, and user choi
 User materializations target `~/.agents/skills/<name>`; Project materializations target `<project>/.agents/skills/<name>`. Claude exposure is a compatibility link to the canonical skill directory.
 
 For a Git reconciliation, call `inspect-source` with the exact locked `commit` and `materialize: true`; bind the returned `sourcePath` and fingerprint into the plan.
+
+Bind every `materialize-skill` operation to its inspected Skill Selection with exact `sourceId` and `selectedPath` provenance. The Caddie Tool derives Skill Enablement from that Manifest selection.
 
 1. Finish inspection and interpretation before requesting `plan`. Include every authorized, compatible Caddie-owned state effect for the requested outcome in one complete Caddie Plan. Request approval only for that complete plan. Keep a dedicated destructive workflow separate when an ADR requires it, and offer the follow-up only when the user requested its destructive outcome.
 2. Request `plan` for the chosen outcome.
@@ -70,4 +72,4 @@ Application is complete when inspection verifies the approved effects or identif
 
 For a focused request, lead with the current repository and mention relevant findings elsewhere. For an explicit bird's-eye request, inspect User Skills and every Registered Project. Project registration may appear in the first approved project mutation.
 
-For Adoption, state migration, legacy-manager cleanup, Unmanagement, or skill cleanup, read the matching section of [references/workflows.md](references/workflows.md) before planning.
+Before planning Skill Enablement, Adoption, state migration, legacy-manager cleanup, Unmanagement, or skill cleanup, read the matching branch in [references/workflows.md](references/workflows.md) and satisfy its completion criterion.

@@ -5,7 +5,7 @@ const path = require('node:path');
 const MAX_TITLE_LENGTH = 120;
 const UNSAFE_PRESENTATION_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u201c\u201d]/gu;
 
-function createPlanTitle({ kind, scope, operations }) {
+function createPlanTitle({ kind, scope, operations, intent }) {
   const scopeName = scope.id === 'user' ? 'User' : 'Project';
   const operationTypes = new Set(operations.map(({ type }) => type));
 
@@ -23,6 +23,11 @@ function createPlanTitle({ kind, scope, operations }) {
     return skillTitle('Stop Managing and Remove', scopeName, cleanupNames);
   }
   if (kind === 'unmanage') return `Stop Managing ${scopeName} Skills`;
+
+  if (intent?.type === 'skill-enablement') {
+    const { enabled, skill } = intent;
+    return skillTitle(enabled ? 'Enable' : 'Disable', scopeName, [skill]);
+  }
 
   const materializations = operations.filter(({ type }) => type === 'materialize-skill');
   if (kind === 'reconcile' && materializations.length > 0) {

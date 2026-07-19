@@ -6,16 +6,23 @@
     "caddie-tool": "./bin/caddie-tool.mjs"
   },
   "scripts": {
-    "test": "npm run vendor:yaml:check && node --test",
-    "test:release": "npm run vendor:yaml:check && CADDIE_REQUIRE_CLAUDE=1 CADDIE_REQUIRE_CODEX=1 node --test test/claude-harness.test.cjs test/v1-acceptance.test.mjs",
+    "test": "npm run vendor:check && node --test",
+    "test:release": "npm run vendor:check && CADDIE_REQUIRE_CLAUDE=1 CADDIE_REQUIRE_CODEX=1 node --test test/claude-harness.test.cjs test/v1-acceptance.test.mjs",
+    "vendor:check": "npm run vendor:yaml:check && npm run vendor:toml:check && npm run vendor:jsonc:check",
+    "vendor:jsonc": "node scripts/vendor-jsonc.mjs",
+    "vendor:jsonc:check": "node scripts/vendor-jsonc.mjs --check",
     "vendor:yaml": "node scripts/vendor-yaml.mjs",
-    "vendor:yaml:check": "node scripts/vendor-yaml.mjs --check"
+    "vendor:yaml:check": "node scripts/vendor-yaml.mjs --check",
+    "vendor:toml": "node scripts/vendor-toml.mjs",
+    "vendor:toml:check": "node scripts/vendor-toml.mjs --check"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
     "esbuild": "0.25.12",
+    "jsonc-parser": "3.3.1",
+    "smol-toml": "1.7.0",
     "yaml": "2.9.0"
   }
 }

@@ -108,6 +108,7 @@ export async function resolveSelectionsWithEvidence(manifest, {
       fingerprint: inspected.evidence.fingerprint,
       freshness: inspected.resolution.freshness,
       extensionFields: inspected.evidence.skill.extensionFields,
+      enabled: selection.enabled ?? true,
       ...lineageFields(selection),
     });
   }
@@ -157,6 +158,7 @@ async function resolveLocalSelection(manifest, source, selection) {
     skillPath,
     skillFile,
     extensionFields: metadata.extensionFields,
+    enabled: selection.enabled ?? true,
     ...(git ?? {}),
     ...lineageFields(selection),
   };

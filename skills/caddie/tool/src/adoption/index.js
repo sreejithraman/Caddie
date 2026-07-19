@@ -195,6 +195,15 @@ async function createUnmanagementPlan({
   scope, ledgerFingerprint, registry, skillPaths = [], removeClaudeExposure = false,
   removeHarnessExposure = removeClaudeExposure, home = os.homedir(),
 }) {
+  const operations = await unmanagementOperations({
+    scope, ledgerFingerprint, registry, skillPaths, removeHarnessExposure, home,
+  });
+  return createPlan({ kind: 'unmanage', home, scope, operations });
+}
+
+async function unmanagementOperations({
+  scope, ledgerFingerprint, registry, skillPaths = [], removeHarnessExposure = false, home = os.homedir(),
+}) {
   const operations = await cleanupOperations({ scope, skillPaths, removeHarnessExposure, home });
   if (registry) operations.push({
     type: 'write-registry',
@@ -207,7 +216,7 @@ async function createUnmanagementPlan({
     path: scopeLayout(scope, home).ledgerPath,
     expected: { state: 'file', fingerprint: ledgerFingerprint },
   });
-  return createPlan({ kind: 'unmanage', home, scope, operations });
+  return operations;
 }
 
 async function createCleanupPlan({ scope, skillPaths = [], removeClaudeExposure = false, removeHarnessExposure = removeClaudeExposure, home = os.homedir() }) {
@@ -238,4 +247,6 @@ async function cleanupOperations({ scope, skillPaths, removeHarnessExposure, hom
   return operations;
 }
 
-module.exports = { createAdoptionPlan, createCleanupPlan, createUnmanagementPlan, inspectAdoption };
+module.exports = {
+  createAdoptionPlan, createCleanupPlan, createUnmanagementPlan, inspectAdoption, unmanagementOperations,
+};

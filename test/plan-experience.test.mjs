@@ -4,7 +4,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { approvePlan, createPlan, hashValue, verifyPlanIntegrity } = require('../skills/caddie/tool/src/plans');
+const {
+  approvePlan, createInternalPlan, createPlan, hashValue, verifyPlanIntegrity,
+} = require('../skills/caddie/tool/src/plans');
 const { effectivePlanTitle, planPresentation } = require('../skills/caddie/tool/src/plans/presentation');
 
 test('Caddie Plans expose human titles while approval stays bound to the immutable id', () => {
@@ -73,6 +75,36 @@ test('Caddie Plan titles summarize installs, mixed reconciliations, adoption, cl
     }],
   });
   assert.equal(unmanage.title, 'Stop Managing Project Skills');
+});
+
+test('Skill Enablement titles bind action and skill through recovery', () => {
+  const root = '/tmp/caddie-plan-title-enablement';
+  const scope = { id: 'user', root };
+  const operation = {
+    type: 'write-manifest', path: path.join(root, '.agents', '.caddie', 'manifest.json'),
+    content: '{}\n', expected: { state: 'file', fingerprint: 'current' },
+  };
+  const enable = createInternalPlan({
+    kind: 'reconcile', home: root, scope, operations: [operation],
+    intent: { type: 'skill-enablement', enabled: true, skill: 'grilling' },
+  });
+  const disable = createInternalPlan({
+    kind: 'reconcile', home: root, scope, operations: [operation],
+    intent: { type: 'skill-enablement', enabled: false, skill: 'grilling' },
+  });
+  assert.equal(enable.title, 'Enable User Skill: grilling');
+  assert.equal(disable.title, 'Disable User Skill: grilling');
+
+  const recovery = createPlan({
+    kind: 'recovery', home: root, scope,
+    operations: [{
+      type: 'recover-finish',
+      journalPath: path.join(root, '.agents', '.caddie', 'operation-journal.json'),
+      journalFingerprint: 'journal',
+      interruptedPlan: disable,
+    }],
+  });
+  assert.equal(recovery.title, 'Finish: Disable User Skill: grilling');
 });
 
 test('Caddie Plan presentation supplies the one human approval prompt', () => {
