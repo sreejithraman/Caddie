@@ -14,9 +14,16 @@ Diagnostics belong on standard error. Persisted formats have their own version f
 
 User reconciliation materializes complete skills directly beneath the runtime HOME `~/.agents/skills`; project reconciliation materializes them beneath `<project>/.agents/skills`. Adoption records exact existing directories at those locations without relocating them. Both scopes add only individual Claude compatibility links under the matching `.claude/skills` root. These fixed paths are bound by the immutable plan and revalidated during apply and recovery.
 
-Skill Enablement is declared on the exact Skill Selection with an optional `enabled` boolean; inspection resolves omission to `true`. The `skill-enablement` workflow changes that declaration and delegates enforcement to native Agent Harness settings. `false` writes a Caddie-owned Codex `[[skills.config]]` entry with `enabled = false` and a Claude `skillOverrides` value of `"off"`; project scope uses `.claude/settings.local.json`, while Codex remains user-configured. `true` removes only Caddie-owned disablement. Existing external settings that already disable a skill are preserved unowned, and conflicting or drifted settings block the plan. Harness-specific invocation modes remain outside Caddie's model.
+Skill Enablement is declared on the exact Skill Selection with an optional `enabled` boolean; inspection resolves omission to `true`. The `skill-enablement` workflow changes that declaration and delegates enforcement to native Agent Harness settings. `false` writes a Caddie-owned Codex `[[skills.config]]` entry with `enabled = false` and a Claude `skillOverrides` value of `"off"`; project scope uses `.claude/settings.local.json`, while Codex remains user-configured. `true` removes only Caddie-owned disablement. Existing external settings that already disable a skill are preserved unowned, and conflicting or drifted settings block the plan. Skill Enablement is distinct from Invocation Policy: enablement controls whether a harness can use the skill at all, while `user-only` keeps explicit invocation available and disables implicit invocation.
 
 Every materialized or adopted skill must have valid Agent Skills `name` and `description` fields and valid values for any standard optional fields it declares. Client-specific frontmatter extensions are preserved unchanged and reported as `extensionFields`; they do not make otherwise valid upstream skills unavailable. During inspection, a Project Skill deterministically shadows a same-named User Skill; the effective skill list contains the project selection and `shadowedSkills` preserves explicit evidence of both selections.
+
+`inspect-source` accepts the optional Invocation Policy `invocation:
+"user-only"`. Inspection reports the source and effective harness declarations.
+When materialization is requested, Caddie returns a leased disposable effective
+source with both `disable-model-invocation: true` and Codex
+`policy.allow_implicit_invocation: false`; the original Skill Source remains
+unchanged.
 
 All Caddie mutations at the standard user root, user Claude compatibility root, or user registry serialize on one runtime-HOME lock and reserve recovery before publishing the scope journal. The fixed coordination files are `~/.agents/.caddie/user-mutation.lock` and `user-operation.json`; they are machine-local state, not plan effects. Ordinary exposure never replaces existing regular Claude content.
 

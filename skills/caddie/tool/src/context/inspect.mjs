@@ -246,6 +246,8 @@ function provenance(skill, source, entry) {
     repositoryRoot: skill.repositoryRoot ?? null,
     repositoryDirty: skill.repositoryDirty ?? null,
     lastReconciledFingerprint: entry?.fingerprint ?? null,
+    invocation: skill.invocation ?? null,
+    invocationEvidence: skill.invocationEvidence ?? null,
     ...(skill.derivedFrom ? { derivedFrom: structuredClone(skill.derivedFrom) } : {}),
     ...(skill.migrationRecord ? { migrationRecord: skill.migrationRecord } : {}),
   };

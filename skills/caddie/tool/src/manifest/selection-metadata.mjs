@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { invalid } from '../protocol/errors.mjs';
+import { validateInvocationPolicy } from '../invocation/project.mjs';
 
 export function validateSelectionMetadata(selection, sources, manifestPath) {
   if (Object.hasOwn(selection, 'enabled') && typeof selection.enabled !== 'boolean') {
@@ -11,6 +12,13 @@ export function validateSelectionMetadata(selection, sources, manifestPath) {
   }
   if (Object.hasOwn(selection, 'migrationRecord')) {
     validateMigrationRecord(selection.migrationRecord, manifestPath);
+  }
+  if (Object.hasOwn(selection, 'invocation')) {
+    try {
+      validateInvocationPolicy(selection.invocation);
+    } catch (cause) {
+      throw invalid('invalid-invocation-policy', cause.message, { manifestPath, received: selection.invocation });
+    }
   }
   return selection;
 }
