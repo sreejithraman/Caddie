@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -149,6 +149,25 @@ test('public exact Git materialization remains available for approved plan/apply
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal((await readFile(path.join(destination, 'SKILL.md'), 'utf8')).includes('name: alpha'), true);
   await assert.rejects(access(materialized.result.checkoutRoot));
+});
+
+test('exact Git materialization projects user-only invocation without modifying the repository', async (t) => {
+  const fixture = await makeRemote();
+  const projected = await materializeLockedGitSource({
+    sourceId: 'upstream',
+    url: fixture.remote,
+    commit: fixture.commit,
+    selectionPath: 'skills/alpha',
+    invocation: 'user-only',
+    cacheDir: path.join(fixture.root, 'cache'),
+  });
+  t.after(() => rm(projected.checkoutRoot, { recursive: true, force: true }));
+
+  assert.equal(projected.evidence.invocation.policy, 'user-only');
+  assert.equal(projected.evidence.invocation.effective.classification, 'user-only');
+  assert.match(await readFile(path.join(projected.sourcePath, 'SKILL.md'), 'utf8'), /disable-model-invocation: true/);
+  assert.match(await readFile(path.join(projected.sourcePath, 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/);
+  assert.doesNotMatch(await readFile(path.join(fixture.working, 'skills', 'alpha', 'SKILL.md'), 'utf8'), /disable-model-invocation/);
 });
 
 test('failed exact Git materialization removes its temporary checkout', async () => {

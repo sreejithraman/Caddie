@@ -17,3 +17,8 @@ Unsupported versions are inspectable as bounded evidence and are not migrated im
 Each Skill Selection may declare `enabled` as a boolean. Omitted is equivalent to `true`. `false` keeps the skill selected, resolved, installed, and updateable while asking each supported Agent Harness to disable it through that harness's native settings. Caddie records only the settings it creates as `harnessSettings` ownership in the Caddie Ledger.
 
 Each Skill Selection may declare `derivedFrom` as a non-empty array of distinct exact `{ "source", "path" }` origins. Every origin names a source in the same manifest and a relative selection path; Git source revisions remain pinned by the Caddie Lock. A selection may also point to a durable Markdown Migration Record with a scope-relative `migrationRecord` path. Absolute paths, traversal, malformed origins, duplicate origins, and non-Markdown Migration Record pointers are invalid.
+
+Each Skill Selection may also declare `invocation: "user-only"`. Caddie projects
+that Invocation Policy into the harness-specific metadata of a disposable
+effective source before fingerprinting and materialization. An absent policy
+preserves the selected source bytes and invocation behavior unchanged.

@@ -5,7 +5,8 @@ import { promisify } from 'node:util';
 import skillMetadata from '../skill-metadata.js';
 
 import { invalid } from '../protocol/errors.mjs';
-import { inspectLockedGitSource } from '../sources/index.mjs';
+import { inspectLocalSource, inspectLockedGitSource } from '../sources/index.mjs';
+import { inspectInvocation } from '../invocation/project.mjs';
 import { resolveSelectionWithinSource } from '../sources/selection-path.mjs';
 import { validateSelectionMetadata } from './selection-metadata.mjs';
 
@@ -73,6 +74,7 @@ export async function resolveSelectionsWithEvidence(manifest, {
       url: source.url,
       commit: lockEntry.commit,
       selectionPath: selection.path,
+      invocation: selection.invocation,
       cacheDir,
       gitClient,
       ...evidenceLimits,
@@ -109,6 +111,7 @@ export async function resolveSelectionsWithEvidence(manifest, {
       freshness: inspected.resolution.freshness,
       extensionFields: inspected.evidence.skill.extensionFields,
       enabled: selection.enabled ?? true,
+      invocationEvidence: inspected.evidence.invocation,
       ...lineageFields(selection),
     });
   }
@@ -148,6 +151,11 @@ async function resolveLocalSelection(manifest, source, selection) {
     throw cause;
   }
   const metadata = validatedSkillMetadata(content, skillFile, path.basename(skillPath));
+  const projected = selection.invocation
+    ? await inspectLocalSource({ root: source.path, selectionPath: selection.path, invocation: selection.invocation })
+    : null;
+  const rawInvocation = projected ? null : await inspectInvocation(skillPath);
+  const sourceInvocation = projected?.invocation ?? { policy: null, source: rawInvocation, effective: rawInvocation };
   const git = await localGitProvenance(skillPath);
   return {
     name: metadata.name,
@@ -157,8 +165,10 @@ async function resolveLocalSelection(manifest, source, selection) {
     selectedPath: selection.path,
     skillPath,
     skillFile,
-    extensionFields: metadata.extensionFields,
+    extensionFields: projected?.skill.extensionFields ?? metadata.extensionFields,
     enabled: selection.enabled ?? true,
+    invocationEvidence: sourceInvocation,
+    ...(projected ? { fingerprint: projected.fingerprint } : {}),
     ...(git ?? {}),
     ...lineageFields(selection),
   };
@@ -168,6 +178,7 @@ function lineageFields(selection) {
   return {
     ...(selection.derivedFrom ? { derivedFrom: structuredClone(selection.derivedFrom) } : {}),
     ...(selection.migrationRecord ? { migrationRecord: selection.migrationRecord } : {}),
+    ...(selection.invocation ? { invocation: selection.invocation } : {}),
   };
 }
 

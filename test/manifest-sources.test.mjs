@@ -33,6 +33,28 @@ test('manifest accepts discriminated local and Git sources', async () => {
   });
 });
 
+test('manifest accepts user-only Invocation Policy and rejects unknown values', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-manifest-invocation-'));
+  const manifestPath = path.join(root, 'caddie.json');
+  await json(manifestPath, {
+    version: 1,
+    scope: 'project',
+    sources: { local: { type: 'local', path: './skills' } },
+    selections: [{ source: 'local', path: 'fixture', invocation: 'user-only' }],
+  });
+
+  const manifest = await parseManifest(manifestPath, 'project');
+  assert.equal(manifest.skills[0].invocation, 'user-only');
+
+  await json(manifestPath, {
+    version: 1,
+    scope: 'project',
+    sources: { local: { type: 'local', path: './skills' } },
+    selections: [{ source: 'local', path: 'fixture', invocation: 'automatic' }],
+  });
+  await assert.rejects(() => parseManifest(manifestPath, 'project'), (error) => error.code === 'invalid-invocation-policy');
+});
+
 test('manifest rejects source fields from the other discriminator', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-manifest-invalid-'));
   const localPath = path.join(root, 'local.json');

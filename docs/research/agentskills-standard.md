@@ -31,6 +31,13 @@ Source: [Agent Skills specification](https://agentskills.io/specification#frontm
 
 `owner` is **not** a standard top-level field. `metadata.owner` is structurally allowed only as arbitrary, client-defined metadata, but it has no standard Agent Skills meaning. Removing both `owner` and `metadata.owner` produces a smaller, fully conforming skill as long as `name` and `description` remain. The specification illustrates optional authorship as `metadata.author`, but does not require it. ([Agent Skills specification](https://agentskills.io/specification#metadata-field))
 
+Invocation controls are also client-specific. Codex documents
+`agents/openai.yaml` with `policy.allow_implicit_invocation: false`; the commonly
+used `disable-model-invocation: true` frontmatter field is outside the portable
+Agent Skills fields above. Caddie's `user-only` Invocation Policy deliberately
+projects both declarations so one selected skill behaves consistently across
+Agent Harnesses while its Skill Source remains unchanged. ([OpenAI Build skills](https://learn.chatgpt.com/docs/build-skills.md))
+
 References to bundled files should be relative to the skill root. The specification recommends shallow references and the conventional optional directories `scripts/`, `references/`, and `assets/`. ([Agent Skills specification](https://agentskills.io/specification#file-references))
 
 ## Recommended topology

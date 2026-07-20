@@ -82,6 +82,12 @@ _Avoid_: Dependency, package install
 The Caddie Manifest declaration controlling whether a Skill Selection is exposed by Agent Harnesses. Omitted and `true` mean enabled; `false` retains the selection and installation while requesting harness-native disablement.
 _Avoid_: Uninstall, deselection, invocation policy
 
+**Invocation Policy**:
+An optional cross-harness declaration on a Skill Selection that controls whether
+an Agent Harness may choose the skill implicitly. `user-only` keeps explicit
+user invocation available while disabling implicit model invocation.
+_Avoid_: Claude flag, Codex flag, trigger override
+
 **Lineage**:
 The declared or inferred semantic ancestry between a skill and one or more originating skills.
 _Avoid_: Copy history, fork metadata
