@@ -1,0 +1,10 @@
+version = 1
+kind = "web"
+working_directory = "."
+command = ["npm", "run", "prototype:menu-bar", "--", "{port}"]
+port = "auto"
+health_check_path = "/"
+privacy = "tailnet"
+lease_hours = 24
+cleanup_policy = "lease"
+evidence_requirements = ["http", "screenshot"]

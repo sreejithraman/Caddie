@@ -6,6 +6,7 @@
     "caddie-tool": "./bin/caddie-tool.mjs"
   },
   "scripts": {
+    "prototype:menu-bar": "node prototypes/caddie-menu-bar/server.mjs",
     "test": "npm run vendor:check && node --test",
     "test:release": "npm run vendor:check && CADDIE_REQUIRE_CLAUDE=1 CADDIE_REQUIRE_CODEX=1 node --test test/claude-harness.test.cjs test/v1-acceptance.test.mjs",
     "vendor:check": "npm run vendor:yaml:check && npm run vendor:toml:check && npm run vendor:jsonc:check",
