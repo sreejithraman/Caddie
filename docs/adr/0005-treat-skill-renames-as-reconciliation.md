@@ -1,0 +1,3 @@
+# Treat Skill Renames as reconciliation
+
+A Skill Rename changes one selected and installed identity while keeping its semantic identity. Caddie represents that choice as an explicit `skill-rename` workflow that produces a reconciliation plan, rather than a new plan kind or a cleanup plan. The plan binds each old and new selection and fingerprint, adds the new managed state, removes only exact old Caddie-owned state, transfers harness settings, and writes the replacement Caddie Ledger last. Ordinary reconciliation stays additive; only Skill Rename may retire per-skill ownership during reconciliation. This split keeps removal behind an explicit semantic choice while using the existing atomic apply and recovery rules.

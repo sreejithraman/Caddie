@@ -11,7 +11,7 @@ export const claudeSettings = Object.freeze({
   ownership({ skill }) {
     return { key: skill, value: harnessSettingValue('claude') };
   },
-  render({ text, skill, desired, owned }) {
+  render({ text, skill, desired, owned, allowMissingOwned = false }) {
     const errors = [];
     const value = text.trim() ? parse(text, errors, { allowTrailingComma: false, disallowComments: true }) : {};
     if (errors.length > 0) {
@@ -26,7 +26,15 @@ export const claudeSettings = Object.freeze({
     }
     const overrides = value.skillOverrides ?? {};
     const current = overrides[skill];
-    if (owned && current !== 'off') throw invalid('harness-setting-drift', `Caddie-owned Claude setting changed for ${skill}`);
+    if (owned && current !== 'off') {
+      if (allowMissingOwned && desired && current === undefined) return {
+        text,
+        changed: false,
+        owned: false,
+        transferContainerOwnership: owned.containerCreated && Object.keys(overrides).length > 0,
+      };
+      throw invalid('harness-setting-drift', `Caddie-owned Claude setting changed for ${skill}`);
+    }
     if (desired) {
       if (!owned) return { text, changed: false, owned: false };
       const removePath = owned.containerCreated && Object.keys(overrides).length === 1

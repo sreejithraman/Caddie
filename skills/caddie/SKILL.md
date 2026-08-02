@@ -18,7 +18,7 @@ User state is fixed under `~/.agents/.caddie`; project state is fixed under `<pr
 
 For Adoption, call `inspect` with `view: "adoption"`, the scope root, and independently resolved candidates. For reconciliation, use fingerprints, provenance, and `reconciliation.kind`; modification times are supporting evidence only.
 
-Default inspection includes legacy-manager evidence. If `locate` reports `legacy-state-present`, read the State migration branch before reconciliation. Legacy conditions become mutable only through their dedicated approved workflow.
+Default inspection includes legacy-manager evidence and Unmatched Ownership. If `locate` reports `legacy-state-present`, read the State migration branch before reconciliation. Legacy conditions become mutable only through their dedicated approved workflow. Report Unmatched Ownership as exact Ledger evidence; never remove it through ordinary reconciliation.
 
 Inspection is complete when every state and provenance claim maps to returned evidence and every coverage gap is named.
 
@@ -31,7 +31,7 @@ Use this decision contract:
 | `unchanged` | Report that the installation is current. |
 | Unassessed `content-change` | Read the bounded, relevant `before` and `after` artifacts, then call `compare` with `semanticAssessments: [{ path, kind, confirmed: true }]`. |
 | Confirmed routine update | Request the exact lightweight reconciliation plan. |
-| Behavior change, rename, split, or merge | Resolve the user's intended outcome before planning. Treat an explicit mutation request as the semantic choice; ask a clarifying question only when the intended outcome is materially ambiguous. Offer a Migration Record when the reasoning is costly to reconstruct. |
+| Behavior change, rename, split, or merge | Resolve the user's intended outcome before planning. Treat an explicit mutation request as the semantic choice; ask a clarifying question only when the intended outcome is materially ambiguous. Use `skill-rename` only for confirmed, one-to-one Skill Renames. Offer a Migration Record when the reasoning is costly to reconstruct. |
 | Drift or Divergence | Preserve both sides and ask how the user wants to reconcile them. |
 | Inferred Lineage | Present the origins as a proposal; persist `derivedFrom` through the exact user-approved plan. |
 | Source invocation metadata is `one-sided-user-only` | Explain the harness gap and offer `invocation: "user-only"`; do not infer the user's semantic choice. |
@@ -76,4 +76,4 @@ Application is complete when inspection verifies the approved effects or identif
 
 For a focused request, lead with the current repository and mention relevant findings elsewhere. For an explicit bird's-eye request, inspect User Skills and every Registered Project. Project registration may appear in the first approved project mutation.
 
-Before planning Skill Enablement, Adoption, state migration, legacy-manager cleanup, Unmanagement, or skill cleanup, read the matching branch in [references/workflows.md](references/workflows.md) and satisfy its completion criterion.
+Before planning Skill Enablement, Skill Rename, Adoption, state migration, legacy-manager cleanup, Unmanagement, or skill cleanup, read the matching branch in [references/workflows.md](references/workflows.md) and satisfy its completion criterion.

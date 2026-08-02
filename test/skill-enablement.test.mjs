@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -602,6 +602,14 @@ test('Skill Enablement preserves external harness settings and stops on conflict
   }, { HOME: home });
   assert.equal(codexDrift.ok, false);
   assert.equal(codexDrift.error.code, 'harness-setting-drift');
+
+  await rm(codexPath);
+  const missingOwned = invoke('plan', {
+    workflow: 'skill-enablement', scope: { id: 'user', root: home },
+    selection: { source: 'authored', path: '.' }, enabled: true,
+  }, { HOME: home });
+  assert.equal(missingOwned.ok, false);
+  assert.equal(missingOwned.error.code, 'harness-setting-drift');
 
   await writeFile(codexPath, ownedCodex);
   await json(path.join(home, '.claude', 'settings.json'), { theme: 'dark', skillOverrides: { fixture: 'on' } });

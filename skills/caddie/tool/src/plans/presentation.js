@@ -29,6 +29,14 @@ function createPlanTitle({ kind, scope, operations, intent }) {
     return skillTitle(enabled ? 'Enable' : 'Disable', scopeName, [skill]);
   }
 
+  if (intent?.type === 'skill-rename') {
+    if (intent.renames.length === 1) {
+      const [{ from, to }] = intent.renames;
+      return boundedTitle(`Rename ${scopeName} Skill: ${cleanText(from.name)} to ${cleanText(to.name)}`);
+    }
+    return `Rename ${intent.renames.length} ${scopeName} Skills`;
+  }
+
   const materializations = operations.filter(({ type }) => type === 'materialize-skill');
   if (kind === 'reconcile' && materializations.length > 0) {
     const installs = materializations.filter(({ expectedDestination }) => expectedDestination?.state === 'absent');
