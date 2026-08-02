@@ -13,6 +13,7 @@ const {
   userLayout,
 } = require('../layout');
 const { createPlanTitle, validPlanTitle } = require('./presentation');
+const { areDisjointRenamePairs, isRenameIdentity } = require('../rename/contract');
 
 const PLAN_VERSION = 1;
 const OPERATION_TYPES = Object.freeze([...MUTATION_OPERATION_TYPES, ...RECOVERY_OPERATION_TYPES]);
@@ -65,15 +66,36 @@ function validateExpected(expected, label) {
 
 function validateIntent(intent, kind) {
   if (intent === undefined) return;
-  if (kind !== 'reconcile'
-    || !intent || typeof intent !== 'object' || Array.isArray(intent)
-    || Object.keys(intent).sort().join(',') !== 'enabled,skill,type'
-    || intent.type !== 'skill-enablement'
-    || typeof intent.enabled !== 'boolean'
-    || typeof intent.skill !== 'string'
-    || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(intent.skill)) {
+  if (kind !== 'reconcile' || !intent || typeof intent !== 'object' || Array.isArray(intent)) {
     throw new PlanError('plan intent is invalid');
   }
+  if (intent.type === 'skill-enablement') {
+    if (Object.keys(intent).sort().join(',') !== 'enabled,skill,type'
+      || typeof intent.enabled !== 'boolean'
+      || typeof intent.skill !== 'string'
+      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(intent.skill)) {
+      throw new PlanError('plan intent is invalid');
+    }
+    return;
+  }
+  if (intent.type === 'skill-rename') {
+    if (Object.keys(intent).sort().join(',') !== 'renames,type'
+      || !Array.isArray(intent.renames) || intent.renames.length === 0
+      || intent.renames.some((rename) => !validRenameIntent(rename))
+      || !areDisjointRenamePairs(intent.renames)) {
+      throw new PlanError('plan intent is invalid');
+    }
+    return;
+  }
+  throw new PlanError('plan intent is invalid');
+}
+
+function validRenameIntent(rename) {
+  return rename && typeof rename === 'object' && !Array.isArray(rename)
+    && Object.keys(rename).sort().join(',') === 'from,to'
+    && isRenameIdentity(rename.from, { fingerprint: true })
+    && isRenameIdentity(rename.to, { fingerprint: true })
+    && rename.from.name !== rename.to.name;
 }
 
 function validateOperation(operation, scope, kind, home) {
@@ -196,6 +218,24 @@ function validateOperation(operation, scope, kind, home) {
     return;
   }
 
+  if (operation.type === 'remove-materialized-skill') {
+    if (kind !== 'reconcile' || path.dirname(path.resolve(operation.path)) !== canonicalRoot) {
+      throw new PlanError('renamed-skill removal is limited to direct canonical skill children');
+    }
+    validateExpected(operation.expected, 'renamed-skill removal expected state');
+    return;
+  }
+
+  if (operation.type === 'remove-harness-exposure') {
+    if (operation.harness !== 'claude') throw new PlanError('harness exposure removal is limited to Claude compatibility');
+    const exposureRoot = claudeSkillsRoot(scope, home);
+    if (kind !== 'reconcile' || path.dirname(path.resolve(operation.path)) !== exposureRoot) {
+      throw new PlanError('renamed exposure removal is limited to direct skill links under the fixed harness root');
+    }
+    validateExpected(operation.expected, 'renamed exposure removal expected state');
+    return;
+  }
+
   if (operation.type === 'cleanup-preserved-skill') {
     if (!['cleanup', 'unmanage'].includes(kind) || path.dirname(path.resolve(operation.path)) !== canonicalRoot) {
       throw new PlanError('preserved-skill cleanup is limited to direct canonical skill children');
@@ -265,7 +305,7 @@ function buildPlan(input, internal) {
     throw new PlanError('internal plan fields must be derived by Caddie');
   }
   input.operations.forEach((operation) => validateOperation(operation, input.scope, input.kind, home));
-  validatePlanShape(input.kind, input.operations);
+  validatePlanShape(input.kind, input.operations, input.intent);
   validateIntent(input.intent, input.kind);
 
   const payload = {
@@ -303,12 +343,16 @@ function verifyPlanIntegrity(plan) {
   if (plan.title !== undefined && !validPlanTitle(plan.title)) throw new PlanError('Caddie Plan title is invalid');
   const home = planHome(plan);
   plan.operations.forEach((operation) => validateOperation(operation, plan.scope, plan.kind, home));
-  validatePlanShape(plan.kind, plan.operations);
+  validatePlanShape(plan.kind, plan.operations, plan.intent);
   validateIntent(plan.intent, plan.kind);
   return true;
 }
 
-function validatePlanShape(kind, operations) {
+function validatePlanShape(kind, operations, intent) {
+  if (intent?.type === 'skill-rename') validateSkillRenameShape(kind, operations, intent);
+  else if (operations.some(({ type }) => ['remove-materialized-skill', 'remove-harness-exposure'].includes(type))) {
+    throw new PlanError('per-skill removal during reconciliation requires Skill Rename intent');
+  }
   if (kind !== 'unmanage') return;
   const allowed = new Set(['write-registry', 'write-harness-settings', 'remove-ledger', 'cleanup-preserved-skill', 'cleanup-exposure']);
   if (operations.some(({ type }) => !allowed.has(type))) {
@@ -329,6 +373,35 @@ function validatePlanShape(kind, operations) {
   if (operations.some((operation) => operation.type === 'cleanup-exposure'
     && cleanupPaths.get(path.basename(operation.path)) !== path.resolve(path.dirname(operation.path), operation.expected.target))) {
     throw new PlanError('unmanagement exposure cleanup must match a removed skill');
+  }
+}
+
+function validateSkillRenameShape(kind, operations, intent) {
+  if (kind !== 'reconcile') throw new PlanError('Skill Rename must be a reconciliation plan');
+  const oldNames = new Set(intent.renames.map(({ from }) => from.name));
+  const newNames = new Set(intent.renames.map(({ to }) => to.name));
+  if (operations.filter(({ type }) => type === 'write-ledger').length !== 1
+    || operations.at(-1).type !== 'write-ledger') {
+    throw new PlanError('Skill Rename requires one final replacement Ledger write');
+  }
+  if (operations.filter(({ type }) => type === 'write-manifest').length > 1
+    || operations.filter(({ type }) => type === 'write-lock').length > 1) {
+    throw new PlanError('Skill Rename may write the Manifest and Lock at most once');
+  }
+  if (operations.some((operation) => operation.type === 'remove-materialized-skill'
+    && !oldNames.has(path.basename(operation.path)))) {
+    throw new PlanError('Skill Rename may remove only its exact old Materialized Skills');
+  }
+  if (operations.some((operation) => operation.type === 'remove-harness-exposure'
+    && !oldNames.has(path.basename(operation.path)))) {
+    throw new PlanError('Skill Rename may remove only its exact old harness exposure');
+  }
+  if (operations.some((operation) => operation.type === 'materialize-skill' && !newNames.has(operation.name))) {
+    throw new PlanError('Skill Rename may materialize only its exact new skills');
+  }
+  if (operations.some((operation) => operation.type === 'ensure-harness-exposure'
+    && !newNames.has(path.basename(operation.linkPath)))) {
+    throw new PlanError('Skill Rename may expose only its exact new skills');
   }
 }
 

@@ -23,6 +23,7 @@ The specification and its tracer-bullet tickets remain the baseline v1 product r
 - Enable or disable a selected skill without uninstalling it, using each harness's native settings.
 - Manage user-only invocation consistently across Codex and Claude-compatible metadata without modifying Skill Sources.
 - Detect upstream changes, local drift, renames, and derived skill lineage.
+- Apply confirmed one-to-one Skill Renames in one recoverable plan.
 - Review an exact plan before Caddie mutates managed state.
 - Inspect every registered project from one conversational bird's-eye view.
 

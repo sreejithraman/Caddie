@@ -12,7 +12,7 @@ export const codexSettings = Object.freeze({
   ownership({ skillFile }) {
     return { key: skillFile, value: harnessSettingValue('codex') };
   },
-  render({ text, skillFile, desired, owned }) {
+  render({ text, skillFile, desired, owned, allowMissingOwned = false }) {
     const token = crypto.createHash('sha256').update(skillFile).digest('hex');
     const start = `# caddie:begin skill-enablement ${token}`;
     const end = `# caddie:end skill-enablement ${token}`;
@@ -22,6 +22,9 @@ export const codexSettings = Object.freeze({
     const configs = readSkillConfigs(text).filter((entry) => entry?.path === skillFile);
     if (owned) {
       const markerCount = text.split(start).length - 1;
+      if (allowMissingOwned && desired && markerCount === 0 && !match && configs.length === 0) {
+        return unchanged(text, false);
+      }
       if (markerCount !== 1 || !match || match[0].trim() !== block
         || configs.length !== 1 || configs[0].enabled !== false) {
         throw invalid('harness-setting-drift', `Caddie-owned Codex setting changed for ${skillFile}`);

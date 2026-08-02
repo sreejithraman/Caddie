@@ -14,6 +14,8 @@ const DEFINITIONS = Object.freeze({
   'remove-ledger': descriptor('remove', 'path', 'expected', 'removed'),
   'remove-legacy-state': descriptor('remove', 'path', 'expected', 'legacy-state'),
   'remove-legacy-manager-state': descriptor('remove', 'path', 'expected', 'legacy-manager', { userStateAnchored: true }),
+  'remove-materialized-skill': descriptor('remove', 'path', 'expected', 'removed-skill'),
+  'remove-harness-exposure': descriptor('remove', 'path', 'expected', 'removed-exposure', { userHarnessAnchored: true }),
   'cleanup-preserved-skill': descriptor('remove', 'path', 'expected', 'removed'),
   'cleanup-exposure': descriptor('remove', 'path', 'expected', 'removed', { userHarnessAnchored: true }),
 });

@@ -9,7 +9,7 @@ import { classifyFingerprints, fingerprintDirectory } from '../fingerprint/index
 import { invalid } from '../protocol/errors.mjs';
 
 const require = createRequire(import.meta.url);
-const { scopeLayout } = require('../layout');
+const { harnessSettingsPath, scopeLayout } = require('../layout');
 
 export async function inspect(input, runtime = {}) {
   const context = await locate(input, runtime);
@@ -51,18 +51,21 @@ export async function inspect(input, runtime = {}) {
       context.coverage.issues.push({ scope, ...finding });
     }
     if (!selectionEvidence.coverage.complete) context.coverage.status = 'partial';
+    const ledger = await readLedger(layout.ledgerPath);
     const skills = await enrichLiveState(
       selectionEvidence.skills,
       manifest,
       scope,
       located.root,
       envHome(runtime),
+      ledger,
     );
     scopes[scope] = {
       status: 'inspected',
       manifestPath: manifest.manifestPath,
       manifestVersion: manifest.manifestVersion,
       skills,
+      unmatchedOwnership: unmatchedOwnership(ledger, skills, scope, envHome(runtime), layout),
     };
     availableSkills.push(...skills);
   }
@@ -189,10 +192,9 @@ async function inspectRegisteredProject(input, runtime, root) {
   }
 }
 
-async function enrichLiveState(skills, manifest, scopeId, scopeRoot, home) {
+async function enrichLiveState(skills, manifest, scopeId, scopeRoot, home, ledger) {
   const scope = { id: scopeId, root: scopeRoot };
   const layout = scopeLayout(scope, home);
-  const ledger = await readLedger(layout.ledgerPath);
   const entries = new Map((ledger?.entries ?? []).map((entry) => [entry.name, entry]));
   return Promise.all(skills.map(async (skill) => {
     const source = manifest.sources[skill.source];
@@ -223,6 +225,31 @@ async function enrichLiveState(skills, manifest, scopeId, scopeRoot, home) {
       }),
     };
   }));
+}
+
+function unmatchedOwnership(ledger, skills, scopeId, home, layout) {
+  if (!ledger) return { entries: [], harnessLinks: [], harnessSettings: [] };
+  const scope = { id: scopeId, root: layout.root };
+  const selectedNames = new Set(skills.map(({ name }) => name));
+  const entries = (ledger.entries ?? []).filter((entry) => {
+    const skill = skills.find((candidate) => candidate.name === entry.name);
+    if (!skill) return true;
+    if (skill.reconciliation?.kind === 'in-place'
+      || typeof entry.path !== 'string' || typeof skill.installationPath !== 'string'
+      || path.resolve(entry.path) !== path.resolve(skill.installationPath)) return true;
+    const sourceId = entry.sourceId ?? entry.source;
+    return typeof sourceId === 'string' && typeof entry.selectedPath === 'string'
+      && (sourceId !== skill.source || entry.selectedPath !== skill.selectedPath);
+  });
+  return {
+    entries: structuredClone(entries),
+    harnessLinks: (ledger.harnessLinks ?? []).filter((link) => !selectedNames.has(path.basename(link))
+      || path.resolve(link) !== path.resolve(layout.claudeSkillsRoot, path.basename(link))),
+    harnessSettings: structuredClone((ledger.harnessSettings ?? []).filter((entry) => {
+      if (!selectedNames.has(entry.skill)) return true;
+      try { return path.resolve(entry.settingsPath) !== harnessSettingsPath(entry.harness, scope, home); } catch { return true; }
+    })),
+  };
 }
 
 function envHome(runtime = {}) {

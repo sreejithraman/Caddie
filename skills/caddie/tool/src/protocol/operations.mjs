@@ -15,6 +15,7 @@ import { authorizedUserHarnessLinks, loadOwnershipLedger, validateLedgerProposal
 import { planProjectRegistration } from '../registry/plan-registration.mjs';
 import { createUserStateMigrationPlan, inspectUserStateMigration } from '../migration/user-state.mjs';
 import { createLegacyManagerCleanupPlan, inspectLegacyManagerState } from '../legacy/manager-state.mjs';
+import { createSkillRenamePlan } from '../rename/index.mjs';
 import {
   createEnablementPlan,
   createUnmanagementWithEnablementCleanup,
@@ -123,6 +124,11 @@ async function planOperation(input, runtime) {
       if (!enablement.plan) return { ...enablement, coverage: completeCoverage() };
       plan = enablement.plan;
       result = enablement;
+    } else if (input.workflow === 'skill-rename') {
+      const registration = await planProjectRegistration(input, runtime);
+      plan = await createSkillRenamePlan({
+        ...input, home, scope: registration.scope, registration: registration.operation,
+      });
     } else if (input.workflow === 'unmanagement') {
       plan = await createUnmanagementWithEnablementCleanup(input, home);
     } else if (input.workflow === 'cleanup') {
@@ -159,8 +165,10 @@ async function planOperation(input, runtime) {
 
 function rejectInternalPlanInput(input) {
   if (Object.hasOwn(input, 'intent')
-    || input.operations?.some(({ type }) => type === 'write-harness-settings')) {
-    throw invalid('internal-plan-field', 'Skill Enablement intent and harness settings operations are derived by Caddie');
+    || input.operations?.some(({ type }) => [
+      'write-harness-settings', 'remove-materialized-skill', 'remove-harness-exposure',
+    ].includes(type))) {
+    throw invalid('internal-plan-field', 'Plan intent, harness settings, and per-skill reconciliation removals are derived by Caddie');
   }
 }
 

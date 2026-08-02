@@ -309,7 +309,10 @@ async function verifyPreconditions(plan, ledger) {
     if (definition.strategy === 'directory-replace') {
       if (expected.state !== 'absent') {
         const owned = (ledger.entries || []).find((entry) => path.resolve(entry.path) === path.resolve(operation.destinationPath));
-        if (!owned || owned.fingerprint !== expected.fingerprint) {
+        const ownedFingerprint = typeof owned?.fingerprint === 'string'
+          ? owned.fingerprint
+          : owned?.fingerprint?.complete === true ? owned.fingerprint.digest : null;
+        if (!owned || ownedFingerprint !== expected.fingerprint) {
           throw new ApplyError('existing skill is unmanaged or no longer matches Caddie ownership', 'collision', { path: operation.destinationPath });
         }
       }

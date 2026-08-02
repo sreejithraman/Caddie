@@ -25,6 +25,10 @@ export async function parseManifest(manifestPath, expectedScope, scopeRoot = pat
   } catch {
     throw invalid('invalid-manifest-json', `Caddie Manifest is not valid JSON: ${manifestPath}`, { manifestPath });
   }
+  return parseManifestValue(value, expectedScope, scopeRoot, manifestPath);
+}
+
+export function parseManifestValue(value, expectedScope, scopeRoot, manifestPath = 'planned Caddie Manifest') {
   if (!value || Array.isArray(value) || typeof value !== 'object') {
     throw invalid('invalid-manifest', `Caddie Manifest must be an object: ${manifestPath}`, { manifestPath });
   }

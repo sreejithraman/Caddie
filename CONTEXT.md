@@ -110,6 +110,10 @@ _Avoid_: In-place Skill, vendored skill, symlinked skill
 The machine-local record of Materialized Skills, harness-specific links, and harness settings Caddie owns, including their last reconciled state.
 _Avoid_: Caddie Lock, manifest, inventory
 
+**Unmatched Ownership**:
+Caddie Ledger ownership that has no matching current Skill Selection.
+_Avoid_: Orphaned ownership, stale installation
+
 **Adoption**:
 The preservation-first process of bringing an existing skill installation under Caddie ownership.
 _Avoid_: Import, reinstall, takeover
@@ -139,6 +143,10 @@ _Avoid_: Caddie Plan, automatic migration, update
 **Migration Record**:
 A durable narrative explaining an accepted semantic interpretation that would be expensive to reconstruct.
 _Avoid_: Migration log, changelog entry
+
+**Skill Rename**:
+An explicit, one-to-one replacement of a Skill Selection that keeps its semantic identity under a new name within the same scope.
+_Avoid_: Skill migration, inferred rename
 
 ## Change execution
 

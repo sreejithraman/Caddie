@@ -85,13 +85,15 @@ export async function createEnablementPlan(input, runtime = {}) {
   };
 }
 
-export async function planHarnessSettings({ scope, home, skill, skillFile, enabled, ownership = [], states = new Map() }) {
+export async function planHarnessSettings({
+  scope, home, skill, skillFile, enabled, ownership = [], states = new Map(), allowMissingOwned = false,
+}) {
   if (typeof enabled !== 'boolean') throw invalid('invalid-skill-enabled', 'Harness settings enabled must be a boolean');
   let nextOwnership = [...ownership];
   const operations = [];
   for (const adapter of settingsAdapters) {
     const rendered = await renderHarness({
-      adapter, scope, home, skill, skillFile, desired: enabled, ownership: nextOwnership, states,
+      adapter, scope, home, skill, skillFile, desired: enabled, ownership: nextOwnership, states, allowMissingOwned,
     });
     if (rendered.operation) operations.push(rendered.operation);
     nextOwnership = rendered.ownership;
@@ -169,7 +171,7 @@ export function enablementForMaterialization(manifest, materialization, scopeRoo
   return exactLocal[0].enabled ?? true;
 }
 
-async function renderHarness({ adapter, scope, home, skill, skillFile, desired, ownership, states }) {
+async function renderHarness({ adapter, scope, home, skill, skillFile, desired, ownership, states, allowMissingOwned }) {
   const settings = harnessSettingsLayout(adapter.harness, scope, home);
   const owned = ownership.find((entry) => entry.harness === adapter.harness
     && entry.skill === skill && entry.settingsPath === settings.path);
@@ -183,7 +185,7 @@ async function renderHarness({ adapter, scope, home, skill, skillFile, desired, 
         : { state: 'absent' },
     };
   }
-  const rendered = adapter.render({ text: current.text, skill, skillFile, desired, owned });
+  const rendered = adapter.render({ text: current.text, skill, skillFile, desired, owned, allowMissingOwned });
   const nextOwnership = ownership.filter((entry) => entry !== owned);
   if (rendered.transferContainerOwnership) {
     const index = nextOwnership.findIndex((entry) => entry.harness === adapter.harness

@@ -13,6 +13,14 @@ Use `plan.workflow: "skill-enablement"` with the exact scope, `{ "source", "path
 
 Present the manifest change, native settings paths, ownership effects, and harness reload expectations in the Caddie Plan. This branch is complete when post-apply `inspect` reports the requested `enabled` value and the closest native harness surface confirms the same availability. Restart or reload Codex when its current session predates the setting.
 
+## Skill Rename
+
+Use `plan.workflow: "skill-rename"` only after the user accepts one-to-one semantic identity continuity. Send one or more disjoint pairs whose `from` and `to` values each contain the exact `name`, `source`, and `path`. Send the exact final Manifest, an optional final Lock, and one inspected materialization for every destination. Materializations bind `name`, `sourceId`, `selectedPath`, `sourcePath`, `sourceFingerprint`, and any disposable-source cleanup lease.
+
+The current Manifest may select the old or new side of each pair. The final Manifest must select only the new side. Caddie derives exact old file and Claude-link removal, owned settings transfer, and the replacement Ledger. Missing old owned state and exact new owned state may converge. Stop when old content has Drift, owned links or settings changed, pairs overlap, or new paths contain unowned content.
+
+Present each pair, any content or policy change, all removals, and recovery behavior. Apply one approved plan. Verify the final Manifest and Lock, new canonical directories and Claude links, native settings, the replacement Ledger, and empty Unmatched Ownership for every renamed identity. This branch is complete when only the new identities remain under Caddie ownership and normal inspection confirms the requested final state.
+
 ## Adoption
 
 Use `plan.workflow: "adoption"` with exact-match Adoption evidence. Preserve modified, unknown, colliding, and permission-blocked entries. A user-scope adoption keeps each real directory under `~/.agents/skills` and adds its Claude compatibility link.
