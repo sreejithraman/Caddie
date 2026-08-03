@@ -27,8 +27,8 @@ try {
     if (process.env.CADDIE_TEST_PAUSE_BEFORE_AUTHORIZE_MS) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.CADDIE_TEST_PAUSE_BEFORE_AUTHORIZE_MS));
     }
-    child.stdio[4].end(`${authorization}\n`);
-    await spawned;
+    const authorized = authorizeChild(child.stdio[4], authorization);
+    await Promise.all([spawned, authorized]);
     await waitForLease(child, exit);
     await claim.release();
     claim = null;
@@ -186,6 +186,15 @@ function waitForSpawn(child) {
   return new Promise((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', reject);
+  });
+}
+
+function authorizeChild(stream, authorization) {
+  return new Promise((resolve, reject) => {
+    stream.once('error', (error) => {
+      reject(new Error(`the Tool lease runner authorization failed: ${error.message}`));
+    });
+    stream.end(`${authorization}\n`, resolve);
   });
 }
 
