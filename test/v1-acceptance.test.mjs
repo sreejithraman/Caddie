@@ -41,7 +41,7 @@ async function v1Lifecycle(useLastGoodTool) {
 
   const installedTool = path.join(home, '.agents', 'skills', 'caddie', 'tool', 'caddie.mjs');
   const tool = useLastGoodTool
-    ? path.join(repositoryRoot, 'test', 'fixtures', 'last-good-caddie-tool.mjs')
+    ? path.join(repositoryRoot, 'test-support', 'last-good-caddie-tool.mjs')
     : installedTool;
   const authoredRoot = path.join(root, 'SreeStack', 'skills');
   const authored = path.join(authoredRoot, 'review-sweep');

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { runTool } from '../../skills/caddie/tool/src/protocol/run-tool.mjs';
-import { extendedOperations } from '../../skills/caddie/tool/src/protocol/operations.mjs';
+import { runTool } from '../skills/caddie/tool/src/protocol/run-tool.mjs';
+import { extendedOperations } from '../skills/caddie/tool/src/protocol/operations.mjs';
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
