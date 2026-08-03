@@ -25,7 +25,7 @@ func acquireLifecycleClaim(supportRoot: URL, fileManager: FileManager) throws ->
     let deadline = Date().addingTimeInterval(15)
     while true {
         if let claim = try publishClaim(at: lock, supportRoot: supportRoot, fileManager: fileManager) { return claim }
-        let observed = try readLifecycleOwner(directory: lock, fileManager: fileManager)
+        guard let observed = try readLifecycleOwnerIfPresent(directory: lock, fileManager: fileManager) else { continue }
         if processIsAlive(observed.processID) {
             guard Date() < deadline else { throw ReleaseRuntimeFault.lifecycleClaimBusy }
             usleep(20_000)
@@ -88,6 +88,38 @@ private func publishClaim(
         try? fileManager.removeItem(at: temporary)
         throw error
     }
+}
+
+private struct LifecyclePathIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
+func readLifecycleOwnerIfPresent(
+    directory: URL,
+    fileManager: FileManager = .default,
+    reader: (URL, FileManager) throws -> LifecycleOwner = readLifecycleOwner
+) throws -> LifecycleOwner? {
+    guard let before = try lifecyclePathIdentity(directory) else { return nil }
+    do {
+        let owner = try reader(directory, fileManager)
+        guard try lifecyclePathIdentity(directory) == before else { return nil }
+        return owner
+    }
+    catch let fault as ReleaseRuntimeFault where fault == .malformedLifecycleClaim {
+        guard try lifecyclePathIdentity(directory) == before else { return nil }
+        throw fault
+    }
+}
+
+private func lifecyclePathIdentity(_ directory: URL) throws -> LifecyclePathIdentity? {
+    var metadata = stat()
+    if lstat(directory.path, &metadata) == 0 {
+        guard metadata.st_mode & S_IFMT != S_IFLNK else { throw ReleaseRuntimeFault.malformedLifecycleClaim }
+        return LifecyclePathIdentity(device: metadata.st_dev, inode: metadata.st_ino)
+    }
+    if errno == ENOENT { return nil }
+    throw ReleaseRuntimeFault.malformedLifecycleClaim
 }
 
 func readLifecycleOwner(directory: URL, fileManager: FileManager = .default) throws -> LifecycleOwner {
