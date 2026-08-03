@@ -186,6 +186,99 @@ final class CaddieReleaseRuntimeTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: newest.lastGood.releasePath))
     }
 
+    func testIdleLifecycleReservationDrainsAnExistingLeaseAndBlocksANewLease() async throws {
+        let fixture = try Fixture()
+        let runtime = CaddieReleaseRuntime(supportRoot: fixture.support)
+        let binding = try await runtime.stageCheckAndActivate(release: fixture.makeRelease(id: "current")) { _ in }.active
+        let existing = try await runtime.acquireLease(for: binding, processID: getpid())
+        let idleTask = Task { try await runtime.acquireIdleLifecycleReservation() }
+        let lock = fixture.support.appendingPathComponent("Release Lifecycle.lock", isDirectory: true)
+        while !FileManager.default.fileExists(atPath: lock.path) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        let contender = LeaseAttemptState()
+        let newLeaseTask = Task {
+            await contender.didStart()
+            let lease = try await CaddieReleaseRuntime(supportRoot: fixture.support)
+                .acquireLease(for: binding, processID: getpid())
+            await contender.didAcquire()
+            return lease
+        }
+        while !(await contender.started) { try await Task.sleep(for: .milliseconds(5)) }
+        try await Task.sleep(for: .milliseconds(60))
+        var contenderAcquired = await contender.acquired
+        XCTAssertFalse(contenderAcquired)
+
+        try await runtime.releaseLease(existing)
+        let idle = try await idleTask.value
+        contenderAcquired = await contender.acquired
+        XCTAssertFalse(contenderAcquired)
+        idle.release()
+
+        let next = try await newLeaseTask.value
+        contenderAcquired = await contender.acquired
+        XCTAssertTrue(contenderAcquired)
+        try await runtime.releaseLease(next)
+    }
+
+    func testIdleLifecycleReservationReleasesItsClaimOnCancellationAndMalformedLease() async throws {
+        let fixture = try Fixture()
+        let runtime = CaddieReleaseRuntime(supportRoot: fixture.support)
+        let binding = try await runtime.stageCheckAndActivate(release: fixture.makeRelease(id: "current")) { _ in }.active
+        let lease = try await runtime.acquireLease(for: binding, processID: getpid())
+        let lock = fixture.support.appendingPathComponent("Release Lifecycle.lock", isDirectory: true)
+        let waiting = Task { try await runtime.acquireIdleLifecycleReservation() }
+        while !FileManager.default.fileExists(atPath: lock.path) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        waiting.cancel()
+        do {
+            _ = try await waiting.value
+            XCTFail("cancellation should stop the idle reservation")
+        } catch is CancellationError {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path))
+        try await runtime.releaseLease(lease)
+
+        let malformed = fixture.support.appendingPathComponent("Leases/bad.json")
+        try Data("not json".utf8).write(to: malformed)
+        await XCTAssertThrowsFault(.malformedLease) {
+            _ = try await runtime.acquireIdleLifecycleReservation()
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path))
+    }
+
+    func testIdleLifecycleReservationAcceptsALeaseRemovedAfterEnumeration() async throws {
+        let fixture = try Fixture()
+        let owner = CaddieReleaseRuntime(supportRoot: fixture.support)
+        let binding = try await owner.stageCheckAndActivate(release: fixture.makeRelease(id: "current")) { _ in }.active
+        let fileManager = VanishingLeaseFileManager(point: .afterEnumeration)
+        let runtime = CaddieReleaseRuntime(supportRoot: fixture.support, fileManager: fileManager)
+        let lease = try await runtime.acquireLease(for: binding, processID: getpid())
+
+        let idle = try await runtime.acquireIdleLifecycleReservation()
+        idle.release()
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.support.appendingPathComponent("Leases/\(lease.id.uuidString).json").path
+        ))
+    }
+
+    func testIdleLifecycleReservationAcceptsADeadLeaseRemovedBeforeCleanup() async throws {
+        let fixture = try Fixture()
+        let leases = fixture.support.appendingPathComponent("Leases", isDirectory: true)
+        try FileManager.default.createDirectory(at: leases, withIntermediateDirectories: true)
+        let lease = ToolLease(id: UUID(), releaseID: "current", processID: Int32.max, createdAt: Date())
+        try JSONEncoder.caddie.encode(lease).write(to: leases.appendingPathComponent("\(lease.id.uuidString).json"))
+        let fileManager = VanishingLeaseFileManager(point: .beforeDeadLeaseRemoval)
+        let runtime = CaddieReleaseRuntime(supportRoot: fixture.support, fileManager: fileManager)
+
+        let idle = try await runtime.acquireIdleLifecycleReservation()
+        idle.release()
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: leases.appendingPathComponent("\(lease.id.uuidString).json").path
+        ))
+    }
+
     func testMissingMalformedAndUnsafeManifestsDoNotCreateManagedState() async throws {
         let fixture = try Fixture()
         let runtime = CaddieReleaseRuntime(supportRoot: fixture.support)
@@ -569,6 +662,45 @@ private func writeJSONObject(_ value: [String: Any], to url: URL) throws {
 
 private struct SimulatedCrash: Error {}
 private enum StatusFault: Error { case failed }
+
+private actor LeaseAttemptState {
+    private(set) var started = false
+    private(set) var acquired = false
+    func didStart() { started = true }
+    func didAcquire() { acquired = true }
+}
+
+private final class VanishingLeaseFileManager: FileManager, @unchecked Sendable {
+    enum Point { case afterEnumeration, beforeDeadLeaseRemoval }
+
+    private let point: Point
+
+    init(point: Point) {
+        self.point = point
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        let contents = try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
+        if point == .afterEnumeration, url.lastPathComponent == "Leases",
+           let lease = contents.first(where: { $0.pathExtension == "json" }) {
+            try super.removeItem(at: lease)
+        }
+        return contents
+    }
+
+    override func removeItem(at URL: URL) throws {
+        if point == .beforeDeadLeaseRemoval, URL.deletingLastPathComponent().lastPathComponent == "Leases",
+           fileExists(atPath: URL.path) {
+            try super.removeItem(at: URL)
+        }
+        try super.removeItem(at: URL)
+    }
+}
 
 private final class Fixture {
     let root: URL

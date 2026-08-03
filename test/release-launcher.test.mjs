@@ -23,6 +23,30 @@ test('the Caddie Skill launcher serves current and prior requests through the ac
   assert.equal(JSON.parse(prior.stdout).version, 1);
 });
 
+test('a held cycle does not block a concurrent status after its Tool lease starts', async () => {
+  const fixture = await releaseFixture();
+  const cycle = spawn(process.execPath, [launcher], {
+    cwd: fixture.root,
+    env: {
+      ...process.env, HOME: fixture.home, CADDIE_TOOL_LAUNCH_RECORD: fixture.record,
+      CADDIE_TEST_TOOL_HOLD_MS: '800',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  cycle.stdin.end(JSON.stringify({
+    version: 2, requestId: 'held-cycle', caller: 'app', operation: 'cycle',
+    input: { idempotencyId: 'held-cycle', mode: 'observe-only' },
+  }));
+  await waitForLease(path.join(fixture.root, 'Leases'));
+  await waitForMissing(path.join(fixture.root, 'Release Lifecycle.lock'));
+
+  const status = invoke(fixture, { version: 2, requestId: 'concurrent-status', caller: 'app', operation: 'status', input: {} });
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).requestId, 'concurrent-status');
+  assert.equal(cycle.exitCode, null);
+  await new Promise((resolve) => cycle.once('exit', resolve));
+});
+
 test('a missing, malformed, mismatched, or symlinked binding cannot start the Tool', async () => {
   const fixture = await releaseFixture();
   const valid = JSON.parse(await readFile(fixture.record, 'utf8'));
@@ -270,6 +294,19 @@ async function waitForLease(directory) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('timed out waiting for Tool lease');
+}
+
+async function waitForMissing(target) {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    try {
+      await readdir(target);
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${target} to be removed`);
 }
 
 async function waitForProcessExit(pid) {

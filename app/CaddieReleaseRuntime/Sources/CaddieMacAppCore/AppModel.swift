@@ -126,6 +126,19 @@ public final class AppModel: ObservableObject {
 
     public func openLoginItemSettings() { loginItem.openSystemSettings() }
 
+    @discardableResult
+    public func prepareForAppRemoval() -> Bool {
+        if loginItem.status == .notRegistered || loginItem.status == .notFound { return true }
+        do {
+            try loginItem.setEnabled(false)
+            loginItemStatus = loginItem.status
+            return true
+        } catch {
+            lastError = "Caddie could not turn off Start at login. \(readable(error))"
+            return false
+        }
+    }
+
     public func refreshLoginStatus() { loginItemStatus = loginItem.status }
 
     public func grantAccess(to exactPath: String) {
