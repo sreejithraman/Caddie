@@ -297,6 +297,7 @@ function validOutsideEffect(value) {
     && (value.outcome === null || ['delivered', 'failed', 'unavailable', 'opened'].includes(value.outcome))
     && (value.kind !== 'notification' || (safeId(value.attentionId) && ['opened', 'priority-raised'].includes(value.reason)))
     && (value.kind !== 'agent-handoff' || (['codex', 'claude'].includes(value.provider)
+      && (value.attentionId === undefined || safeId(value.attentionId))
       && boundedText(value.workFolder, 4096) && boundedText(value.prompt, 4096)));
 }
 

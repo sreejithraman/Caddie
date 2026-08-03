@@ -7,7 +7,7 @@ struct LifecycleClaim {
     let fileManager: FileManager
 
     func release() {
-        guard let owner = try? readLifecycleOwner(directory: directory), owner.nonce == nonce else { return }
+        guard let owner = try? readLifecycleOwner(directory: directory, fileManager: fileManager), owner.nonce == nonce else { return }
         try? fileManager.removeItem(at: directory)
     }
 }
@@ -25,7 +25,7 @@ func acquireLifecycleClaim(supportRoot: URL, fileManager: FileManager) throws ->
     let deadline = Date().addingTimeInterval(15)
     while true {
         if let claim = try publishClaim(at: lock, supportRoot: supportRoot, fileManager: fileManager) { return claim }
-        let observed = try readLifecycleOwner(directory: lock)
+        let observed = try readLifecycleOwner(directory: lock, fileManager: fileManager)
         if processIsAlive(observed.processID) {
             guard Date() < deadline else { throw ReleaseRuntimeFault.lifecycleClaimBusy }
             usleep(20_000)
@@ -48,10 +48,11 @@ private func takeOverDeadClaim(
 ) throws {
     let gateURL = supportRoot.appendingPathComponent("Release Lifecycle.takeover", isDirectory: true)
     guard let gate = try publishClaim(at: gateURL, supportRoot: supportRoot, fileManager: fileManager) else {
+        try? migrateBackgroundFileProtection(at: gateURL.appendingPathComponent("owner.json"), fileManager: fileManager)
         throw ReleaseRuntimeFault.takeoverClaimPresent
     }
     defer { gate.release() }
-    let current = try readLifecycleOwner(directory: lock)
+    let current = try readLifecycleOwner(directory: lock, fileManager: fileManager)
     guard current == observed, !processIsAlive(current.processID) else { return }
     let stale = supportRoot.appendingPathComponent("Release Lifecycle.stale-\(current.nonce.uuidString)")
     do {
@@ -74,7 +75,7 @@ private func publishClaim(
         let owner = LifecycleOwner(version: 1, nonce: nonce, processID: getpid(), createdAt: Date())
         try JSONEncoder.caddie.encode(owner).write(
             to: temporary.appendingPathComponent("owner.json"),
-            options: [.atomic, .completeFileProtectionUnlessOpen]
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
         )
         do {
             try fileManager.moveItem(at: temporary, to: destination)
@@ -89,17 +90,26 @@ private func publishClaim(
     }
 }
 
-func readLifecycleOwner(directory: URL) throws -> LifecycleOwner {
+func readLifecycleOwner(directory: URL, fileManager: FileManager = .default) throws -> LifecycleOwner {
+    let ownerURL = directory.appendingPathComponent("owner.json")
     let data: Data
-    do { data = try Data(contentsOf: directory.appendingPathComponent("owner.json")) }
+    do { data = try Data(contentsOf: ownerURL) }
     catch { throw ReleaseRuntimeFault.malformedLifecycleClaim }
     do {
         try StrictJSON.validateLifecycleOwner(data)
         let owner = try JSONDecoder.caddie.decode(LifecycleOwner.self, from: data)
         guard owner.version == 1, owner.processID > 0 else { throw ReleaseRuntimeFault.malformedLifecycleClaim }
+        try migrateBackgroundFileProtection(at: ownerURL, fileManager: fileManager)
         return owner
     } catch let fault as ReleaseRuntimeFault { throw fault }
     catch { throw ReleaseRuntimeFault.malformedLifecycleClaim }
+}
+
+func migrateBackgroundFileProtection(at url: URL, fileManager: FileManager) throws {
+    if try url.resourceValues(forKeys: [.fileProtectionKey]).fileProtection == .completeUntilFirstUserAuthentication { return }
+    try fileManager.setAttributes(
+        [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path
+    )
 }
 
 private func processIsAlive(_ processID: Int32) -> Bool {

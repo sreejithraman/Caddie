@@ -1,0 +1,55 @@
+{
+  "version": 2,
+  "revision": 7,
+  "snapshot": null,
+  "authorizations": {},
+  "attention": [
+    {
+      "version": 2,
+      "id": "attention-prior-v2",
+      "stableKey": "prior-subject\u0000prior-code\u0000prior-condition",
+      "subjectId": "prior-subject",
+      "code": "prior-code",
+      "condition": "prior-condition",
+      "priority": "high",
+      "state": "open",
+      "observations": 1,
+      "createdAt": "2026-08-03T12:00:00.000Z",
+      "updatedAt": "2026-08-03T12:00:00.000Z"
+    }
+  ],
+  "activity": [],
+  "pendingActions": [],
+  "outsideEffects": [
+    {
+      "version": 2,
+      "id": "effect-prior-v2",
+      "kind": "notification",
+      "subjectId": "prior-subject",
+      "outcome": null,
+      "createdAt": "2026-08-03T12:00:00.000Z",
+      "attentionId": "attention-prior-v2",
+      "reason": "opened"
+    },
+    {
+      "version": 2,
+      "id": "effect-prior-v2-handoff",
+      "kind": "agent-handoff",
+      "subjectId": "prior-subject",
+      "outcome": null,
+      "createdAt": "2026-08-03T12:00:00.000Z",
+      "provider": "codex",
+      "workFolder": "/tmp/prior-work-folder",
+      "prompt": "Review the prior Attention item."
+    }
+  ],
+  "receipts": [],
+  "idempotencyTombstones": [],
+  "pagingKey": "0000000000000000000000000000000000000000000000000000000000000000",
+  "pause": {
+    "active": false,
+    "reason": null,
+    "safetyTriggered": false,
+    "startedAt": null
+  }
+}

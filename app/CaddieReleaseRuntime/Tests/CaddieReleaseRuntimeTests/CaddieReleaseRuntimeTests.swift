@@ -327,6 +327,72 @@ final class CaddieReleaseRuntimeTests: XCTestCase {
         XCTAssertEqual((raw["active"] as! [String: Any])["releaseID"] as? String, "second")
     }
 
+    func testLifecycleClaimRemainsReadableAfterTheFirstLogin() throws {
+        let fixture = try Fixture()
+        let claim = try acquireLifecycleClaim(supportRoot: fixture.support, fileManager: .default)
+        defer { claim.release() }
+
+        let owner = claim.directory.appendingPathComponent("owner.json")
+        XCTAssertEqual(
+            try owner.resourceValues(forKeys: [.fileProtectionKey]).fileProtection,
+            .completeUntilFirstUserAuthentication
+        )
+        XCTAssertEqual(try readLifecycleOwner(directory: claim.directory).nonce, claim.nonce)
+    }
+
+    func testLaunchRecordPublicLeaseAndLifecycleClaimUseBackgroundProtection() async throws {
+        let fixture = try Fixture()
+        let runtime = CaddieReleaseRuntime(supportRoot: fixture.support)
+        let record = try await runtime.stageCheckAndActivate(release: fixture.makeRelease(id: "protected")) { _ in }
+        let launchRecord = fixture.support.appendingPathComponent(CaddieReleaseRuntime.launchRecordName)
+        XCTAssertEqual(try launchRecord.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+
+        let lease = try await runtime.acquireLease(for: record.active, processID: getpid())
+        defer { Task { try? await runtime.releaseLease(lease) } }
+        let leaseURL = fixture.support.appendingPathComponent("Leases/\(lease.id.uuidString).json")
+        XCTAssertEqual(try leaseURL.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+
+        let claim = try acquireLifecycleClaim(supportRoot: fixture.root.appendingPathComponent("claim-protection"), fileManager: .default)
+        defer { claim.release() }
+        let ownerURL = claim.directory.appendingPathComponent("owner.json")
+        XCTAssertEqual(try ownerURL.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+    }
+
+    func testOldProtectionMigratesBeforeLaunchLeaseAndLifecycleReads() async throws {
+        let fixture = try Fixture()
+        let runtime = CaddieReleaseRuntime(supportRoot: fixture.support)
+        let record = try await runtime.stageCheckAndActivate(release: fixture.makeRelease(id: "migration")) { _ in }
+        let launchRecord = fixture.support.appendingPathComponent(CaddieReleaseRuntime.launchRecordName)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: launchRecord.path)
+        _ = try await runtime.checkedLaunchRecord()
+        XCTAssertEqual(try launchRecord.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+
+        let lease = try await runtime.acquireLease(for: record.active, processID: getpid())
+        let leaseURL = fixture.support.appendingPathComponent("Leases/\(lease.id.uuidString).json")
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: leaseURL.path)
+        _ = try await runtime.cleanUnusedReleases()
+        XCTAssertEqual(try leaseURL.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+        try await runtime.releaseLease(lease)
+
+        let claimRoot = fixture.root.appendingPathComponent("old-claim-protection")
+        let claim = try acquireLifecycleClaim(supportRoot: claimRoot, fileManager: .default)
+        let ownerURL = claim.directory.appendingPathComponent("owner.json")
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: ownerURL.path)
+        _ = try readLifecycleOwner(directory: claim.directory)
+        XCTAssertEqual(try ownerURL.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+        claim.release()
+
+        let takeoverRoot = fixture.root.appendingPathComponent("old-takeover-protection")
+        try staleLifecycleClaim(at: takeoverRoot)
+        let gate = takeoverRoot.appendingPathComponent("Release Lifecycle.takeover", isDirectory: true)
+        try FileManager.default.createDirectory(at: gate, withIntermediateDirectories: true)
+        let owner = LifecycleOwner(version: 1, nonce: UUID(), processID: Int32.max, createdAt: Date())
+        let takeoverOwner = gate.appendingPathComponent("owner.json")
+        try JSONEncoder.caddie.encode(owner).write(to: takeoverOwner, options: [.noFileProtection])
+        XCTAssertThrowsError(try acquireLifecycleClaim(supportRoot: takeoverRoot, fileManager: .default))
+        XCTAssertEqual(try takeoverOwner.resourceValues(forKeys: [.fileProtectionKey]).fileProtection, .completeUntilFirstUserAuthentication)
+    }
+
     func testPublicLeaseAndCleanupRaceCannotDeleteALeasedRelease() async throws {
         let fixture = try Fixture()
         let owner = CaddieReleaseRuntime(supportRoot: fixture.support)

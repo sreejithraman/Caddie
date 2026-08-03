@@ -116,8 +116,8 @@ final class MenuCacheTests: XCTestCase {
             version: 2, state: "ready", revision: safetyPaused ? 1 : 2,
             freshness: .init(checkedAt: "2026-08-03T14:00:00Z"),
             summary: .init(selections: 0, current: 0, ready: 0, attention: safetyPaused ? 1 : 0),
-            sources: [], userSkills: [], projectSkills: [], readyWork: [], attention: [], activity: [],
-            pendingActions: [],
+            sources: [], userSkills: [], projectSkills: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
+            pendingActions: [], outsideEffects: [],
             pause: .init(active: safetyPaused, reason: safetyPaused ? "verification-failed" : nil, safetyTriggered: safetyPaused),
             watchSet: [], recovery: nil
         )
@@ -131,6 +131,9 @@ private actor CountingTool: ToolCalling {
     init(resumeResult: Result<AppSnapshot, TestFault> = .success(.empty)) { self.resumeResult = resumeResult }
     func status() async throws -> AppSnapshot { callCount += 1; return .empty }
     func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot { callCount += 1; return .empty }
+    func request(_ intent: AppActionIntent) async throws -> AppSnapshot { callCount += 1; return .empty }
+    func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot { callCount += 1; return .empty }
+    func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot { callCount += 1; return .empty }
     func requestResume() async throws -> AppSnapshot {
         callCount += 1
         safetyResumeCount += 1

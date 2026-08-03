@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,6 +9,8 @@ import { createRequire } from 'node:module';
 
 import { createManagementModule, ManagementError } from '../skills/caddie/tool/src/management/index.mjs';
 import { inspectLocalGitSource, localGitCommandPolicy } from '../skills/caddie/tool/src/management/local-source.mjs';
+import { observeAttention } from '../skills/caddie/tool/src/management/attention.mjs';
+import { compactManagementState } from '../skills/caddie/tool/src/management/snapshot.mjs';
 import {
   MAX_STATE_BYTES, ManagementStateError, emptyManagementState, readManagementState, writeManagementState,
 } from '../skills/caddie/tool/src/management/formats.mjs';
@@ -93,6 +95,83 @@ test('versioned requests and durable state reject extra, malformed, and newer in
     (error) => error instanceof ManagementStateError && error.code === 'malformed-management-state',
   );
   assert.equal(await readFile(statePath, 'utf8'), '{bad json\n');
+});
+
+test('new and prior exact v2 state shapes remain mutually readable across Tool rollback', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-prior-v2-'));
+  const statePath = path.join(root, 'management.json');
+  await cp(path.join(process.cwd(), 'test', 'fixtures', 'prior-v2-management-state.json'), statePath);
+  const prior = await readManagementState(statePath);
+  assert.equal(prior.attention[0].id, 'attention-prior-v2');
+  assert.equal(prior.outsideEffects.find((item) => item.kind === 'agent-handoff').attentionId, undefined);
+  prior.receipts.push(JSON.parse(await readFile(path.join(
+    process.cwd(), 'test', 'fixtures', 'prior-v2-agent-handoff-receipt.json',
+  ), 'utf8')));
+
+  prior.activity.unshift({
+    version: 2, id: 'activity-compatible-engagement', kind: 'attention-engaged', subjectId: 'prior-subject',
+    details: { attentionId: 'attention-prior-v2', action: 'retry' },
+    createdAt: '2026-08-03T12:01:00.000Z', updatedAt: '2026-08-03T12:01:00.000Z',
+  });
+  prior.outsideEffects.push({
+    version: 2, id: 'effect-compatible-resolution', kind: 'notification', subjectId: 'prior-subject',
+    attentionId: 'attention-prior-v2', reason: 'opened', outcome: null, createdAt: '2026-08-03T12:02:00.000Z',
+  });
+  await writeManagementState(statePath, prior);
+  assertPriorV2StateShape(JSON.parse(await readFile(statePath, 'utf8')));
+});
+
+test('each higher Attention priority gets one distinct stable notification effect', () => {
+  const state = emptyManagementState();
+  const subject = new Set(['selection-one']);
+  const cause = (priority) => [{ subjectId: 'selection-one', code: 'blocked', condition: 'same', priority }];
+  observeAttention(state, cause('normal'), '2026-08-03T12:00:00.000Z', subject);
+  observeAttention(state, cause('high'), '2026-08-03T12:01:00.000Z', subject);
+  observeAttention(state, cause('critical'), '2026-08-03T12:02:00.000Z', subject);
+  observeAttention(state, cause('critical'), '2026-08-03T12:03:00.000Z', subject);
+  assert.equal(new Set(state.outsideEffects.map((item) => item.id)).size, 3);
+  assert.deepEqual(state.outsideEffects.map((item) => item.reason).sort(), ['opened', 'priority-raised', 'priority-raised']);
+});
+
+test('open engaged Attention keeps one marker past the recent age limit until resolution', () => {
+  const state = emptyManagementState();
+  const old = '2026-06-01T12:00:00.000Z';
+  observeAttention(state, [{ subjectId: 'selection-one', code: 'blocked', condition: 'same', priority: 'high' }], old, new Set(['selection-one']));
+  const attention = state.attention[0];
+  state.activity = [{
+    version: 2, id: 'engaged-old', kind: 'attention-engaged', subjectId: attention.subjectId,
+    details: { attentionId: attention.id, action: 'retry' }, createdAt: old, updatedAt: old,
+  }];
+  compactManagementState(state, '2026-08-03T12:00:00.000Z');
+  assert.deepEqual(state.activity.map((item) => item.id), ['engaged-old']);
+
+  attention.state = 'resolved';
+  attention.resolvedAt = '2026-08-03T12:01:00.000Z';
+  attention.updatedAt = attention.resolvedAt;
+  compactManagementState(state, '2026-08-03T12:01:00.000Z');
+  assert.equal(state.activity.length, 0);
+});
+
+test('activity capacity preserves one marker for each open engaged Attention', () => {
+  const state = emptyManagementState();
+  const now = '2026-08-03T12:00:00.000Z';
+  for (let index = 0; index < 100; index += 1) {
+    const id = `attention-${index}`;
+    state.attention.push({
+      version: 2, id, stableKey: `key-${index}`, subjectId: `subject-${index}`, code: 'blocked',
+      condition: 'same', priority: 'high', state: 'open', observations: 1, createdAt: now, updatedAt: now,
+    });
+    state.activity.push({
+      version: 2, id: `engaged-${index}`, kind: 'attention-engaged', subjectId: `subject-${index}`,
+      details: { attentionId: id, action: 'retry' }, createdAt: '2026-06-01T12:00:00.000Z', updatedAt: '2026-06-01T12:00:00.000Z',
+    });
+  }
+  state.activity.push({
+    version: 2, id: 'newer-unrelated', kind: 'reconciled', subjectId: 'other', details: {}, createdAt: now, updatedAt: now,
+  });
+  compactManagementState(state, now);
+  assert.equal(state.activity.length, 100);
+  assert.equal(new Set(state.activity.filter((item) => item.kind === 'attention-engaged').map((item) => item.details.attentionId)).size, 100);
 });
 
 test('Local Source Inspection proves branch, commit, ancestry, and selected dirt apart from unrelated dirt', async () => {
@@ -329,6 +408,8 @@ test('authorized selections reconcile independently while a dirty selected path 
   assert.equal(await readFile(path.join(fixture.installed.two, 'body.txt'), 'utf8'), 'baseline\n');
   const attention = first.result.snapshot.attention.find((item) => item.code === 'selected-path-dirty');
   assert.ok(attention);
+  assert.equal(first.result.snapshot.outsideEffects.some((item) => item.kind === 'notification'
+    && item.subjectId === 'authored:skills/one'), false);
 
   const second = await management.execute(cycleRequest('authorized-user-reconciliation', 'independent-2'));
   assert.equal(second.result.snapshot.attention.find((item) => item.code === 'selected-path-dirty').id, attention.id);
@@ -337,6 +418,7 @@ test('authorized selections reconcile independently while a dirty selected path 
   const resolved = await management.execute(cycleRequest('observe-only', 'independent-resolved'));
   assert.equal(resolved.result.snapshot.attention.some((item) => item.code === 'selected-path-dirty'), false);
   assert.equal(resolved.result.snapshot.recentAttention.some((item) => item.id === attention.id && item.state === 'resolved'), true);
+  assert.equal(resolved.result.snapshot.outsideEffects.some((item) => item.reason === 'resolved' && item.attentionId === attention.id), false);
 });
 
 test('unsafe authorization evidence leaves content unchanged with exact Attention and pauses ownership faults', async (t) => {
@@ -395,8 +477,17 @@ test('a wrong checkout branch pauses but does not cancel the approved-branch gra
   await authorize(management, 'authored:skills/one', 'branch');
   await git(fixture.repo, 'checkout', '-b', 'other');
   const wrong = await management.execute(cycleRequest('authorized-user-reconciliation', 'branch-wrong'));
-  assert.equal(wrong.result.snapshot.attention.some((item) => item.code === 'wrong-branch'), true);
+  const wrongAttention = wrong.result.snapshot.attention.find((item) => item.code === 'wrong-branch');
+  assert.ok(wrongAttention);
   assert.equal(wrong.result.snapshot.authorizations[0].active, true);
+  const handoff = await management.execute(actRequest({
+    type: 'agent-handoff', attentionId: wrongAttention.id, provider: 'claude',
+  }, 'branch-handoff-request'));
+  const handoffAction = handoff.result.snapshot.pendingActions.find((item) => item.intent.type === 'agent-handoff');
+  const handoffResult = await management.execute(actInvoke(handoffAction.id, 'branch-handoff-invoke'));
+  const prompt = handoffResult.result.snapshot.outsideEffects.find((item) => item.kind === 'agent-handoff').prompt;
+  assert.match(prompt, /Approved branch: main/);
+  assert.match(prompt, /Current branch: other/);
 
   await git(fixture.repo, 'checkout', 'main');
   await writeSkill(path.join(fixture.repo, 'skills', 'one'), 'one', 'back on main');
@@ -567,6 +658,10 @@ test('Ready Work, Attention, Activity, pending actions, and outside effects stay
   assert.ok(attention);
   assert.equal(blocked.result.snapshot.readyWork.length, 0);
   assert.equal(blocked.result.snapshot.outsideEffects.some((item) => item.kind === 'notification'), true);
+  const openedNotice = blocked.result.snapshot.outsideEffects.find((item) => item.kind === 'notification');
+  const unchanged = await management.execute(cycleRequest('observe-only', 'effect-unchanged'));
+  assert.equal(unchanged.result.snapshot.outsideEffects.filter((item) => item.kind === 'notification').length, 1);
+  assert.equal(unchanged.result.snapshot.outsideEffects[0].id, openedNotice.id);
 
   const requested = await management.execute(actRequest({
     type: 'agent-handoff', attentionId: attention.id, provider: 'codex',
@@ -577,6 +672,10 @@ test('Ready Work, Attention, Activity, pending actions, and outside effects stay
   const effect = invoked.result.snapshot.outsideEffects.find((item) => item.kind === 'agent-handoff');
   assert.equal(effect.workFolder, await realpath(fixture.repo));
   assert.match(effect.prompt, new RegExp(attention.id));
+  assert.match(effect.prompt, /Approved branch: main/);
+  assert.match(effect.prompt, /Current branch: main/);
+  assert.match(effect.prompt, /Expected state:/);
+  assert.match(effect.prompt, /Disposition: needs-user/);
   assert.equal(effect.prompt.includes('dirty for handoff'), false);
 
   const report = request('act', {
@@ -586,6 +685,20 @@ test('Ready Work, Attention, Activity, pending actions, and outside effects stay
   const retried = await management.execute(report);
   assert.deepEqual(retried, first);
   assert.equal((await readManagementState(fixture.statePath)).activity.filter((item) => item.kind === 'outside-effect-reported').length, 1);
+
+  await git(fixture.repo, 'checkout', '--', 'skills/one');
+  const resolved = await management.execute(cycleRequest('observe-only', 'effect-resolved'));
+  const resolvedNotice = resolved.result.snapshot.outsideEffects.find((item) => (
+    item.kind === 'notification'
+      && item.attentionId === attention.id
+      && item.id !== openedNotice.id
+  ));
+  assert.ok(resolvedNotice);
+  assert.equal(resolvedNotice.reason, 'opened');
+  assert.equal(resolvedNotice.attentionId, attention.id);
+  assert.equal(resolved.result.snapshot.recentAttention.some((item) => item.id === attention.id), true);
+  const resolvedAgain = await management.execute(cycleRequest('observe-only', 'effect-resolved-again'));
+  assert.equal(resolvedAgain.result.snapshot.outsideEffects.filter((item) => item.id === resolvedNotice.id).length, 1);
 });
 
 test('Resume requires clean Recovery and proof that every global pause cause is gone', async (t) => {
@@ -703,6 +816,21 @@ test('old act request IDs cannot create a second pending action after result com
   );
   const compacted = await readManagementState(fixture.statePath);
   assert.equal(compacted.pendingActions.filter((item) => item.intent.type === 'authorize-reconciliation').length, 1);
+});
+
+test('the app can revoke an exact saved authorization without inspecting its missing source', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  await management.execute(cycleRequest('observe-only', 'revoke-baseline'));
+  const selectionId = 'authored:skills/one';
+  await authorize(management, selectionId, 'revoke-authorize');
+
+  await rename(fixture.repo, `${fixture.repo}-missing`);
+  const requested = await management.execute(actRequest({
+    type: 'revoke-reconciliation', selectionId,
+  }, 'revoke-request'));
+  assert.equal(requested.result.snapshot.pendingActions.some((item) => item.intent.type === 'revoke-reconciliation'), false);
+  assert.equal(requested.result.snapshot.authorizations.find((item) => item.selectionId === selectionId).active, false);
 });
 
 test('a full open-Attention set is never truncated and stops new work with a safe pause', async () => {
@@ -874,4 +1002,32 @@ function hasObjectKey(value, sought) {
   if (Array.isArray(value)) return value.some((item) => hasObjectKey(item, sought));
   if (value === null || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, item]) => key === sought || hasObjectKey(item, sought));
+}
+
+function assertPriorV2StateShape(state) {
+  assert.deepEqual(Object.keys(state).sort(), [
+    'activity', 'attention', 'authorizations', 'idempotencyTombstones', 'outsideEffects', 'pagingKey',
+    'pause', 'pendingActions', 'receipts', 'revision', 'snapshot', 'version',
+  ]);
+  for (const item of state.attention) {
+    const allowed = new Set([
+      'version', 'id', 'stableKey', 'subjectId', 'code', 'condition', 'priority', 'state', 'observations',
+      'createdAt', 'updatedAt', 'resolvedAt', 'previousOccurrenceId',
+    ]);
+    assert.equal(Object.keys(item).every((key) => allowed.has(key)), true);
+  }
+  for (const item of state.activity) {
+    assert.deepEqual(Object.keys(item).sort(), ['createdAt', 'details', 'id', 'kind', 'subjectId', 'updatedAt', 'version']);
+  }
+  for (const item of state.pendingActions) {
+    assert.notEqual(item.intent.type, 'revoke-reconciliation');
+  }
+  for (const item of state.outsideEffects) {
+    const allowed = new Set([
+      'version', 'id', 'kind', 'subjectId', 'outcome', 'createdAt', 'attentionId', 'reason',
+      'provider', 'workFolder', 'prompt', 'reportedAt',
+    ]);
+    assert.equal(Object.keys(item).every((key) => allowed.has(key)), true);
+    if (item.kind === 'notification') assert.equal(['opened', 'priority-raised'].includes(item.reason), true);
+  }
 }

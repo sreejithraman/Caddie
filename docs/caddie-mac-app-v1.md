@@ -199,6 +199,8 @@ Use three closed forms:
 - `invoke` performs one opaque Tool-created action with exact approval when required; and
 - `report-effect` records whether the app delivered a notification or opened Agent Handoff.
 
+`revoke-reconciliation` is the one immediate `request` exception. It reduces access, needs no source check, and does not create a pending action. All other state-changing intent follows `request` then `invoke`.
+
 Callers never submit filesystem writes, harness-setting writes, or raw Caddie Plan operations. The Tool stores each immutable plan and returns an opaque action ID, bound state revision, exact human-facing effects, preconditions, preservation rules, Recovery effect, and approval prompt.
 
 Retain pending actions until invoked, cancelled, superseded, or 30 days old. Always recheck live preconditions.

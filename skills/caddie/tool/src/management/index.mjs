@@ -260,6 +260,14 @@ async function act(state, input, runtime) {
     return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision);
   }
   if (input.form === 'request') {
+    if (input.intent.type === 'revoke-reconciliation') {
+      const authorization = state.authorizations[input.intent.selectionId];
+      if (!authorization) throw new ManagementError('unknown-authorization', 'Reconciliation Authorization does not exist', 'replan');
+      authorization.active = false;
+      authorization.updatedAt = at;
+      state.activity.unshift(activity('authorization-revoked', input.intent.selectionId, at));
+      return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
+    }
     const action = await createPendingAction(state, input.intent, runtime, at);
     state.pendingActions.unshift(action);
     return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
@@ -288,7 +296,7 @@ async function createPendingAction(state, intent, runtime, at) {
     approvalPrompt: promptFor(intent), preservationRules: ['Preserve Skill Enablement and owned harness exposure'],
     recoveryEffect: 'Interrupted writes require Finish or Roll back',
   };
-  if (intent.type === 'authorize-reconciliation' || intent.type === 'update-selection') {
+  if (['authorize-reconciliation', 'update-selection'].includes(intent.type)) {
     const inventory = await inspectInventory(state, runtime);
     const selection = inventory.selections.find((item) => item.id === intent.selectionId);
     if (!selection) throw new ManagementError('unknown-selection', 'Skill Selection does not exist', 'replan');
@@ -304,7 +312,7 @@ async function createPendingAction(state, intent, runtime, at) {
     }
     action.outsideEffect = {
       kind: 'agent-handoff', provider: intent.provider, workFolder: selection.inspection.checkout,
-      prompt: handoffPrompt(attention, selection, at),
+      prompt: handoffPrompt(attention, selection, state.authorizations[selection.id] ?? null, at),
     };
   }
   return action;
@@ -317,6 +325,8 @@ async function invokePendingAction(state, action, runtime, at) {
     assertSnapshotCapacity(state, prospectiveSnapshot);
   }
   if (intent.type === 'finish-recovery' || intent.type === 'rollback-recovery') {
+    const recoveryAttention = state.attention.find((item) => item.subjectId === 'recovery' && item.state !== 'resolved');
+    if (recoveryAttention) state.activity.unshift(activity('attention-engaged', 'recovery', at, { attentionId: recoveryAttention.id, action: intent.type }));
     if (!action.recoveryPlan) throw new ManagementError('recovery-plan-missing', 'Recovery action has no bound plan', 'bug');
     await runtime.applyRecovery(action.recoveryPlan);
     return;
@@ -341,15 +351,18 @@ async function invokePendingAction(state, action, runtime, at) {
     return;
   }
   if (intent.type === 'retry') {
+    const attention = state.attention.find((item) => item.id === intent.attentionId && item.state !== 'resolved');
+    if (attention) state.activity.unshift(activity('attention-engaged', attention.subjectId, at, { attentionId: attention.id, action: 'retry' }));
     await retryAttention(state, intent.attentionId, runtime, at);
     return;
   }
   if (intent.type === 'agent-handoff') {
     const attention = state.attention.find((item) => item.id === intent.attentionId && item.state !== 'resolved');
     if (!attention) throw new ManagementError('attention-resolved', 'Inspection has already resolved this item', 'replan');
+    state.activity.unshift(activity('attention-engaged', attention.subjectId, at, { attentionId: attention.id, action: 'agent-handoff' }));
     const effect = {
-      version: 2, id: `effect-${hashValue({ action: action.id, provider: intent.provider }).slice(0, 24)}`,
-      ...action.outsideEffect, subjectId: attention.subjectId,
+      version: 2, id: `effect-${hashValue({ attention: attention.id, provider: intent.provider }).slice(0, 24)}`,
+      ...action.outsideEffect, attentionId: attention.id, subjectId: attention.subjectId,
       outcome: null, createdAt: at,
     };
     if (!state.outsideEffects.some((item) => item.id === effect.id)) state.outsideEffects.unshift(effect);
@@ -696,19 +709,28 @@ function promptFor(intent) {
   return 'Apply this Caddie action?';
 }
 
-function handoffPrompt(attention, selection, at) {
+function handoffPrompt(attention, selection, authorization, at) {
   return [
     'Help resolve this Caddie Attention item.',
     `Attention ID: ${attention.id}`,
     `Skill Selection: ${selection.id}`,
     `Work folder: ${selection.inspection.checkout}`,
-    `Approved branch: ${selection.inspection.branch ?? 'none'}`,
+    `Approved branch: ${authorization?.approvedBranch ?? 'none'}`,
+    `Current branch: ${selection.inspection.branch ?? 'none'}`,
     `Current commit: ${selection.inspection.commit}`,
+    'Expected state: selected skill matches its accepted Caddie baseline.',
     `Problem: ${attention.code}`,
+    `Disposition: ${attentionDisposition(attention.code)}`,
     `Observed condition: ${attention.condition}`,
     `Last check: ${at}`,
     'Inspect the cause and propose a fix. Do not change Caddie state directly.',
   ].join('\n').slice(0, 4096);
+}
+
+function attentionDisposition(code) {
+  if (code.includes('permission')) return 'needs-permission';
+  if (['missing-source', 'missing-content', 'exact-commit-unavailable'].includes(code)) return 'retry';
+  return 'needs-user';
 }
 
 function removeReady(items, selectionId) {

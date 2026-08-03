@@ -4,8 +4,69 @@ import Foundation
 public protocol ToolCalling: Sendable {
     func status() async throws -> AppSnapshot
     func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot
+    func request(_ intent: AppActionIntent) async throws -> AppSnapshot
+    func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot
+    func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot
     func requestResume() async throws -> AppSnapshot
 }
+
+public extension ToolCalling {
+    func requestResume() async throws -> AppSnapshot {
+        let requested = try await request(.resumeReconciliation)
+        guard let action = requested.pendingActions.first(where: {
+            $0.status == "pending" && $0.intent.type == "resume-reconciliation"
+        }) else {
+            if !requested.pause.active { return requested }
+            throw ToolClientFault.invalidResponse
+        }
+        return try await invoke(actionID: action.id, extendedTimeout: true)
+    }
+}
+
+public enum AppActionIntent: Equatable, Sendable {
+    case authorize(selectionID: String)
+    case revokeAuthorization(selectionID: String)
+    case update(selectionID: String)
+    case retry(attentionID: String)
+    case handoff(attentionID: String, provider: AgentProvider)
+    case resumeReconciliation
+
+    var fields: [String: JSONValue] {
+        switch self {
+        case let .authorize(id): return ["type": .string("authorize-reconciliation"), "selectionId": .string(id)]
+        case let .revokeAuthorization(id): return ["type": .string("revoke-reconciliation"), "selectionId": .string(id)]
+        case let .update(id): return ["type": .string("update-selection"), "selectionId": .string(id)]
+        case let .retry(id): return ["type": .string("retry"), "attentionId": .string(id)]
+        case let .handoff(id, provider): return ["type": .string("agent-handoff"), "attentionId": .string(id), "provider": .string(provider.rawValue)]
+        case .resumeReconciliation: return ["type": .string("resume-reconciliation")]
+        }
+    }
+
+    var type: String {
+        if case let .string(value) = fields["type"] { return value }
+        preconditionFailure("Every app intent has a type")
+    }
+
+    var completesOnRequest: Bool {
+        if case .revokeAuthorization = self { return true }
+        return false
+    }
+
+    func matches(_ stored: AppSnapshot.PendingAction.Intent) -> Bool {
+        guard stored.type == type else { return false }
+        switch self {
+        case let .authorize(id), let .revokeAuthorization(id), let .update(id):
+            return stored.selectionId == id
+        case let .retry(id): return stored.attentionId == id
+        case let .handoff(id, provider): return stored.attentionId == id && stored.provider == provider.rawValue
+        case .resumeReconciliation: return true
+        }
+    }
+}
+
+public enum AgentProvider: String, CaseIterable, Sendable { case codex, claude }
+public extension AgentProvider { var displayName: String { self == .codex ? "Codex" : "Claude" } }
+public enum AppEffectOutcome: String, Sendable { case delivered, failed, unavailable, opened }
 
 public actor ToolLaunchClient: ToolCalling {
     private let supportRoot: URL
@@ -60,24 +121,30 @@ public actor ToolLaunchClient: ToolCalling {
         ])
     }
 
-    public func requestResume() async throws -> AppSnapshot {
-        let requested = try await execute(operation: "act", input: [
+    public func request(_ intent: AppActionIntent) async throws -> AppSnapshot {
+        try await execute(operation: "act", input: [
             "idempotencyId": .string(UUID().uuidString.lowercased()),
             "form": .string("request"),
-            "intent": .object(["type": .string("resume-reconciliation")]),
+            "intent": .object(intent.fields),
         ])
-        guard let action = requested.pendingActions.first(where: {
-            $0.status == "pending" && $0.intent.type == "resume-reconciliation"
-        }) else {
-            if !requested.pause.active { return requested }
-            throw ToolClientFault.invalidResponse
-        }
-        return try await execute(operation: "act", input: [
+    }
+
+    public func invoke(actionID: String, extendedTimeout: Bool = false) async throws -> AppSnapshot {
+        try await execute(operation: "act", input: [
             "idempotencyId": .string(UUID().uuidString.lowercased()),
             "form": .string("invoke"),
-            "actionId": .string(action.id),
+            "actionId": .string(actionID),
             "approval": .string("explicit"),
-        ], timeoutOverride: 120)
+        ], timeoutOverride: extendedTimeout ? 120 : nil)
+    }
+
+    public func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot {
+        try await execute(operation: "act", input: [
+            "idempotencyId": .string(UUID().uuidString.lowercased()),
+            "form": .string("report-effect"),
+            "effectId": .string(effectID),
+            "outcome": .string(outcome.rawValue),
+        ])
     }
 
     private func execute(

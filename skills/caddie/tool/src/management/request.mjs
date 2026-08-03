@@ -74,6 +74,7 @@ function validateIntent(intent) {
   if (!plainObject(intent)) throw new ManagementError('invalid-intent', 'Act request requires domain intent');
   const shapes = {
     'authorize-reconciliation': ['type', 'selectionId'],
+    'revoke-reconciliation': ['type', 'selectionId'],
     'update-selection': ['type', 'selectionId'],
     'resume-reconciliation': ['type'],
     retry: ['type', 'attentionId'],
