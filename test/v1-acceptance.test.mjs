@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,16 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url);
 const { fingerprint } = require('../skills/caddie/tool/src/apply/filesystem');
 
-test('v1 lifecycle composes authored User Skills and additive Project Skills', async () => {
+test('the prior Skill v1 lifecycle runs through the new Tool management bridge', async () => {
+  await v1Lifecycle(false);
+});
+
+test('the current Skill v1 lifecycle remains usable with the last-good Tool entry', async () => {
+  await v1Lifecycle(true);
+});
+
+async function v1Lifecycle(useLastGoodTool) {
+  await verifyFrozenArtifacts();
   const root = await mkdtemp(path.join(tmpdir(), 'caddie-v1-acceptance-'));
   const home = path.join(root, 'home');
   const sourceRepository = path.join(root, 'caddie-source');
@@ -29,7 +39,10 @@ test('v1 lifecycle composes authored User Skills and additive Project Skills', a
   });
   assert.equal(bootstrap.status, 0, bootstrap.stderr);
 
-  const tool = path.join(home, '.agents', 'skills', 'caddie', 'tool', 'caddie.mjs');
+  const installedTool = path.join(home, '.agents', 'skills', 'caddie', 'tool', 'caddie.mjs');
+  const tool = useLastGoodTool
+    ? path.join(repositoryRoot, 'test', 'fixtures', 'last-good-caddie-tool.mjs')
+    : installedTool;
   const authoredRoot = path.join(root, 'SreeStack', 'skills');
   const authored = path.join(authoredRoot, 'review-sweep');
   const installed = path.join(home, '.agents', 'skills', 'review-sweep');
@@ -92,7 +105,52 @@ test('v1 lifecycle composes authored User Skills and additive Project Skills', a
     ['caddie', 'user'], ['review-sweep', 'user'], ['project-helper', 'project'],
   ]);
   assert.equal(await realpath(path.join(project, '.claude', 'skills', 'project-helper')), await realpath(projectInstalled));
-});
+}
+
+async function verifyFrozenArtifacts() {
+  const manifestPath = path.join(repositoryRoot, 'test', 'fixtures', 'c5115ad-artifact-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  assert.equal(manifest.sourceCommit, 'c5115ad643dd983b5a8e1037d9ef52b6598f90cd');
+  const expectedTool = Object.keys(manifest.priorToolFiles).sort();
+  const expectedSkill = Object.keys(manifest.priorSkillFiles).sort();
+  assert.deepEqual(await priorToolFiles(), expectedTool);
+  assert.deepEqual(await priorSkillFiles(), expectedSkill);
+  for (const [relative, expected] of Object.entries({ ...manifest.priorToolFiles, ...manifest.priorSkillFiles })) {
+    const bytes = await readFile(path.join(repositoryRoot, relative));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, `frozen artifact drifted: ${relative}`);
+  }
+}
+
+async function priorToolFiles() {
+  const roots = ['skills/caddie/tool/src', 'skills/caddie/tool/vendor'];
+  const files = (await Promise.all(roots.map((root) => walk(path.join(repositoryRoot, root)))))
+    .flat()
+    .map(relativeToRepository)
+    .filter((file) => !file.startsWith('skills/caddie/tool/src/management/')
+      && !file.startsWith('skills/caddie/tool/src/adapter/'));
+  return files.sort();
+}
+
+async function priorSkillFiles() {
+  return (await walk(path.join(repositoryRoot, 'skills', 'caddie')))
+    .map(relativeToRepository)
+    .filter((file) => !file.startsWith('skills/caddie/tool/'))
+    .sort();
+}
+
+async function walk(root) {
+  const files = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const target = path.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...await walk(target));
+    else files.push(target);
+  }
+  return files;
+}
+
+function relativeToRepository(file) {
+  return path.relative(repositoryRoot, file).split(path.sep).join('/');
+}
 
 function invoke(tool, operation, input, home) {
   const result = spawnSync(process.execPath, [tool], {
