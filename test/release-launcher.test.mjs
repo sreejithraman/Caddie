@@ -108,6 +108,30 @@ test('parent death before authorization makes the runner exit without a lease or
   assert.equal(await readdir(path.join(fixture.root, 'Leases')).then((files) => files.length).catch(() => 0), 0);
 });
 
+test('launcher hard-stops a TERM-ignoring Tool child before its own caller may hard-stop it', async () => {
+  const fixture = await releaseFixture();
+  const launched = spawn(process.execPath, [launcher], {
+    cwd: fixture.root,
+    env: {
+      ...process.env, HOME: fixture.home, CADDIE_TOOL_LAUNCH_RECORD: fixture.record,
+      CADDIE_TEST_IGNORE_TERM: '1', CADDIE_TEST_TOOL_HOLD_MS: '10000',
+      CADDIE_TEST_CHILD_STOP_GRACE_MS: '50',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  launched.stdin.end(JSON.stringify({ version: 2, requestId: 'forward-stop', caller: 'app', operation: 'status', input: {} }));
+  const ownerPath = path.join(fixture.root, 'Release Lifecycle.lock', 'owner.json');
+  const owner = await waitForJson(ownerPath, (value) => value.processID !== launched.pid);
+  await waitForLease(path.join(fixture.root, 'Leases'));
+
+  launched.kill('SIGTERM');
+  await new Promise((resolve) => launched.once('exit', resolve));
+
+  await waitForProcessExit(owner.processID);
+  const retainedLease = await waitForLease(path.join(fixture.root, 'Leases'));
+  assert.equal(retainedLease.processID, owner.processID);
+});
+
 test('a release-root symlink and a Node launch failure cannot run the Tool or strand the lifecycle claim', async () => {
   const linked = await releaseFixture();
   const external = path.join(linked.root, 'external-release');

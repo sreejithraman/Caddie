@@ -286,6 +286,8 @@ A wrong branch, dirty selected path, missing source, or denied folder pauses onl
 
 Restart does not clear a safety-triggered pause. Resume requires successful full inspection and a user click.
 
+The `resume-reconciliation` invoke may use the two-minute cycle limit because it must prove one full clean inspection. Its action request keeps the five-second `act` limit.
+
 Presentation or notification failure does not block correct reconciliation when durable Attention remains accurate and visible.
 
 ## Release ownership and compatibility

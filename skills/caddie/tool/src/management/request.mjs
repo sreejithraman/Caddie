@@ -37,7 +37,7 @@ function validateStatus(input) {
 }
 
 function validateCycle(input) {
-  exactKeys(input, ['idempotencyId', 'mode', 'hint', 'subjectIds'], 'cycle input', true);
+  exactKeys(input, ['idempotencyId', 'mode', 'hint', 'subjectIds', 'refreshProjects'], 'cycle input', true);
   boundedString(input.idempotencyId, 'idempotencyId', 128);
   if (!CYCLE_MODES.includes(input.mode)) throw new ManagementError('invalid-cycle-mode', 'Cycle mode is not supported');
   if (input.hint !== undefined) {
@@ -48,6 +48,9 @@ function validateCycle(input) {
     && (!Array.isArray(input.subjectIds) || input.subjectIds.length > 100
       || input.subjectIds.some((id) => typeof id !== 'string' || id.length === 0 || id.length > 512))) {
     throw new ManagementError('invalid-subject-ids', 'Subject IDs must be a bounded string array');
+  }
+  if (input.refreshProjects !== undefined && typeof input.refreshProjects !== 'boolean') {
+    throw new ManagementError('invalid-refresh-projects', 'refreshProjects must be true or false');
   }
 }
 

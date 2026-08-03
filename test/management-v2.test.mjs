@@ -64,6 +64,12 @@ test('versioned requests and durable state reject extra, malformed, and newer in
     management.execute(request('status', { rawPath: '/tmp/no' }, 'raw-operation')),
     (error) => error instanceof ManagementError && error.code === 'unknown-field',
   );
+  const badRefresh = cycleRequest('observe-only', 'bad-project-refresh');
+  badRefresh.input.refreshProjects = 'yes';
+  await assert.rejects(
+    management.execute(badRefresh),
+    (error) => error instanceof ManagementError && error.code === 'invalid-refresh-projects',
+  );
   await assert.rejects(
     management.execute(actRequest({ type: 'retry', attentionId: 'attention-1', rawPath: '/tmp/no' }, 'raw-intent')),
     (error) => error instanceof ManagementError && error.code === 'unknown-field',
@@ -213,6 +219,31 @@ test('Snapshot watch paths cover sources, installs, User Caddie state, and owned
   assert.deepEqual(watched, new Set([
     fixture.repo, fixture.installed.one, fixture.stateRoot, codexSettings, claudeSettings,
   ]));
+});
+
+test('event cycles keep cached Project Skill status without reading registered projects', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  const first = await management.execute(cycleRequest('observe-only', 'project-refresh-baseline'));
+  assert.deepEqual(first.result.snapshot.projectSkills, []);
+  await writeFile(path.join(fixture.stateRoot, 'registry.json'), '{broken registry\n');
+
+  const eventCycle = cycleRequest('observe-only', 'project-refresh-skipped');
+  eventCycle.input.refreshProjects = false;
+  const result = await management.execute(eventCycle);
+
+  assert.deepEqual(result.result.snapshot.projectSkills, []);
+});
+
+test('source summaries carry source-first menu facts', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  const result = await management.execute(cycleRequest('observe-only', 'source-menu-facts'));
+
+  assert.deepEqual(result.result.snapshot.sources, [{
+    version: 2, id: 'authored', checkout: fixture.repo, branch: 'main',
+    skillCount: 1, attentionCount: 0, state: 'current', automaticUpdates: false, nextAction: 'none',
+  }]);
 });
 
 test('large Snapshots page safely across status calls after a managed write', async () => {

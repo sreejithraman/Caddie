@@ -10,6 +10,9 @@ import { acquireLifecycleClaim } from './lifecycle-lock.mjs';
 
 const launchRecordPath = process.env.CADDIE_TOOL_LAUNCH_RECORD
   ?? path.join(os.homedir(), 'Library', 'Application Support', 'Caddie', 'Tool Launch Record.json');
+const requestedChildStopGrace = Number(process.env.CADDIE_TEST_CHILD_STOP_GRACE_MS ?? 9_000);
+const CHILD_STOP_GRACE_MS = Number.isFinite(requestedChildStopGrace) && requestedChildStopGrace >= 0
+  ? requestedChildStopGrace : 9_000;
 
 try {
   let claim = await acquireLifecycleClaim(launchRecordPath);
@@ -20,27 +23,51 @@ try {
     const child = spawn(active.node.path, [runner, launchRecordPath, active.releaseID, active.tool.path, authorization], {
       stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
     });
-    const spawned = waitForSpawn(child);
-    const exit = waitForExit(child);
-    if (!Number.isInteger(child.pid) || child.pid <= 0) await spawned;
-    claim.transferTo(child.pid);
-    if (process.env.CADDIE_TEST_PAUSE_BEFORE_AUTHORIZE_MS) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.CADDIE_TEST_PAUSE_BEFORE_AUTHORIZE_MS));
+    const stopForwarding = forwardStopSignals(child);
+    try {
+      const spawned = waitForSpawn(child);
+      const exit = waitForExit(child);
+      if (!Number.isInteger(child.pid) || child.pid <= 0) await spawned;
+      claim.transferTo(child.pid);
+      if (process.env.CADDIE_TEST_PAUSE_BEFORE_AUTHORIZE_MS) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.CADDIE_TEST_PAUSE_BEFORE_AUTHORIZE_MS));
+      }
+      const authorized = authorizeChild(child.stdio[4], authorization);
+      await Promise.all([spawned, authorized]);
+      await waitForLease(child, exit);
+      await claim.release();
+      claim = null;
+      const result = await exit;
+      if (result.signal) process.kill(process.pid, result.signal);
+      process.exitCode = result.code ?? 1;
+    } finally {
+      stopForwarding();
     }
-    const authorized = authorizeChild(child.stdio[4], authorization);
-    await Promise.all([spawned, authorized]);
-    await waitForLease(child, exit);
-    await claim.release();
-    claim = null;
-    const result = await exit;
-    if (result.signal) process.kill(process.pid, result.signal);
-    process.exitCode = result.code ?? 1;
   } finally {
     await claim?.release();
   }
 } catch (error) {
   process.stderr.write(`Caddie Tool launch failed: ${error.message}\n`);
   process.exitCode = 1;
+}
+
+function forwardStopSignals(child) {
+  let forceTimer = null;
+  const forward = (signal) => {
+    child.kill(signal);
+    if (forceTimer === null) {
+      forceTimer = setTimeout(() => child.kill('SIGKILL'), CHILD_STOP_GRACE_MS);
+    }
+  };
+  const terminate = () => forward('SIGTERM');
+  const interrupt = () => forward('SIGINT');
+  process.on('SIGTERM', terminate);
+  process.on('SIGINT', interrupt);
+  return () => {
+    process.off('SIGTERM', terminate);
+    process.off('SIGINT', interrupt);
+    if (forceTimer !== null) clearTimeout(forceTimer);
+  };
 }
 
 export async function resolveActiveTool(recordPath) {
