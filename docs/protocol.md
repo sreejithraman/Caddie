@@ -37,4 +37,14 @@ Migration and legacy-manager cleanup are deliberately separate. `state-migration
 
 `npm run test:release` is the harness and end-to-end release gate. It requires installed Codex and Claude Code binaries rather than silently skipping harness discovery; the compatibility decision is recorded in [ADR 0001](adr/0001-expose-individual-skills-to-claude.md).
 
+## Version 2 management Interface
+
+The version 2 management module accepts only `status`, `cycle`, and `act`. Each request has `version: 2`, a bounded request ID, caller kind, operation, and bounded operation input. `cycle` and `act` also require an idempotency ID. Reusing that ID with the same request returns the saved result while it remains cached; an older mutating ID fails safely after result compaction. Reusing an ID with different input always fails.
+
+`status` returns the last committed Snapshot without inspection or a write. It may accept one Tool-issued continuation token to read the next page of one detail list. Changed Snapshots make old tokens stale, and changed token bytes are invalid. `cycle` accepts `observe-only` or `authorized-user-reconciliation`; the Tool still proves which User Skill Selections may change. `act` creates a Tool-owned pending action, invokes one exact approved action, or records one outside effect result. Callers cannot submit paths, Git commands, harness changes, or raw Caddie Plan operations.
+
+Recovery plans stay private in Tool state. A public Snapshot exposes only bounded Recovery status text, opaque action IDs, and public pending-action fields. It never returns Finish or Roll back plans or their operations.
+
+Local Source Inspection runs a fixed set of read-only Git commands for the exact registered checkout. It proves the branch, commit, ancestry, selected-path state, ignored files, and unrelated dirt. Selected bytes must match committed Git content. It does not fetch, pull, switch, merge, or use a remote. Non-Git local sources and Project Skills remain manual-only.
+
 Bounded `inspect-source` evidence includes a deterministic `sha256:` cache reference. When file entries remain, coverage also includes a continuation cursor bound to the exact source fingerprint and the original evidence limits. Continue with the same request and limits plus `cursor`; changed content requires replanning and changed limits are invalid.

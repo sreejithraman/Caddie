@@ -16,6 +16,18 @@ Unsupported versions are inspectable as bounded evidence and are not migrated im
 
 Ordinary reconciliation adds or updates Ledger ownership. A Skill Rename replaces the exact old per-skill ownership with its new identity in one complete Ledger write. The Ledger does not retain rename history; the immutable Caddie Plan binds the accepted old and new identities and fingerprints, while an optional Migration Record keeps costly semantic reasoning.
 
+## Version 2 management state
+
+`~/.agents/.caddie/management-v2.json` stores the last committed Caddie Snapshot and the Tool state behind it. Its top-level `version` is `2`. It holds Reconciliation Authorization, Attention, Activity, pending actions, outside effects, idempotency receipts, and Reconciliation Pause. The Tool checks the whole document before use and replaces it with one atomic write. Malformed state and unsupported newer versions stop management work without changing the file.
+
+Recent durable lists hold at most 100 records. Resolved Attention and recent Activity expire after 30 days. Open Attention has a separate 100-item safety limit and never gets pruned as history. At that limit, the Tool pauses new work until proof resolves an item.
+
+Snapshot detail lists keep at most 10,000 records each in durable state. Responses show 100 records per list and include signed continuation tokens plus partial coverage when more records remain. Tokens bind the Snapshot revision, field, and offset. The Tool checks the full prospective Snapshot against the 16 MiB state limit, with write-result room held back, before it changes a managed skill.
+
+The active idempotency result cache holds 100 results. When an old result for a write or outside effect leaves that cache, Caddie keeps a compact request tombstone. A matching old retry then fails safely instead of running again. The tombstone store holds 20,000 entries and stops new compaction before it could forget a mutating request.
+
+Version 2 Reconciliation Authorization binds fingerprints for both the version 1 Caddie Lock and Caddie Ledger. Authorized apply writes the existing Lock schema and the updated Ledger in the same Caddie Plan. Lock or Ledger changes outside that plan block automatic work.
+
 Each Skill Selection may declare `enabled` as a boolean. Omitted is equivalent to `true`. `false` keeps the skill selected, resolved, installed, and updateable while asking each supported Agent Harness to disable it through that harness's native settings. Caddie records only the settings it creates as `harnessSettings` ownership in the Caddie Ledger.
 
 Each Skill Selection may declare `derivedFrom` as a non-empty array of distinct exact `{ "source", "path" }` origins. Every origin names a source in the same manifest and a relative selection path; Git source revisions remain pinned by the Caddie Lock. A selection may also point to a durable Markdown Migration Record with a scope-relative `migrationRecord` path. Absolute paths, traversal, malformed origins, duplicate origins, and non-Markdown Migration Record pointers are invalid.
