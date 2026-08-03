@@ -77,7 +77,9 @@ test('Mac app build has separate local and signed release modes', async () => {
   assert.ok(build.indexOf('Set :CFBundleVersion') < build.indexOf('codesign --force --options runtime'));
 });
 
-test('release build rejects malformed bundle versions before building or signing', () => {
+test('release build rejects malformed bundle versions before building or signing', {
+  skip: process.platform !== 'darwin',
+}, () => {
   const invalid = [
     ['01.2.3', '4'],
     ['1.2', '4'],
@@ -119,7 +121,9 @@ test('dry-run disk image packaging refuses overwrite and has one Applications ta
   assert.doesNotMatch(pack, /notarytool|stapler|gh release/);
 });
 
-test('dry-run packaging rejects a bundle and file version mismatch', async () => {
+test('dry-run packaging rejects a bundle and file version mismatch', {
+  skip: process.platform !== 'darwin',
+}, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'caddie-package-version-'));
   try {
     const app = path.join(root, 'Caddie.app');
