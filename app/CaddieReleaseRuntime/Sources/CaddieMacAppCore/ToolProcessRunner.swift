@@ -18,6 +18,23 @@ enum ToolProcessFault: Error, Equatable {
     case failed(status: Int32, diagnostics: String)
 }
 
+extension ToolProcessFault: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .timeout:
+            "Caddie could not finish checking in time. Try Sync now again."
+        case .stdoutOverflow:
+            "Caddie received too much output from its Tool. Try Sync now again."
+        case .stderrOverflow:
+            "Caddie received too many Tool details. Try Sync now again."
+        case .launchFailed:
+            "Caddie could not start its Tool. Reopen Caddie and try again."
+        case .failed:
+            "Caddie's Tool stopped before it finished. Try Sync now again."
+        }
+    }
+}
+
 struct BoundedToolProcessRunner: ToolProcessRunning, Sendable {
     static let maximumStdoutBytes = 16 * 1024 * 1024
     static let maximumStderrBytes = 64 * 1024

@@ -13,6 +13,20 @@ final class AppActionsTests: XCTestCase {
         }
     }
 
+    func testToolProcessFaultsGiveClearMessages() {
+        for fault in [
+            ToolProcessFault.timeout, .stdoutOverflow, .stderrOverflow,
+            .launchFailed("test"), .failed(status: 1, diagnostics: "test"),
+        ] {
+            XCTAssertFalse(fault.localizedDescription.contains("ToolProcessFault"))
+            XCTAssertNotEqual(fault.localizedDescription, "The operation couldn’t be completed.")
+        }
+        XCTAssertEqual(
+            ToolProcessFault.timeout.localizedDescription,
+            "Caddie could not finish checking in time. Try Sync now again."
+        )
+    }
+
     func testCodexAndClaudeLinksKeepExactFolderAndUnsentPrompt() throws {
         let folder = "/Users/sree/Work folder/skills#a&b"
         let prompt = "Fix Attention 1?\nDo not send yet & keep # exact."
