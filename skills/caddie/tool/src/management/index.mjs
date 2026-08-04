@@ -574,12 +574,14 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
     }
   }
   const installedUserSkills = onlySelectionId === null ? await inspectInstalledSkills(layout.canonicalSkillsRoot) : [];
-  const cachedProjectInventory = (state.snapshot?.skillInventory ?? []).filter((item) => item.scope === 'project');
+  const cachedInventory = !refreshProjects ? await readInventoryProjection(runtime.inventoryPath, state.revision) : null;
+  const cachedProjectInventory = (cachedInventory?.skillInventory ?? state.snapshot?.skillInventory ?? [])
+    .filter((item) => item.scope === 'project');
   const projectData = onlySelectionId === null
     ? (refreshProjects ? await inspectProjectSkillInventory(runtime.home) : {
       projectSkills: structuredClone(state.snapshot?.projectSkills ?? []),
       skillInventory: structuredClone(cachedProjectInventory),
-      projects: structuredClone(state.snapshot?.projects ?? []),
+      projects: structuredClone(cachedInventory?.projects ?? state.snapshot?.projects ?? []),
     })
     : { projectSkills: [], skillInventory: [], projects: [] };
   const watchPaths = [

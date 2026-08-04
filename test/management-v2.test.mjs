@@ -360,16 +360,32 @@ test('Snapshot watch paths cover sources, installs, User Caddie state, and owned
 
 test('event cycles keep cached Project Skill status without reading registered projects', async () => {
   const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'cached-project');
+  const projectState = path.join(projectRoot, '.agents', '.caddie');
+  await writeSkill(path.join(projectRoot, '.agents', 'skills', 'project-only'), 'project-only', 'project');
+  await json(path.join(projectState, 'manifest.json'), {
+    version: 1, scope: 'project', sources: {}, selections: [],
+  });
+  await json(path.join(projectState, 'ledger.json'), {
+    version: 1, scopeId: `project:${projectRoot}`, entries: [], harnessLinks: [], harnessSettings: [],
+  });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
   const management = createManagementModule({ home: fixture.home });
   const first = await management.execute(cycleRequest('observe-only', 'project-refresh-baseline'));
-  assert.deepEqual(first.result.snapshot.projectSkills, []);
+  assert.equal(first.result.snapshot.projects.length, 1);
+  assert.equal(first.result.snapshot.skillInventory.filter((item) => item.scope === 'project').length, 1);
   await writeFile(path.join(fixture.stateRoot, 'registry.json'), '{broken registry\n');
 
   const eventCycle = cycleRequest('observe-only', 'project-refresh-skipped');
   eventCycle.input.refreshProjects = false;
   const result = await management.execute(eventCycle);
 
-  assert.deepEqual(result.result.snapshot.projectSkills, []);
+  assert.deepEqual(result.result.snapshot.projectSkills, first.result.snapshot.projectSkills);
+  assert.deepEqual(result.result.snapshot.projects, first.result.snapshot.projects);
+  assert.deepEqual(
+    result.result.snapshot.skillInventory.filter((item) => item.scope === 'project'),
+    first.result.snapshot.skillInventory.filter((item) => item.scope === 'project'),
+  );
 });
 
 test('source summaries carry source-first menu facts', async () => {
