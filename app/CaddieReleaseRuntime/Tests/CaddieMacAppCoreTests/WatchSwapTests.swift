@@ -19,6 +19,21 @@ final class WatchSwapTests: XCTestCase {
         XCTAssertTrue(observation.containsOnlyToolStateChanges)
     }
 
+    func testInventoryProjectionWritesCanRefreshWithoutStartingAnotherCycle() {
+        let observation = FileObservation(
+            watchIDs: ["user-state"],
+            changedPaths: [
+                "/Users/example/.agents/.caddie/.management-v2.json.inventory-v1.json.46234.3c9c2c4e.tmp",
+                "/Users/example/.agents/.caddie/management-v2.json.inventory-v1.json",
+                "/Users/example/.agents/.caddie",
+            ],
+            toolStateRoot: "/Users/example/.agents/.caddie",
+            rootsUncertain: false
+        )
+
+        XCTAssertTrue(observation.containsOnlyToolStateChanges)
+    }
+
     func testARealStateRootChangeStillStartsAFullCycle() {
         let observation = FileObservation(
             watchIDs: ["user-state"],

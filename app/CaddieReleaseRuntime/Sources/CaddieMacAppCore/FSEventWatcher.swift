@@ -18,6 +18,7 @@ public struct FileObservation: Equatable, Sendable {
     private static func isToolStatePath(_ path: String) -> Bool {
         let name = URL(fileURLWithPath: path).lastPathComponent
         return name == "management-v2.json"
+            || name == "management-v2.json.inventory-v1.json"
             || name == "management-v2.json.lock"
             || name.hasPrefix("management-v2.json.lock.release-")
             || (name.hasPrefix(".management-v2.json.") && name.hasSuffix(".tmp"))
