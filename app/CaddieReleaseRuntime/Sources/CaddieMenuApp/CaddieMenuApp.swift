@@ -70,6 +70,7 @@ private struct CaddieMenu: View {
     @ObservedObject var model: AppModel
     @State private var confirmsRemoval = false
     @State private var inventoryView = InventoryView.skills
+    @State private var userSkillsExpanded = true
 
     private enum InventoryView: String, CaseIterable, Identifiable {
         case skills = "Skills"
@@ -81,6 +82,10 @@ private struct CaddieMenu: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
+            if let message = model.lastError {
+                faultNotice(message)
+                Divider()
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if model.menuSnapshot.recovery != nil || model.menuSnapshot.pause.active || toolAttention.count > 0 { urgentSection }
@@ -98,9 +103,6 @@ private struct CaddieMenu: View {
             controls
         }
         .frame(width: 420, height: 600)
-        .alert("Caddie needs help", isPresented: Binding(
-            get: { model.lastError != nil }, set: { if !$0 { model.clearError() } }
-        )) { Button("OK") { model.clearError() } } message: { Text(model.lastError ?? "") }
         .confirmationDialog("Prepare to remove Caddie?", isPresented: $confirmsRemoval) {
             Button("Turn off login and quit") {
                 if model.prepareForAppRemoval() { NSApplication.shared.terminate(nil) }
@@ -109,6 +111,26 @@ private struct CaddieMenu: View {
         } message: {
             Text("Your Caddie Skill, Tool fallback, managed skills, and user and project state stay in place. You can then remove Caddie with Homebrew or move the app to Trash.")
         }
+    }
+
+    private func faultNotice(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Caddie needs help").fontWeight(.semibold)
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button { model.clearError() } label: {
+                Image(systemName: "xmark").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     private var header: some View {
@@ -146,13 +168,21 @@ private struct CaddieMenu: View {
     private var skillsSection: some View {
         let presentation = SkillInventoryPresentation(snapshot: model.menuSnapshot)
         return VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("User Skills").font(.headline)
-                if presentation.userSkills.isEmpty {
-                    Text("No User Skills found").foregroundStyle(.secondary)
+            DisclosureGroup(isExpanded: $userSkillsExpanded) {
+                VStack(alignment: .leading, spacing: 7) {
+                    if presentation.userSkills.isEmpty {
+                        Text("No User Skills found").foregroundStyle(.secondary)
+                    }
+                    ForEach(presentation.userSkills) { skill in
+                        InventorySkillRow(model: model, skill: skill)
+                    }
                 }
-                ForEach(presentation.userSkills) { skill in
-                    InventorySkillRow(model: model, skill: skill)
+                .padding(.top, 7)
+            } label: {
+                HStack {
+                    Text("User Skills").font(.headline)
+                    Spacer()
+                    Text("\(presentation.userSkills.count) skills").font(.caption).foregroundStyle(.secondary)
                 }
             }
             ForEach(presentation.projects) { section in
@@ -245,10 +275,34 @@ private struct CaddieMenu: View {
 private struct ProjectInventorySection: View {
     @ObservedObject var model: AppModel
     let section: SkillInventoryPresentation.ProjectSection
+    @State private var expanded = true
     @State private var inheritedExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 7) {
+                if section.projectSkills.isEmpty {
+                    Text("No Project Skills found").foregroundStyle(.secondary)
+                }
+                ForEach(section.projectSkills) { skill in
+                    InventorySkillRow(model: model, skill: skill)
+                }
+                if !section.inheritedUserSkills.isEmpty {
+                    DisclosureGroup(isExpanded: $inheritedExpanded) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(section.inheritedUserSkills) { skill in
+                                InventorySkillRow(model: model, skill: skill, inherited: true)
+                            }
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        Text("Also uses \(section.inheritedUserSkills.count) User Skills")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.top, 7)
+        } label: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(section.project.name).font(.headline)
@@ -261,27 +315,9 @@ private struct ProjectInventorySection: View {
                         Text("\(section.project.overrideCount) overrides")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    Text("\(section.projectSkills.count) skills").font(.caption).foregroundStyle(.secondary)
                 }
                 Text(section.project.root).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            if section.projectSkills.isEmpty {
-                Text("No Project Skills found").foregroundStyle(.secondary)
-            }
-            ForEach(section.projectSkills) { skill in
-                InventorySkillRow(model: model, skill: skill)
-            }
-            if !section.inheritedUserSkills.isEmpty {
-                DisclosureGroup(isExpanded: $inheritedExpanded) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(section.inheritedUserSkills) { skill in
-                            InventorySkillRow(model: model, skill: skill, inherited: true)
-                        }
-                    }
-                    .padding(.top, 6)
-                } label: {
-                    Text("Also uses \(section.inheritedUserSkills.count) User Skills")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
             }
         }
     }

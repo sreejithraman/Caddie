@@ -336,6 +336,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func accept(_ next: AppSnapshot) {
+        lastError = nil
         install(next)
         scheduleEffectDrain()
     }
