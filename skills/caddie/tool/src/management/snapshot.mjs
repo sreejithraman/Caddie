@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 const { hashValue } = require('../plans');
 const PAGE_SIZE = 100;
 const PAGE_FIELDS = Object.freeze([
-  'sources', 'userSkills', 'projectSkills', 'readyWork', 'authorizations', 'attention',
+  'sources', 'userSkills', 'projectSkills', 'skillInventory', 'projects', 'readyWork', 'authorizations', 'attention',
   'recentAttention', 'activity', 'pendingActions', 'outsideEffects', 'watchSet',
 ]);
 
@@ -57,7 +57,7 @@ export function uninitializedSnapshot(revision, state = null) {
     version: 2, state: 'uninitialized', revision, freshness: { checkedAt: null },
     compatibility: { protocol: 2, state: 2 }, coverage: { status: 'unknown', issues: [] },
     summary: { selections: 0, current: 0, ready: 0, attention: state?.attention.filter((item) => item.state !== 'resolved').length ?? 0 },
-    sources: [], userSkills: [], projectSkills: [], readyWork: [], authorizations: state ? Object.values(state.authorizations) : [],
+    sources: [], userSkills: [], projectSkills: [], skillInventory: [], projects: [], readyWork: [], authorizations: state ? Object.values(state.authorizations) : [],
     attention: state?.attention ?? [], recentAttention: [], activity: state?.activity ?? [],
     pendingActions: state?.pendingActions?.map(publicPendingAction) ?? [],
     outsideEffects: state?.outsideEffects ?? [], pause: state?.pause ?? { active: false, reason: null, safetyTriggered: false, startedAt: null },
@@ -65,13 +65,13 @@ export function uninitializedSnapshot(revision, state = null) {
   };
 }
 
-export function projectSnapshot(snapshot, pagingKey, continuationToken = null) {
+export function projectSnapshot(snapshot, pagingKey, continuationToken = null, fields = PAGE_FIELDS) {
   const requested = continuationToken === null ? null : decodeContinuation(continuationToken, pagingKey, snapshot.revision);
   const projected = structuredClone(snapshot);
-  projected.continuations = [];
+  projected.continuations = (snapshot.continuations ?? []).filter((item) => !fields.includes(item.field));
   const pagingIssues = [];
-  for (const field of PAGE_FIELDS) {
-    const records = snapshot[field];
+  for (const field of fields) {
+    const records = snapshot[field] ?? [];
     const offset = requested?.field === field ? requested.offset : 0;
     if (requested?.field === field && offset >= records.length) {
       throw new ManagementError('invalid-continuation', 'Continuation points past the available records', 'replan');
@@ -86,7 +86,7 @@ export function projectSnapshot(snapshot, pagingKey, continuationToken = null) {
       });
     }
   }
-  if (requested && !PAGE_FIELDS.includes(requested.field)) {
+  if (requested && !fields.includes(requested.field)) {
     throw new ManagementError('invalid-continuation', 'Continuation field is not supported', 'replan');
   }
   if (pagingIssues.length) {

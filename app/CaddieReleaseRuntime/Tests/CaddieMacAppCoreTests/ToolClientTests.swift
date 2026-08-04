@@ -212,6 +212,96 @@ final class ToolClientTests: XCTestCase {
         XCTAssertEqual(response.result?.snapshot, .empty)
     }
 
+    func testPriorV2SnapshotWithoutInventoryFieldsStillDecodes() throws {
+        var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.uninitializedResponse) as? [String: Any])
+        var result = try XCTUnwrap(envelope["result"] as? [String: Any])
+        var snapshot = try XCTUnwrap(result["snapshot"] as? [String: Any])
+        snapshot.removeValue(forKey: "skillInventory")
+        snapshot.removeValue(forKey: "projects")
+        result["snapshot"] = snapshot
+        envelope["result"] = result
+
+        let response = try ToolResponse.validated(
+            JSONSerialization.data(withJSONObject: envelope), requestId: "fixture", operation: "status"
+        )
+
+        XCTAssertEqual(response.result?.snapshot.inventorySkills, [])
+        XCTAssertEqual(response.result?.snapshot.inventoryProjects, [])
+    }
+
+    func testClientFetchesEveryInventoryPageBeforeReturningTheSnapshot() async throws {
+        let runner = ScriptedRunner(results: [
+            .success(Self.inventoryResponse(names: ["first"], continuation: "next-page")),
+            .success(Self.inventoryResponse(names: ["second"], continuation: nil)),
+        ])
+        let client = ToolLaunchClient(
+            supportRoot: URL(fileURLWithPath: "/tmp/caddie-test"), environment: [:],
+            resolver: FixedResolver(), runner: runner, retryDelay: {}
+        )
+
+        let snapshot = try await client.status()
+        let requests = try await runner.requests().map {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: $0) as? [String: Any])
+        }
+
+        XCTAssertEqual(snapshot.inventorySkills.map(\.name), ["first", "second"])
+        XCTAssertTrue(snapshot.continuations?.isEmpty == true)
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[1]["operation"] as? String, "status")
+        XCTAssertEqual((requests[1]["input"] as? [String: Any])?["continuationToken"] as? String, "next-page")
+    }
+
+    func testClientFetchesEveryActionPageBeforeReturningTheSnapshot() async throws {
+        let runner = ScriptedRunner(results: [
+            .success(Self.pageResponse(
+                readyIDs: ["ready-first"], authorizationIDs: ["auth-first"],
+                continuations: [("readyWork", "ready-next"), ("authorizations", "auth-next")]
+            )),
+            .success(Self.pageResponse(readyIDs: ["ready-second"])),
+            .success(Self.pageResponse(authorizationIDs: ["auth-second"])),
+        ])
+        let client = ToolLaunchClient(
+            supportRoot: URL(fileURLWithPath: "/tmp/caddie-test"), environment: [:],
+            resolver: FixedResolver(), runner: runner, retryDelay: {}
+        )
+
+        let snapshot = try await client.status()
+        let requests = try await runner.requests().map {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: $0) as? [String: Any])
+        }
+
+        XCTAssertEqual(snapshot.readyWork.map(\.id), ["ready-first", "ready-second"])
+        XCTAssertEqual(snapshot.authorizations.map(\.selectionId), ["auth-first", "auth-second"])
+        XCTAssertEqual(requests.dropFirst().compactMap {
+            ($0["input"] as? [String: Any])?["continuationToken"] as? String
+        }, ["ready-next", "auth-next"])
+        XCTAssertTrue(snapshot.continuations?.isEmpty == true)
+    }
+
+    func testClientAllowsTheCombinedBoundAcrossSeveralPagedFields() async throws {
+        let fields = ["readyWork", "authorizations", "activity"]
+        var results: [Result<Data, Error>] = [
+            .success(Self.pageResponse(continuations: fields.map { ($0, "\($0)-0") }))
+        ]
+        for field in fields {
+            for index in 0..<67 {
+                let next = index < 66 ? [(field, "\(field)-\(index + 1)")] : []
+                results.append(.success(Self.pageResponse(continuations: next)))
+            }
+        }
+        let runner = ScriptedRunner(results: results)
+        let client = ToolLaunchClient(
+            supportRoot: URL(fileURLWithPath: "/tmp/caddie-test"), environment: [:],
+            resolver: FixedResolver(), runner: runner, retryDelay: {}
+        )
+
+        let snapshot = try await client.status()
+        let callCount = await runner.count()
+
+        XCTAssertEqual(callCount, 202)
+        XCTAssertTrue(snapshot.continuations?.isEmpty == true)
+    }
+
     func testToolAgentHandoffEffectCarriesExactAttentionIntoAppSnapshot() throws {
         var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.uninitializedResponse) as? [String: Any])
         var result = try XCTUnwrap(envelope["result"] as? [String: Any])
@@ -241,7 +331,39 @@ final class ToolClientTests: XCTestCase {
         )
     }
 
-    private static let uninitializedResponse = Data(#"{"version":2,"ok":true,"requestId":"fixture","operation":"status","result":{"snapshot":{"version":2,"state":"uninitialized","revision":0,"freshness":{"checkedAt":null},"compatibility":{"protocol":2,"state":2},"coverage":{"status":"unknown","issues":[]},"summary":{"selections":0,"current":0,"ready":0,"attention":0},"sources":[],"userSkills":[],"projectSkills":[],"readyWork":[],"authorizations":[],"attention":[],"recentAttention":[],"activity":[],"pendingActions":[],"outsideEffects":[],"pause":{"active":false,"reason":null,"safetyTriggered":false,"startedAt":null},"watchSet":[],"continuations":[]}}}"#.utf8)
+    private static let uninitializedResponse = Data(#"{"version":2,"ok":true,"requestId":"fixture","operation":"status","result":{"snapshot":{"version":2,"state":"uninitialized","revision":0,"freshness":{"checkedAt":null},"compatibility":{"protocol":2,"state":2},"coverage":{"status":"unknown","issues":[]},"summary":{"selections":0,"current":0,"ready":0,"attention":0},"sources":[],"userSkills":[],"projectSkills":[],"skillInventory":[],"projects":[],"readyWork":[],"authorizations":[],"attention":[],"recentAttention":[],"activity":[],"pendingActions":[],"outsideEffects":[],"pause":{"active":false,"reason":null,"safetyTriggered":false,"startedAt":null},"watchSet":[],"continuations":[]}}}"#.utf8)
+
+    private static func inventoryResponse(names: [String], continuation: String?) -> Data {
+        pageResponse(
+            inventoryNames: names,
+            continuations: continuation.map { [("skillInventory", $0)] } ?? []
+        )
+    }
+
+    private static func pageResponse(
+        inventoryNames: [String] = [], readyIDs: [String] = [], authorizationIDs: [String] = [],
+        continuations: [(String, String)] = []
+    ) -> Data {
+        var envelope = try! JSONSerialization.jsonObject(with: uninitializedResponse) as! [String: Any]
+        var result = envelope["result"] as! [String: Any]
+        var snapshot = result["snapshot"] as! [String: Any]
+        snapshot["skillInventory"] = inventoryNames.map { name in
+            [
+                "version": 2, "id": "inventory-\(name)", "scope": "user", "projectRoot": NSNull(),
+                "name": name, "installedPath": "/tmp/\(name)", "enabled": true, "managed": false,
+                "selectionId": NSNull(), "origin": NSNull(), "shadowsSkillId": NSNull(), "status": "unmanaged",
+                "permissionFolder": NSNull(),
+            ] as [String: Any]
+        }
+        snapshot["readyWork"] = readyIDs.map {
+            ["version": 2, "id": $0, "selectionId": $0, "kind": "authorization-available", "authorized": false]
+        }
+        snapshot["authorizations"] = authorizationIDs.map { ["selectionId": $0, "active": true] }
+        snapshot["continuations"] = continuations.map { ["field": $0.0, "token": $0.1, "remaining": 1] }
+        result["snapshot"] = snapshot
+        envelope["result"] = result
+        return try! JSONSerialization.data(withJSONObject: envelope)
+    }
 
     private static func response(safetyPaused: Bool, pendingResume: Bool) -> Data {
         var envelope = try! JSONSerialization.jsonObject(with: uninitializedResponse) as! [String: Any]

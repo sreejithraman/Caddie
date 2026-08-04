@@ -4,10 +4,13 @@ import { access, lstat, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import { parseManifest } from '../manifest/parse-manifest.mjs';
 import { extractSkillName } from '../manifest/resolve-selections.mjs';
-import { loadRegistry } from '../registry/load-registry.mjs';
 import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
 import { createLegacyBridge } from './legacy-bridge.mjs';
 import { inspectLocalGitSource } from './local-source.mjs';
+import { buildSkillInventory, inspectInstalledSkills, inspectProjectSkillInventory } from './inventory.mjs';
+import {
+  inventoryStorePath, preflightInventoryProjection, readInventoryProjection, writeInventoryProjection,
+} from './inventory-store.mjs';
 import { observeAttention, prepareAttentionCapacity } from './attention.mjs';
 import {
   ACT_FORMS,
@@ -50,10 +53,14 @@ export function createManagementModule(options = {}) {
   const statePath = options.statePath ?? userLayout(home).managementStatePath;
   const now = options.now ?? (() => new Date());
   const inspectGit = options.inspectLocalGitSource ?? inspectLocalGitSource;
+  const preflightInventory = options.preflightInventoryProjection ?? preflightInventoryProjection;
   const apply = options.applySelection ?? applySelection;
   const applyRecovery = options.applyRecovery ?? (async (plan) => applyPlan({ plan, approval: approvePlan(plan) }));
   const inspectRecovery = options.inspectRecovery ?? (() => recover({ scope: { id: 'user', root: home } }));
-  const runtime = { home, statePath, now, inspectGit, apply, applyRecovery, inspectRecovery };
+  const runtime = {
+    home, statePath, inventoryPath: inventoryStorePath(statePath), now, inspectGit, preflightInventory,
+    apply, applyRecovery, inspectRecovery,
+  };
   const legacyBridge = createLegacyBridge({
     env: options.legacyRuntime?.env,
     operations: options.legacyRuntime?.operations,
@@ -72,7 +79,8 @@ async function execute(rawRequest, runtime) {
   const request = validateManagementRequest(rawRequest);
   if (request.operation === 'status') {
     const state = await readManagementState(runtime.statePath);
-    return resultFor(request, projectSnapshot(statusSnapshot(state), state.pagingKey, request.input.continuationToken ?? null));
+    const snapshot = await addInventoryProjection(statusSnapshot(state), runtime);
+    return resultFor(request, projectSnapshot(snapshot, state.pagingKey, request.input.continuationToken ?? null));
   }
   let release;
   try {
@@ -92,6 +100,7 @@ async function execute(rawRequest, runtime) {
 
 async function executeLocked(request, runtime) {
   const state = await readManagementState(runtime.statePath);
+  if (await migrateInlineInventory(state, runtime)) await writeManagementState(runtime.statePath, state);
 
   const idempotencyId = request.input.idempotencyId;
   const requestHash = digest(request);
@@ -100,7 +109,7 @@ async function executeLocked(request, runtime) {
     if (receipt.requestHash !== requestHash) {
       throw new ManagementError('idempotency-conflict', 'Idempotency ID was reused with different input');
     }
-    return structuredClone(receipt.result);
+    return addInventoryToResult(structuredClone(receipt.result), runtime, state.pagingKey);
   }
   const idHash = digest(idempotencyId);
   const tombstone = state.idempotencyTombstones.find((item) => item.idHash === idHash);
@@ -115,16 +124,87 @@ async function executeLocked(request, runtime) {
     ? await cycle(next, request.input, runtime)
     : await act(next, request.input, runtime);
   next.revision += 1;
-  next.snapshot = { ...snapshot, revision: next.revision };
-  const response = resultFor(request, projectSnapshot(next.snapshot, next.pagingKey));
+  const hasFreshInventory = snapshot.skillInventory !== undefined && snapshot.projects !== undefined;
+  const richSnapshot = { ...await addInventoryProjection(snapshot, runtime), revision: next.revision };
+  next.snapshot = stripInventoryProjection(richSnapshot);
+  const response = resultFor(request, projectSnapshot(richSnapshot, next.pagingKey));
+  const storedResponse = resultFor(request, stripInventoryProjection(projectSnapshot(next.snapshot, next.pagingKey)));
   const replayRisk = hasReplayRisk(request, state, next);
   next.receipts = [
-    { id: idempotencyId, requestHash, result: response, replayRisk, createdAt: timestamp(runtime) },
+    { id: idempotencyId, requestHash, result: storedResponse, replayRisk, createdAt: timestamp(runtime) },
     ...next.receipts,
   ];
   compactManagementState(next, timestamp(runtime));
+  if (hasFreshInventory) await writeInventoryProjection(runtime.inventoryPath, {
+    revision: next.revision, skillInventory: richSnapshot.skillInventory, projects: richSnapshot.projects,
+  }, retainedInventoryRevisions(next));
   await writeManagementState(runtime.statePath, next);
   return response;
+}
+
+async function migrateInlineInventory(state, runtime) {
+  const receiptSnapshots = state.receipts.map((receipt) => ({ receipt, snapshot: receipt.result?.result?.snapshot }))
+    .filter(({ snapshot }) => Array.isArray(snapshot?.skillInventory) && Array.isArray(snapshot?.projects));
+  const inlineSnapshots = [state.snapshot, ...receiptSnapshots.map(({ snapshot }) => snapshot)]
+    .filter((snapshot) => Array.isArray(snapshot?.skillInventory) && Array.isArray(snapshot?.projects));
+  if (inlineSnapshots.length === 0) return false;
+  const projections = new Map();
+  for (const { snapshot } of receiptSnapshots) {
+    const paged = snapshot.continuations.some((item) => ['skillInventory', 'projects'].includes(item.field));
+    if (!paged) projections.set(snapshot.revision, snapshot);
+  }
+  if (Array.isArray(state.snapshot?.skillInventory) && Array.isArray(state.snapshot?.projects)) {
+    projections.set(state.snapshot.revision, state.snapshot);
+  }
+  const expiredReceipts = receiptSnapshots.filter(({ snapshot }) => (
+    snapshot.continuations.some((item) => ['skillInventory', 'projects'].includes(item.field))
+      && !projections.has(snapshot.revision)
+  )).map(({ receipt }) => receipt);
+  const priorTombstones = new Set(state.idempotencyTombstones.map((item) => item.idHash));
+  const newTombstones = expiredReceipts.filter((receipt) => !priorTombstones.has(digest(receipt.id))).map((receipt) => ({
+    idHash: digest(receipt.id), requestHash: receipt.requestHash, createdAt: receipt.createdAt,
+  }));
+  if (state.idempotencyTombstones.length + newTombstones.length > MAX_IDEMPOTENCY_TOMBSTONES) {
+    throw new ManagementError('idempotency-capacity', 'Caddie cannot safely expire incomplete inventory results', 'needs-user', {
+      capacity: MAX_IDEMPOTENCY_TOMBSTONES,
+    });
+  }
+  const retainedRevisions = retainedInventoryRevisions(state);
+  for (const snapshot of [...projections.values()].sort((left, right) => left.revision - right.revision)) {
+    await writeInventoryProjection(runtime.inventoryPath, {
+      revision: snapshot.revision,
+      skillInventory: snapshot.skillInventory,
+      projects: snapshot.projects,
+    }, retainedRevisions);
+  }
+  const expiredIds = new Set(expiredReceipts.map((receipt) => receipt.id));
+  state.receipts = state.receipts.filter((receipt) => !expiredIds.has(receipt.id));
+  state.idempotencyTombstones.push(...newTombstones);
+  for (const snapshot of inlineSnapshots) {
+    delete snapshot.skillInventory;
+    delete snapshot.projects;
+  }
+  return true;
+}
+
+async function addInventoryProjection(snapshot, runtime) {
+  if (snapshot.skillInventory !== undefined && snapshot.projects !== undefined) return snapshot;
+  const projection = await readInventoryProjection(runtime.inventoryPath, snapshot.revision);
+  return projection ? { ...snapshot, skillInventory: projection.skillInventory, projects: projection.projects } : snapshot;
+}
+
+async function addInventoryToResult(response, runtime, pagingKey) {
+  const snapshot = response?.result?.snapshot;
+  if (!snapshot) return response;
+  response.result.snapshot = projectSnapshot(
+    await addInventoryProjection(snapshot, runtime), pagingKey, null, ['skillInventory', 'projects'],
+  );
+  return response;
+}
+
+function stripInventoryProjection(snapshot) {
+  const { skillInventory: _skillInventory, projects: _projects, ...compatible } = snapshot;
+  return compatible;
 }
 
 function makeReceiptRoom(state, runtime) {
@@ -194,18 +274,33 @@ async function cycle(state, input, runtime) {
     if (classified.ready) readyWork.push(classified.ready);
   }
   const prospectiveStatuses = classifiedSelections.map(({ selection, classified }) => publicSelection(selection, classified.status));
-  assertSnapshotCapacity(state, snapshotFrom(state, prospectiveStatuses, readyWork, at, {
+  const canWrite = ({ classified }) => classified.eligible
+    && input.mode === 'authorized-user-reconciliation' && !state.pause.active;
+  const capacityStatuses = classifiedSelections.map(({ selection, classified }) => (
+    publicSelection(selection, canWrite({ classified }) ? 'attention' : classified.status)
+  ));
+  const inventoryProjection = buildSkillInventory(inventory, prospectiveStatuses);
+  const capacityProjection = buildSkillInventory(inventory, capacityStatuses);
+  await runtime.preflightInventory(runtime.inventoryPath, {
+    revision: state.revision + 1,
+    skillInventory: capacityProjection.skillInventory,
+    projects: capacityProjection.projects,
+  }, retainedInventoryRevisions(state));
+  assertSnapshotCapacity(state, snapshotFrom(state, capacityStatuses, readyWork, at, {
     projectSkills: inventory.projectSkills,
+    skillInventory: capacityProjection.skillInventory,
+    projects: capacityProjection.projects,
     watchPaths: inventory.watchPaths,
   }));
   const provedSubjects = new Set(['recovery', 'tool', ...inventory.selections.map((selection) => selection.id)]);
-  const possibleWriteFailures = classifiedSelections.filter(({ classified }) => classified.eligible
-    && input.mode === 'authorized-user-reconciliation' && !state.pause.active).length;
+  const possibleWriteFailures = classifiedSelections.filter(canWrite).length;
   if (!prepareAttentionCapacity(state, causes, provedSubjects, possibleWriteFailures, at)) {
     pause(state, 'attention-capacity', at);
     for (const { selection, classified } of classifiedSelections) selectionStatuses.push(publicSelection(selection, classified.status));
     return snapshotFrom(state, selectionStatuses, readyWork, at, {
       projectSkills: inventory.projectSkills,
+      skillInventory: inventoryProjection.skillInventory,
+      projects: inventoryProjection.projects,
       watchPaths: inventory.watchPaths,
       coverage: { status: 'partial', issues: [{ code: 'attention-capacity' }] },
     });
@@ -239,8 +334,11 @@ async function cycle(state, input, runtime) {
   if (causes.some((item) => item.code === 'owned-exposure-changed')) pause(state, 'ownership-fault', at);
   if (causes.some((item) => item.code === 'lock-divergence')) pause(state, 'shared-state-fault', at);
   observeAttention(state, causes, at, provedSubjects);
+  const finalInventoryProjection = buildSkillInventory(inventory, selectionStatuses);
   return snapshotFrom(state, selectionStatuses, readyWork, at, {
     projectSkills: inventory.projectSkills,
+    skillInventory: finalInventoryProjection.skillInventory,
+    projects: finalInventoryProjection.projects,
     watchPaths: inventory.watchPaths,
   });
 }
@@ -311,7 +409,7 @@ async function createPendingAction(state, intent, runtime, at) {
       throw new ManagementError('agent-handoff-unavailable', 'This item has no exact readable Git work folder', 'needs-user');
     }
     action.outsideEffect = {
-      kind: 'agent-handoff', provider: intent.provider, workFolder: selection.inspection.checkout,
+      kind: 'agent-handoff', provider: intent.provider, workFolder: selection.inspection.repositoryRoot ?? selection.inspection.checkout,
       prompt: handoffPrompt(attention, selection, state.authorizations[selection.id] ?? null, at),
     };
   }
@@ -417,13 +515,18 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
     fingerprint(layout.lockPath), fingerprint(layout.ledgerPath),
   ]);
   const selections = [];
-  for (const raw of manifest.skills) {
+  const selectedManifestSkills = manifest.skills.filter((raw) => (
+    onlySelectionId === null || selectionId(raw.source, raw.path) === onlySelectionId
+  ));
+  const inspectOne = async (raw) => {
     const source = manifest.sources[raw.source];
     const id = selectionId(raw.source, raw.path);
-    if (onlySelectionId !== null && id !== onlySelectionId) continue;
     if (source.type !== 'local') {
-      selections.push({ id, sourceId: raw.source, selectedPath: raw.path, enabled: raw.enabled ?? true, sourceType: source.type, statusOnly: true });
-      continue;
+      const entry = ledger?.entries.find((item) => item?.sourceId === raw.source && item?.selectedPath === raw.path) ?? null;
+      return {
+        id, name: entry?.name ?? null, sourceId: raw.source, selectedPath: raw.path, enabled: raw.enabled ?? true,
+        sourceType: source.type, sourceDefinition: source, installedPath: entry?.path ?? null, statusOnly: true,
+      };
     }
     const selectedRoot = path.resolve(source.path, raw.path);
     const provenanceEntry = ledger?.entries.find((item) => item?.sourceId === raw.source && item?.selectedPath === raw.path) ?? null;
@@ -454,11 +557,15 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
       && installedFingerprint !== null && installedFingerprint === inspection.fingerprint
       && entry?.fingerprint === installedFingerprint && entry?.sourceId === raw.source && entry?.selectedPath === raw.path
       && ownership.complete;
-    selections.push({
+    return {
       id, name, sourceId: raw.source, selectedPath: raw.path, enabled: raw.enabled ?? true,
-      sourceType: source.type, sourceRoot: source.path, selectedRoot, installedPath, installedFingerprint,
+      sourceType: source.type, sourceDefinition: source, sourceRoot: source.path, selectedRoot, installedPath, installedFingerprint,
       inspection, ledgerEntry: entry, ownershipDigest, baselineClean, lockFingerprint, ledgerFingerprint,
-    });
+    };
+  };
+  const inspectionConcurrency = 6;
+  for (let offset = 0; offset < selectedManifestSkills.length; offset += inspectionConcurrency) {
+    selections.push(...await Promise.all(selectedManifestSkills.slice(offset, offset + inspectionConcurrency).map(inspectOne)));
   }
   if (onlySelectionId === null) {
     const present = new Set(selections.map((selection) => selection.id));
@@ -466,58 +573,29 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
       if (!present.has(id)) authorization.active = false;
     }
   }
-  const projectSkills = onlySelectionId === null
-    ? (refreshProjects ? await inspectProjectSkills(runtime.home) : structuredClone(state.snapshot?.projectSkills ?? []))
-    : [];
+  const installedUserSkills = onlySelectionId === null ? await inspectInstalledSkills(layout.canonicalSkillsRoot) : [];
+  const cachedProjectInventory = (state.snapshot?.skillInventory ?? []).filter((item) => item.scope === 'project');
+  const projectData = onlySelectionId === null
+    ? (refreshProjects ? await inspectProjectSkillInventory(runtime.home) : {
+      projectSkills: structuredClone(state.snapshot?.projectSkills ?? []),
+      skillInventory: structuredClone(cachedProjectInventory),
+      projects: structuredClone(state.snapshot?.projects ?? []),
+    })
+    : { projectSkills: [], skillInventory: [], projects: [] };
   const watchPaths = [
     layout.stateRoot,
-    ...selections.flatMap((selection) => [selection.sourceRoot, selection.installedPath]),
+    ...selections.flatMap((selection) => [
+      selection.sourceRoot,
+      selection.inspection?.repositoryRoot !== selection.inspection?.checkout ? selection.inspection?.repositoryRoot : null,
+      selection.installedPath,
+    ]),
     ...(ledger?.harnessSettings ?? []).map((entry) => entry?.settingsPath ?? entry?.path).filter((item) => typeof item === 'string'),
   ];
-  return { manifest, lock, lockFingerprint, ledger, ledgerFingerprint, selections, projectSkills, layout, watchPaths };
-}
-
-async function inspectProjectSkills(home) {
-  const registry = await loadRegistry({}, home);
-  if (registry.status === 'unsupported') throw new ManagementError('unsupported-registry', 'Caddie Registry version is not supported', 'needs-user');
-  const result = [];
-  for (const projectRoot of registry.registeredProjects) {
-    const layout = scopeLayout({ id: `project:${projectRoot}`, root: projectRoot }, home);
-    let manifest;
-    let ledger;
-    try {
-      manifest = await parseManifest(layout.manifestPath, 'project', projectRoot);
-      ledger = await optionalJson(layout.ledgerPath);
-    } catch (error) {
-      result.push({ version: 2, id: `project:${projectRoot}`, projectRoot, status: 'attention', code: error.code ?? 'incomplete-evidence' });
-      continue;
-    }
-    for (const selection of manifest.skills) {
-      const source = manifest.sources[selection.source];
-      const id = `project:${projectRoot}:${selectionId(selection.source, selection.path)}`;
-      if (source.type !== 'local') {
-        result.push({ version: 2, id, projectRoot, sourceId: selection.source, selectedPath: selection.path, status: 'manual-only' });
-        continue;
-      }
-      try {
-        const selectedRoot = path.resolve(source.path, selection.path);
-        const skillFile = path.join(selectedRoot, 'SKILL.md');
-        const name = extractSkillName(await readFile(skillFile, 'utf8'), skillFile, path.basename(selectedRoot));
-        const sourceFingerprint = await fingerprint(selectedRoot);
-        const entry = ledger?.entries?.find((item) => item?.sourceId === selection.source && item?.selectedPath === selection.path)
-          ?? ledger?.entries?.find((item) => item?.name === name) ?? null;
-        const installedFingerprint = await fingerprintIfPresent(entry?.path ?? path.join(layout.canonicalSkillsRoot, name));
-        const current = sourceFingerprint === installedFingerprint && entry?.fingerprint === installedFingerprint;
-        result.push({
-          version: 2, id, projectRoot, name, sourceId: selection.source, selectedPath: selection.path,
-          enabled: selection.enabled ?? true, status: current ? 'current' : 'manual-only',
-        });
-      } catch (error) {
-        result.push({ version: 2, id, projectRoot, sourceId: selection.source, selectedPath: selection.path, status: 'attention', code: unavailableCode(error) });
-      }
-    }
-  }
-  return result;
+  return {
+    manifest, lock, lockFingerprint, ledger, ledgerFingerprint, selections,
+    projectSkills: projectData.projectSkills, projectInventory: projectData.skillInventory,
+    projectSummaries: projectData.projects, installedUserSkills, layout, watchPaths,
+  };
 }
 
 async function retryAttention(state, attentionId, runtime, at) {
@@ -714,7 +792,7 @@ function handoffPrompt(attention, selection, authorization, at) {
     'Help resolve this Caddie Attention item.',
     `Attention ID: ${attention.id}`,
     `Skill Selection: ${selection.id}`,
-    `Work folder: ${selection.inspection.checkout}`,
+    `Work folder: ${selection.inspection.repositoryRoot ?? selection.inspection.checkout}`,
     `Approved branch: ${authorization?.approvedBranch ?? 'none'}`,
     `Current branch: ${selection.inspection.branch ?? 'none'}`,
     `Current commit: ${selection.inspection.commit}`,
@@ -817,13 +895,17 @@ function absoluteHome(home) {
 function digest(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function timestamp(runtime) { return new Date(runtime.now()).toISOString(); }
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function retainedInventoryRevisions(state) {
+  return [state.revision, ...state.receipts.map((item) => item.result?.result?.snapshot?.revision)
+    .filter((item) => Number.isSafeInteger(item))];
+}
 
 function assertSnapshotCapacity(state, snapshot) {
   const fields = [
-    'sources', 'userSkills', 'projectSkills', 'readyWork', 'authorizations', 'attention',
+    'sources', 'userSkills', 'projectSkills', 'skillInventory', 'projects', 'readyWork', 'authorizations', 'attention',
     'recentAttention', 'activity', 'pendingActions', 'outsideEffects', 'watchSet',
   ];
-  const overfull = fields.find((field) => snapshot[field].length > MAX_SNAPSHOT_DETAIL_RECORDS);
+  const overfull = fields.find((field) => (snapshot[field] ?? []).length > MAX_SNAPSHOT_DETAIL_RECORDS);
   if (overfull) {
     throw new ManagementError('snapshot-capacity', `Snapshot ${overfull} exceeds the durable safety cap`, 'needs-user', {
       field: overfull, capacity: MAX_SNAPSHOT_DETAIL_RECORDS,

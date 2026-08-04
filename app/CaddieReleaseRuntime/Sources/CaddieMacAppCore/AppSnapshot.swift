@@ -9,6 +9,8 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public let sources: [Source]
     public let userSkills: [UserSkill]
     public let projectSkills: [ProjectSkill]
+    public let skillInventory: [InventorySkill]?
+    public let projects: [ProjectInventory]?
     public let readyWork: [ReadyWork]
     public let authorizations: [Authorization]
     public let attention: [Attention]
@@ -19,6 +21,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public let pause: Pause
     public let watchSet: [Watch]
     public let recovery: Recovery?
+    public let continuations: [Continuation]?
 
     public struct Freshness: Codable, Equatable, Sendable {
         public let checkedAt: String?
@@ -61,6 +64,45 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         public let name: String?
         public let sourceId: String?
         public let selectedPath: String?
+    }
+
+    public struct InventorySkill: Codable, Equatable, Identifiable, Sendable {
+        public let version: Int
+        public let id: String
+        public let scope: String
+        public let projectRoot: String?
+        public let name: String
+        public let installedPath: String
+        public let enabled: Bool
+        public let managed: Bool
+        public let selectionId: String?
+        public let origin: SkillOrigin?
+        public let shadowsSkillId: String?
+        public let status: String
+        public let permissionFolder: String?
+    }
+
+    public struct SkillOrigin: Codable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let sourceId: String
+        public let name: String
+        public let type: String
+        public let gitUrl: String?
+        public let localFolder: String?
+        public let selectedPath: String
+
+        public var location: String { gitUrl ?? localFolder ?? "Unknown source" }
+    }
+
+    public struct ProjectInventory: Codable, Equatable, Identifiable, Sendable {
+        public let version: Int
+        public let id: String
+        public let name: String
+        public let root: String
+        public let projectSkillCount: Int
+        public let inheritedUserSkillCount: Int
+        public let overrideCount: Int
+        public let status: String
     }
 
     public struct ReadyWork: Codable, Equatable, Identifiable, Sendable {
@@ -138,18 +180,53 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         public let status: String
     }
 
+    public struct Continuation: Codable, Equatable, Identifiable, Sendable {
+        public var id: String { "\(field):\(token)" }
+        public let field: String
+        public let token: String
+        public let remaining: Int
+    }
+
     public static let empty = AppSnapshot(
         version: 2,
         state: "uninitialized",
         revision: 0,
         freshness: .init(checkedAt: nil),
         summary: .init(selections: 0, current: 0, ready: 0, attention: 0),
-        sources: [], userSkills: [], projectSkills: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
-        pendingActions: [], outsideEffects: [], pause: .init(active: false, reason: nil, safetyTriggered: false), watchSet: [], recovery: nil
+        sources: [], userSkills: [], projectSkills: [], skillInventory: [], projects: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
+        pendingActions: [], outsideEffects: [], pause: .init(active: false, reason: nil, safetyTriggered: false), watchSet: [], recovery: nil,
+        continuations: []
     )
 
     public func skills(for sourceID: String) -> [UserSkill] {
         userSkills.filter { $0.sourceId == sourceID }
+    }
+
+    public var inventorySkills: [InventorySkill] { skillInventory ?? [] }
+    public var inventoryProjects: [ProjectInventory] { projects ?? [] }
+
+    func completingPages(_ pages: [String: [AppSnapshot]]) -> AppSnapshot {
+        func joined<T>(_ field: String, _ keyPath: KeyPath<AppSnapshot, [T]>) -> [T] {
+            self[keyPath: keyPath] + (pages[field] ?? []).flatMap { $0[keyPath: keyPath] }
+        }
+        let completeSkills = skillInventory.map { first in
+            first + (pages["skillInventory"] ?? []).flatMap(\.inventorySkills)
+        }
+        let completeProjects = projects.map { first in
+            first + (pages["projects"] ?? []).flatMap(\.inventoryProjects)
+        }
+        return AppSnapshot(
+            version: version, state: state, revision: revision, freshness: freshness, summary: summary,
+            sources: joined("sources", \.sources), userSkills: joined("userSkills", \.userSkills),
+            projectSkills: joined("projectSkills", \.projectSkills),
+            skillInventory: completeSkills, projects: completeProjects,
+            readyWork: joined("readyWork", \.readyWork), authorizations: joined("authorizations", \.authorizations),
+            attention: joined("attention", \.attention), recentAttention: joined("recentAttention", \.recentAttention),
+            activity: joined("activity", \.activity), pendingActions: joined("pendingActions", \.pendingActions),
+            outsideEffects: joined("outsideEffects", \.outsideEffects), pause: pause,
+            watchSet: joined("watchSet", \.watchSet), recovery: recovery,
+            continuations: continuations?.filter { pages[$0.field] == nil }
+        )
     }
 
     public func attention(for sourceID: String) -> [Attention] {
@@ -164,6 +241,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     func hasInspectionRelevantChanges(comparedTo prior: AppSnapshot) -> Bool {
         version != prior.version || state != prior.state || summary != prior.summary
             || sources != prior.sources || userSkills != prior.userSkills || projectSkills != prior.projectSkills
+            || skillInventory != prior.skillInventory || projects != prior.projects
             || readyWork != prior.readyWork || authorizations != prior.authorizations
             || !Self.sameAttention(attention, prior.attention)
             || !Self.sameAttention(recentAttention, prior.recentAttention)

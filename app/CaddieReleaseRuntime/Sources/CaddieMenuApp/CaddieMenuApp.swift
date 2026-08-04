@@ -69,6 +69,13 @@ private struct BlockedLocationMenu: View {
 private struct CaddieMenu: View {
     @ObservedObject var model: AppModel
     @State private var confirmsRemoval = false
+    @State private var inventoryView = InventoryView.skills
+
+    private enum InventoryView: String, CaseIterable, Identifiable {
+        case skills = "Skills"
+        case sources = "Sources"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -77,8 +84,11 @@ private struct CaddieMenu: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if model.menuSnapshot.recovery != nil || model.menuSnapshot.pause.active || toolAttention.count > 0 { urgentSection }
-                    sourcesSection
-                    projectSection
+                    Picker("View", selection: $inventoryView) {
+                        ForEach(InventoryView.allCases) { view in Text(view.rawValue).tag(view) }
+                    }
+                    .pickerStyle(.segmented)
+                    if inventoryView == .skills { skillsSection } else { inventorySourcesSection }
                     readyWorkSection
                     activitySection
                 }
@@ -133,21 +143,31 @@ private struct CaddieMenu: View {
         }
     }
 
-    private var sourcesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Sources").font(.headline)
-            if model.menuSnapshot.sources.isEmpty { Text("No User Skill sources yet").foregroundStyle(.secondary) }
-            ForEach(model.menuSnapshot.sources) { source in SourceCard(model: model, source: source) }
+    private var skillsSection: some View {
+        let presentation = SkillInventoryPresentation(snapshot: model.menuSnapshot)
+        return VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("User Skills").font(.headline)
+                if presentation.userSkills.isEmpty {
+                    Text("No User Skills found").foregroundStyle(.secondary)
+                }
+                ForEach(presentation.userSkills) { skill in
+                    InventorySkillRow(model: model, skill: skill)
+                }
+            }
+            ForEach(presentation.projects) { section in
+                ProjectInventorySection(model: model, section: section)
+            }
         }
     }
 
-    @ViewBuilder private var projectSection: some View {
-        if !model.menuSnapshot.projectSkills.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Project Skills").font(.headline)
-                ForEach(model.menuSnapshot.projectSkills) { skill in
-                    HStack { Text(skill.name ?? skill.selectedPath ?? skill.id); Spacer(); Text(skill.status).foregroundStyle(.secondary) }
-                }
+    private var inventorySourcesSection: some View {
+        let presentation = SkillInventoryPresentation(snapshot: model.menuSnapshot)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Sources").font(.headline)
+            if presentation.sources.isEmpty { Text("No skill sources found").foregroundStyle(.secondary) }
+            ForEach(presentation.sources) { source in
+                InventorySourceCard(model: model, source: source)
             }
         }
     }
@@ -222,9 +242,143 @@ private struct CaddieMenu: View {
     }
 }
 
-private struct SourceCard: View {
+private struct ProjectInventorySection: View {
     @ObservedObject var model: AppModel
-    let source: AppSnapshot.Source
+    let section: SkillInventoryPresentation.ProjectSection
+    @State private var inheritedExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(section.project.name).font(.headline)
+                    Spacer()
+                    if section.project.status == "attention" {
+                        Label("Attention", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    if section.project.overrideCount > 0 {
+                        Text("\(section.project.overrideCount) overrides")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text(section.project.root).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if section.projectSkills.isEmpty {
+                Text("No Project Skills found").foregroundStyle(.secondary)
+            }
+            ForEach(section.projectSkills) { skill in
+                InventorySkillRow(model: model, skill: skill)
+            }
+            if !section.inheritedUserSkills.isEmpty {
+                DisclosureGroup(isExpanded: $inheritedExpanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(section.inheritedUserSkills) { skill in
+                            InventorySkillRow(model: model, skill: skill, inherited: true)
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("Also uses \(section.inheritedUserSkills.count) User Skills")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+private struct InventorySkillRow: View {
+    @ObservedObject var model: AppModel
+    let skill: AppSnapshot.InventorySkill
+    var inherited = false
+    @State private var expanded = false
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                Button { expanded.toggle() } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(skill.name).fontWeight(.medium)
+                            Text(originLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        if skill.shadowsSkillId != nil { Text("Override").font(.caption).foregroundStyle(.blue) }
+                        if inherited { Text("User").font(.caption).foregroundStyle(.secondary) }
+                        Text(statusLabel).font(.caption).foregroundStyle(statusColor)
+                    }
+                }.buttonStyle(.plain)
+                if expanded {
+                    ForEach(attentionItems) { item in
+                        AttentionRow(model: model, item: item, allowHandoff: model.canHandoff(item))
+                    }
+                    if let folder = folderAccessPath {
+                        Button("Grant Access") { model.grantAccess(to: folder) }
+                    }
+                    detail("Installed", skill.installedPath)
+                    if let origin = skill.origin {
+                        detail(origin.type == "git" ? "Git" : "Folder", origin.location)
+                        detail("Selected path", origin.selectedPath)
+                    } else {
+                        detail("Managed", "No")
+                    }
+                    if skill.scope == "user", skill.managed, let selectionID = skill.selectionId {
+                        Toggle("Automatic updates", isOn: Binding(
+                            get: { model.menuSnapshot.isAuthorized(selectionID) },
+                            set: { enabled in Task { await model.setAuthorization(selectionID: selectionID, enabled: enabled) } }
+                        ))
+                        .font(.caption)
+                    }
+                }
+            }
+        }
+    }
+
+    private var originLabel: String {
+        if let permissionFolder = skill.permissionFolder { return "Folder access needed · \(permissionFolder)" }
+        guard let origin = skill.origin else { return "Unmanaged · \(skill.installedPath)" }
+        return "From \(origin.name) · \(origin.location)"
+    }
+
+    private var statusLabel: String {
+        switch skill.status {
+        case "manual-only": return "Manual"
+        case "unmanaged": return "Unmanaged"
+        default: return skill.status.capitalized
+        }
+    }
+
+    private var statusColor: Color {
+        skill.status == "attention" ? .orange : skill.status == "ready" ? .blue : .secondary
+    }
+
+    private var attentionItems: [AppSnapshot.Attention] {
+        model.menuSnapshot.attention.filter { item in
+            item.subjectId == skill.selectionId || item.subjectId == skill.origin?.sourceId
+        }
+    }
+
+    private var folderAccessPath: String? {
+        if let permissionFolder = skill.permissionFolder { return permissionFolder }
+        if attentionItems.contains(where: {
+            $0.code.contains("permission") || $0.code.contains("unavailable") || $0.code.contains("missing-source")
+        }) { return skill.origin?.localFolder }
+        return nil
+    }
+
+    private func detail(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption).textSelection(.enabled)
+        }
+    }
+}
+
+private struct InventorySourceCard: View {
+    @ObservedObject var model: AppModel
+    let source: SkillInventoryPresentation.SourceSection
     @State private var expanded = false
 
     var body: some View {
@@ -233,86 +387,19 @@ private struct SourceCard: View {
                 Button { expanded.toggle() } label: {
                     HStack {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        VStack(alignment: .leading) {
-                            Text(source.id).fontWeight(.semibold)
-                            Text(source.checkout ?? "Source path unavailable").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.name).fontWeight(.semibold)
+                            Text(source.location).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer()
-                        Text(model.isRunningCycle ? "updating" : source.state).foregroundStyle(statusColor)
+                        Text("\(source.skills.count) skills").font(.caption).foregroundStyle(.secondary)
                     }
                 }.buttonStyle(.plain)
-                HStack {
-                    Text(source.branch ?? "No branch")
-                    Text("\(source.skillCount) skills")
-                    Text(source.automaticUpdates ? "Auto" : "Manual")
-                    if source.attentionCount > 0 { Text("\(source.attentionCount) attention") }
-                }.font(.caption).foregroundStyle(.secondary)
-                if let highestAttention {
-                    Label(highestAttention.code, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange)
-                } else if source.nextAction != "none" {
-                    Text(source.nextAction == "review-ready-work" ? "Ready to review" : source.nextAction)
-                        .font(.caption).foregroundStyle(.blue)
-                }
                 if expanded {
-                    ForEach(model.menuSnapshot.skills(for: source.id)) { skill in
-                        HStack {
-                            Text(skill.name ?? skill.selectedPath)
-                            Spacer()
-                            Text(skill.status).foregroundStyle(.secondary)
-                            Toggle("Automatic", isOn: Binding(
-                                get: { model.menuSnapshot.isAuthorized(skill.id) },
-                                set: { enabled in Task { await model.setAuthorization(selectionID: skill.id, enabled: enabled) } }
-                            )).labelsHidden()
-                        }
-                    }
-                    ForEach(model.menuSnapshot.attention(for: source.id)) { item in
-                        AttentionRow(model: model, item: item, allowHandoff: model.canHandoff(item))
-                    }
-                    ForEach(readyWork) { work in
-                        Label("Ready: \(work.kind)", systemImage: "arrow.down.circle")
-                    }
-                    ForEach(sourceActivity.prefix(3)) { item in
-                        Label(item.kind, systemImage: "clock.arrow.circlepath")
-                            .foregroundStyle(.secondary)
-                    }
-                    if needsFolderAccess, let checkout = source.checkout {
-                        Button("Grant Access") { model.grantAccess(to: checkout) }
-                    }
-                    HStack {
-                        Button("Mute source") { model.muteSource(source.id) }
-                        Button("Unmute source") { model.unmuteSource(source.id) }
-                    }.font(.caption)
+                    ForEach(source.skills) { skill in InventorySkillRow(model: model, skill: skill) }
                 }
             }
         }
-    }
-
-    private var statusColor: Color {
-        source.state == "attention" ? .orange : source.state == "ready" ? .blue : .secondary
-    }
-
-    private var needsFolderAccess: Bool {
-        model.menuSnapshot.attention(for: source.id).contains {
-            $0.code.contains("permission") || $0.code.contains("unavailable") || $0.code.contains("missing-source")
-        }
-    }
-
-    private var readyWork: [AppSnapshot.ReadyWork] {
-        let skillIDs = Set(model.menuSnapshot.skills(for: source.id).map(\.id))
-        return model.menuSnapshot.readyWork.filter { skillIDs.contains($0.selectionId) }
-    }
-
-    private var highestAttention: AppSnapshot.Attention? {
-        let rank = ["critical": 0, "high": 1, "normal": 2, "low": 3]
-        return model.menuSnapshot.attention(for: source.id).min {
-            rank[$0.priority, default: 4] < rank[$1.priority, default: 4]
-        }
-    }
-
-    private var sourceActivity: [AppSnapshot.Activity] {
-        let skillIDs = Set(model.menuSnapshot.skills(for: source.id).map(\.id))
-        return model.menuSnapshot.activity.filter { $0.subjectId == source.id || skillIDs.contains($0.subjectId) }
     }
 }
 

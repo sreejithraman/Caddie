@@ -127,9 +127,11 @@ final class MenuCacheTests: XCTestCase {
             version: prior.version, state: prior.state, revision: prior.revision + 1,
             freshness: .init(checkedAt: "2026-08-03T14:01:00Z"), summary: prior.summary,
             sources: prior.sources, userSkills: prior.userSkills, projectSkills: prior.projectSkills,
+            skillInventory: prior.skillInventory, projects: prior.projects,
             readyWork: prior.readyWork, authorizations: prior.authorizations, attention: prior.attention,
             recentAttention: prior.recentAttention, activity: prior.activity, pendingActions: prior.pendingActions,
-            outsideEffects: prior.outsideEffects, pause: prior.pause, watchSet: prior.watchSet, recovery: prior.recovery
+            outsideEffects: prior.outsideEffects, pause: prior.pause, watchSet: prior.watchSet, recovery: prior.recovery,
+            continuations: prior.continuations
         )
 
         XCTAssertFalse(bookkeepingOnly.hasInspectionRelevantChanges(comparedTo: prior))
@@ -145,10 +147,10 @@ final class MenuCacheTests: XCTestCase {
             version: 2, state: "ready", revision: safetyPaused ? 1 : 2,
             freshness: .init(checkedAt: "2026-08-03T14:00:00Z"),
             summary: .init(selections: 0, current: 0, ready: 0, attention: safetyPaused ? 1 : 0),
-            sources: [], userSkills: [], projectSkills: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
+            sources: [], userSkills: [], projectSkills: [], skillInventory: [], projects: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
             pendingActions: [], outsideEffects: [],
             pause: .init(active: safetyPaused, reason: safetyPaused ? "verification-failed" : nil, safetyTriggered: safetyPaused),
-            watchSet: [], recovery: nil
+            watchSet: [], recovery: nil, continuations: []
         )
     }
 }

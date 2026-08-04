@@ -41,6 +41,8 @@ export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCo
   const exactCheckout = await realpath(checkout);
   const selected = path.resolve(exactCheckout, relativeSelection);
   if (!inside(exactCheckout, selected)) throw new LocalSourceInspectionError('selection-outside-checkout', 'Selected path leaves its checkout');
+  const exactSelected = await realpath(selected);
+  if (!inside(exactCheckout, exactSelected)) throw new LocalSourceInspectionError('selection-outside-checkout', 'Selected path leaves its checkout');
 
   let root;
   try {
@@ -51,30 +53,34 @@ export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCo
       fingerprint: await fingerprint(selected), cause: boundedCause(cause),
     };
   }
-  if (await realpath(root) !== exactCheckout) {
-    return { kind: 'nested-git', checkout: exactCheckout, repositoryRoot: await realpath(root), selectedPath: relativeSelection };
+  if (!path.isAbsolute(root)) throw new LocalSourceInspectionError('invalid-repository-root', 'Git returned a non-absolute repository root');
+  const repositoryRoot = await realpath(root);
+  if (!inside(repositoryRoot, exactCheckout)) {
+    throw new LocalSourceInspectionError('invalid-repository-root', 'Git returned a repository root outside the local source');
   }
+  const repositorySelection = path.relative(repositoryRoot, exactSelected);
+  const selectedPathspec = repositorySelection === '' ? '.' : `:(literal)${repositorySelection}`;
 
   let branch = null;
-  try { branch = (await git(runGit, exactCheckout, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim(); } catch {}
-  const commit = (await git(runGit, exactCheckout, ['rev-parse', '--verify', 'HEAD^{commit}'])).stdout.trim().toLowerCase();
-  const selectedStatus = (await git(runGit, exactCheckout, [
-    'status', '--porcelain=v1', '--untracked-files=all', '--', relativeSelection,
+  try { branch = (await git(runGit, repositoryRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim(); } catch {}
+  const commit = (await git(runGit, repositoryRoot, ['rev-parse', '--verify', 'HEAD^{commit}'])).stdout.trim().toLowerCase();
+  const selectedStatus = (await git(runGit, repositoryRoot, [
+    'status', '--porcelain=v1', '--untracked-files=all', '--', selectedPathspec,
   ])).stdout.trim();
-  const ignoredSelected = (await git(runGit, exactCheckout, [
-    'ls-files', '--others', '--ignored', '--exclude-standard', '--', relativeSelection,
+  const ignoredSelected = (await git(runGit, repositoryRoot, [
+    'ls-files', '--others', '--ignored', '--exclude-standard', '--', selectedPathspec,
   ])).stdout.trim();
   let trackedBytesChanged = false;
   try {
-    await git(runGit, exactCheckout, ['diff', '--quiet', 'HEAD', '--', relativeSelection]);
+    await git(runGit, repositoryRoot, ['diff', '--quiet', 'HEAD', '--', selectedPathspec]);
   } catch (error) {
     if (error?.code === 1 || error?.exitCode === 1) trackedBytesChanged = true;
     else throw error;
   }
-  const exactBytesMatch = await selectedBytesMatchHead(runGit, exactCheckout, relativeSelection);
+  const exactBytesMatch = await selectedBytesMatchHead(runGit, repositoryRoot, selectedPathspec);
   if (!exactBytesMatch) trackedBytesChanged = true;
-  const repositoryStatus = (await git(runGit, exactCheckout, [
-    'status', '--porcelain=v1', '--untracked-files=all', '--', '.', `:(exclude)${relativeSelection}`,
+  const repositoryStatus = repositorySelection === '' ? '' : (await git(runGit, repositoryRoot, [
+    'status', '--porcelain=v1', '--untracked-files=all', '--', '.', `:(exclude,literal)${repositorySelection}`,
   ])).stdout.trim();
   let descendant = null;
   if (acceptedCommit !== null) {
@@ -82,7 +88,7 @@ export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCo
       throw new LocalSourceInspectionError('invalid-accepted-commit', 'Accepted commit must be a full object ID');
     }
     try {
-      await git(runGit, exactCheckout, ['merge-base', '--is-ancestor', acceptedCommit.toLowerCase(), commit]);
+      await git(runGit, repositoryRoot, ['merge-base', '--is-ancestor', acceptedCommit.toLowerCase(), commit]);
       descendant = true;
     } catch (error) {
       if (error?.code === 1 || error?.exitCode === 1) descendant = false;
@@ -90,7 +96,7 @@ export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCo
     }
   }
   return {
-    kind: 'git', checkout: exactCheckout, repositoryRoot: exactCheckout, selectedPath: relativeSelection,
+    kind: 'git', checkout: exactCheckout, repositoryRoot, selectedPath: relativeSelection,
     branch, commit, descendant,
     selectedPathDirty: selectedStatus.length > 0 || ignoredSelected.length > 0 || trackedBytesChanged,
     committedContentMatch: selectedStatus.length === 0 && ignoredSelected.length === 0 && !trackedBytesChanged,
@@ -98,13 +104,13 @@ export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCo
     selectedStatus: lines(selectedStatus),
     ignoredSelected: lines(ignoredSelected),
     unrelatedStatus: lines(repositoryStatus),
-    fingerprint: await fingerprint(selected),
+    fingerprint: await fingerprint(exactSelected),
   };
 }
 
-async function selectedBytesMatchHead(runGit, checkout, selectedPath) {
+async function selectedBytesMatchHead(runGit, checkout, selectedPathspec) {
   const raw = (await git(runGit, checkout, [
-    'ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', selectedPath,
+    'ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', selectedPathspec,
   ])).stdout;
   const entries = raw.split('\0').filter(Boolean);
   if (entries.length > MAX_SELECTED_TRACKED_FILES) return false;
