@@ -1,8 +1,28 @@
 import Foundation
 import XCTest
 @testable import CaddieMacAppCore
+import CaddieReleaseRuntime
 
 final class ToolClientTests: XCTestCase {
+    func testStagedStatusCheckRejectsIncompleteSuccessEnvelope() async {
+        let runner = ScriptedRunner(results: [.success(Data(#"{"ok":true}"#.utf8))])
+        let artifact = ReleaseArtifact(version: "development", path: "/tmp/tool", fingerprint: String(repeating: "a", count: 64))
+        let binding = ToolReleaseBinding(
+            releaseID: "development",
+            releasePath: "/tmp/release",
+            node: artifact,
+            tool: artifact,
+            skill: artifact,
+            compatibility: .caddieCurrent
+        )
+
+        await XCTAssertThrowsErrorAsync {
+            try await StagedToolStatusChecker(runner: runner).check(binding: binding, environment: [:])
+        } verify: {
+            XCTAssertEqual($0 as? ToolClientFault, .invalidResponse)
+        }
+    }
+
     func testRunnerObservesFastExitWithoutHanging() async throws {
         let output = try await BoundedToolProcessRunner(stopGrace: 0.01).run(
             launch: .init(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "printf fast"]),

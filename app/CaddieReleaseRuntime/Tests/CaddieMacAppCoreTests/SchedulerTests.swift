@@ -79,4 +79,38 @@ final class SchedulerTests: XCTestCase {
         state.receive(.syncNow, at: start)
         XCTAssertEqual(state.beginDueCycle(at: start, automaticUpdatesPaused: true)?.mode, .observeOnly)
     }
+
+    func testToolStateHintWaitsForOneVerificationAfterAChangedCycle() {
+        var state = InspectionVerificationState()
+        state.finishCycle(changed: true)
+
+        XCTAssertTrue(state.consumeToolStateHint(snapshotChanged: false))
+        XCTAssertFalse(state.consumeToolStateHint(snapshotChanged: false))
+    }
+
+    func testNewerAcceptedSnapshotDoesNotErasePendingVerification() {
+        var state = InspectionVerificationState()
+        state.finishCycle(changed: true)
+
+        XCTAssertTrue(state.consumeToolStateHint(snapshotChanged: true))
+        XCTAssertFalse(state.pending)
+    }
+
+    func testAnInterveningCycleConsumesPriorVerification() {
+        var state = InspectionVerificationState()
+        state.finishCycle(changed: true)
+        XCTAssertTrue(state.beginCycle())
+        state.finishCycle(changed: false)
+
+        XCTAssertFalse(state.consumeToolStateHint(snapshotChanged: false))
+    }
+
+    func testFailedStatusRefreshKeepsTheFileHintAndPendingVerification() {
+        var state = InspectionVerificationState()
+        state.finishCycle(changed: true)
+
+        XCTAssertTrue(state.consumeToolStateHint(snapshotChanged: nil))
+        XCTAssertTrue(state.pending)
+        XCTAssertTrue(state.beginCycle())
+    }
 }

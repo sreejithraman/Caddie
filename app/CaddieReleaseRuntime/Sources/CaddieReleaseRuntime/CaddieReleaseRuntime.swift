@@ -282,11 +282,7 @@ public actor CaddieReleaseRuntime {
         guard manifest.version == 1 else { throw ReleaseRuntimeFault.unsupportedManifestVersion(manifest.version) }
         let idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
         guard manifest.releaseID.wholeMatch(of: idPattern) != nil else { throw ReleaseRuntimeFault.invalidReleaseID }
-        guard manifest.compatibility.declarationVersion == 1,
-              manifest.compatibility.toolProtocolVersion == 2,
-              manifest.compatibility.supportedSkillProtocolVersions == [1, 2],
-              manifest.compatibility.minimumStateFormatVersion == 1,
-              manifest.compatibility.maximumStateFormatVersion == 1 else {
+        guard manifest.compatibility == .caddieCurrent else {
             throw ReleaseRuntimeFault.incompatibleRelease("the required protocol or state range is absent")
         }
         for artifact in [manifest.app, manifest.node, manifest.tool, manifest.skill] {
@@ -327,11 +323,7 @@ public actor CaddieReleaseRuntime {
               canonicalRoot.deletingLastPathComponent() == canonicalReleases,
               canonicalRoot.lastPathComponent == binding.releaseID,
               binding.releaseID.wholeMatch(of: /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/) != nil,
-              binding.compatibility.declarationVersion == 1,
-              binding.compatibility.toolProtocolVersion == 2,
-              binding.compatibility.supportedSkillProtocolVersions == [1, 2],
-              binding.compatibility.minimumStateFormatVersion == 1,
-              binding.compatibility.maximumStateFormatVersion == 1 else {
+              binding.compatibility == .caddieCurrent else {
             throw ReleaseRuntimeFault.malformedLaunchRecord
         }
         for (name, artifact) in [("Node", binding.node), ("Tool", binding.tool), ("Skill", binding.skill)] {

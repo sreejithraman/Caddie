@@ -12,6 +12,13 @@ public enum CaddieBuildChannel: Equatable, Sendable {
     public var startsAtLoginByDefault: Bool { false }
     public var installsUpdatesAutomaticallyByDefault: Bool { self == .release }
     public var applicationSupportFolder: String { self == .release ? "Caddie" : "Caddie Development" }
+
+    public func toolEnvironment(base: [String: String], supportRoot: URL) -> [String: String] {
+        guard self == .development else { return base }
+        var environment = base
+        environment["HOME"] = supportRoot.appendingPathComponent("Developer Home", isDirectory: true).path
+        return environment
+    }
 }
 
 public enum AppLocationBlock: Equatable, Sendable {

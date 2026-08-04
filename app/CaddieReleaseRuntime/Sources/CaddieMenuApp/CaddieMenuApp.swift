@@ -12,7 +12,12 @@ struct CaddieMenuApp: App {
         let channel = CaddieBuildChannel(bundleIdentifier: Bundle.main.bundleIdentifier)
         let supportRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(channel.applicationSupportFolder, isDirectory: true)
-        let model = AppModel(client: ToolLaunchClient(supportRoot: supportRoot))
+        let environment = channel.toolEnvironment(base: ProcessInfo.processInfo.environment, supportRoot: supportRoot)
+        let toolHome = URL(fileURLWithPath: environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path)
+        let model = AppModel(
+            client: ToolLaunchClient(supportRoot: supportRoot, environment: environment),
+            toolStateRoot: toolHome.appendingPathComponent(".agents/.caddie", isDirectory: true)
+        )
         _model = StateObject(wrappedValue: model)
         let assessment = AppLocationPolicy().assess(
             bundleURL: Bundle.main.bundleURL,

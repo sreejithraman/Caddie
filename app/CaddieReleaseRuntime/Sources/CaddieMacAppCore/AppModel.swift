@@ -25,6 +25,7 @@ public final class AppModel: ObservableObject {
     private let notifications: any NotificationDelivering
     private let notificationPreferences: NotificationPreferences
     private let workspace: any WorkspaceOpening
+    private let toolStateRoot: URL
     private var scheduler = CycleSchedulerState()
     private var scheduledWork: DispatchWorkItem?
     private var watcher: FSEventWatcher?
@@ -33,6 +34,10 @@ public final class AppModel: ObservableObject {
     private var started = false
     private var effectDrainTask: Task<Void, Never>?
     private var effectDrainDirty = false
+    private var toolStateRefreshTask: Task<Void, Never>?
+    private var toolStateRefreshDirty = false
+    private var toolStateRefreshSubjectIDs: Set<String> = []
+    private var verification = InspectionVerificationState()
     private var notificationToggleRevision = 0
     private var handoffsInFlight: Set<String> = []
     private var openedHandoffs: [String: AppSnapshot.OutsideEffect] = [:]
@@ -43,6 +48,8 @@ public final class AppModel: ObservableObject {
         loginItem: any LoginItemManaging = MainAppLoginItem(),
         notifications: any NotificationDelivering = SystemNotificationDelivery(),
         workspace: any WorkspaceOpening = SystemWorkspaceOpener(),
+        toolStateRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agents/.caddie", isDirectory: true),
         initialSnapshot: AppSnapshot = .empty
     ) {
         self.client = client
@@ -50,6 +57,7 @@ public final class AppModel: ObservableObject {
         self.loginItem = loginItem
         self.notifications = notifications
         self.workspace = workspace
+        self.toolStateRoot = toolStateRoot
         notificationPreferences = NotificationPreferences(defaults: defaults)
         notificationsEnabled = notificationPreferences.enabled
         lastAgentProvider = AgentProvider(rawValue: defaults.string(forKey: Self.providerKey) ?? "") ?? .codex
@@ -63,10 +71,14 @@ public final class AppModel: ObservableObject {
         guard !started else { return }
         started = true
         watcher = FSEventWatcher(
+            toolStateRoot: toolStateRoot,
             onObservation: { [weak self] observation in
                 Task { @MainActor in
                     guard let self else { return }
                     if observation.rootsUncertain { self.receive(.watchRootsUncertain) }
+                    else if observation.containsOnlyToolStateChanges {
+                        self.scheduleToolStateRefresh(subjectIDs: observation.watchIDs)
+                    }
                     else if !observation.watchIDs.isEmpty { self.receive(.filesChanged(subjectIDs: observation.watchIDs)) }
                 }
             },
@@ -307,17 +319,59 @@ public final class AppModel: ObservableObject {
             return
         }
         isRunningCycle = true
+        let priorVerification = verification.beginCycle()
         do {
-            accept(try await client.cycle(cycle))
+            let prior = snapshot
+            let next = try await client.cycle(cycle)
+            verification.finishCycle(changed: next.hasInspectionRelevantChanges(comparedTo: prior))
+            accept(next)
             lastError = nil
-        } catch { lastError = readable(error) }
+        } catch {
+            verification.failCycle(restoring: priorVerification)
+            lastError = readable(error)
+        }
         isRunningCycle = false
         schedule(at: scheduler.finishCycle())
+        startToolStateRefreshIfNeeded()
     }
 
     private func accept(_ next: AppSnapshot) {
         install(next)
         scheduleEffectDrain()
+    }
+
+    private func scheduleToolStateRefresh(subjectIDs: Set<String>) {
+        toolStateRefreshDirty = true
+        toolStateRefreshSubjectIDs.formUnion(subjectIDs)
+        startToolStateRefreshIfNeeded()
+    }
+
+    private func startToolStateRefreshIfNeeded() {
+        guard !isRunningCycle, toolStateRefreshDirty, toolStateRefreshTask == nil else { return }
+        toolStateRefreshTask = Task { [weak self] in await self?.refreshToolState() }
+    }
+
+    private func refreshToolState() async {
+        while !Task.isCancelled && toolStateRefreshDirty {
+            toolStateRefreshDirty = false
+            let subjectIDs = toolStateRefreshSubjectIDs
+            toolStateRefreshSubjectIDs = []
+            do {
+                let current = try await client.status()
+                let changed = current != snapshot
+                if changed { accept(current) }
+                if verification.consumeToolStateHint(snapshotChanged: changed) {
+                    receive(.filesChanged(subjectIDs: subjectIDs))
+                }
+            } catch {
+                lastError = readable(error)
+                if verification.consumeToolStateHint(snapshotChanged: nil) {
+                    receive(.filesChanged(subjectIDs: subjectIDs))
+                }
+            }
+        }
+        toolStateRefreshTask = nil
+        startToolStateRefreshIfNeeded()
     }
 
     private func install(_ next: AppSnapshot) {

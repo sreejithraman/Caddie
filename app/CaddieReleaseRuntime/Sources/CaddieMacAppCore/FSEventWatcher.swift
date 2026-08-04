@@ -3,7 +3,25 @@ import Foundation
 
 public struct FileObservation: Equatable, Sendable {
     public let watchIDs: Set<String>
+    public let changedPaths: Set<String>
+    public let toolStateRoot: String
     public let rootsUncertain: Bool
+
+    public var containsOnlyToolStateChanges: Bool {
+        let toolPaths = changedPaths.filter(Self.isToolStatePath)
+        guard !toolPaths.isEmpty else { return false }
+        let toolParents = Set(toolPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
+        guard toolParents == Set([toolStateRoot]) else { return false }
+        return changedPaths.allSatisfy { Self.isToolStatePath($0) || toolParents.contains($0) }
+    }
+
+    private static func isToolStatePath(_ path: String) -> Bool {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name == "management-v2.json"
+            || name == "management-v2.json.lock"
+            || name.hasPrefix("management-v2.json.lock.release-")
+            || (name.hasPrefix(".management-v2.json.") && name.hasSuffix(".tmp"))
+    }
 }
 
 public protocol SourceWatching: AnyObject {
@@ -15,13 +33,16 @@ public final class FSEventWatcher: SourceWatching, @unchecked Sendable {
     private let queue = DispatchQueue(label: "app.caddie.file-events")
     private let onObservation: @Sendable (FileObservation) -> Void
     private let onFault: @Sendable (String) -> Void
+    private let toolStateRoot: String
     private var streams = LiveWatchSwap<FSEventStreamRef>()
     private var watchesByPath: [String: String] = [:]
 
     public init(
+        toolStateRoot: URL,
         onObservation: @escaping @Sendable (FileObservation) -> Void,
         onFault: @escaping @Sendable (String) -> Void = { _ in }
     ) {
+        self.toolStateRoot = toolStateRoot.standardizedFileURL.path
         self.onObservation = onObservation
         self.onFault = onFault
     }
@@ -84,13 +105,17 @@ public final class FSEventWatcher: SourceWatching, @unchecked Sendable {
                 | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagRootChanged
         )
         var ids: Set<String> = []
+        var changedPaths: Set<String> = []
         var uncertain = false
         for index in 0..<min(count, values.count) {
             uncertain = uncertain || flags[index] & uncertainMask != 0
             let changed = values[index]
+            changedPaths.insert(changed)
             for (root, id) in watchesByPath where changed == root || changed.hasPrefix(root + "/") { ids.insert(id) }
         }
-        onObservation(.init(watchIDs: ids, rootsUncertain: uncertain))
+        onObservation(.init(
+            watchIDs: ids, changedPaths: changedPaths, toolStateRoot: toolStateRoot, rootsUncertain: uncertain
+        ))
     }
 
     private func tearDownCurrent() {

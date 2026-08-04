@@ -122,3 +122,23 @@ public struct CycleSchedulerState: Equatable, Sendable {
         reason = "file-events"
     }
 }
+
+struct InspectionVerificationState: Equatable, Sendable {
+    private(set) var pending = false
+
+    mutating func beginCycle() -> Bool {
+        let prior = pending
+        pending = false
+        return prior
+    }
+
+    mutating func finishCycle(changed: Bool) { pending = changed }
+    mutating func failCycle(restoring prior: Bool) { pending = prior }
+
+    mutating func consumeToolStateHint(snapshotChanged: Bool?) -> Bool {
+        guard let snapshotChanged else { return true }
+        guard snapshotChanged || pending else { return false }
+        pending = false
+        return true
+    }
+}
