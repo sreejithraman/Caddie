@@ -1,3 +1,4 @@
+import Combine
 import ServiceManagement
 import XCTest
 @testable import CaddieMacAppCore
@@ -13,6 +14,33 @@ final class MenuCacheTests: XCTestCase {
         XCTAssertEqual(model.menuSnapshot.sources, [])
         let callCount = await tool.count()
         XCTAssertEqual(callCount, 0)
+    }
+
+    @MainActor
+    func testInventoryPresentationPublishesAStatusRefresh() async {
+        let live = AppSnapshot(
+            version: 2, state: "ready", revision: 2,
+            freshness: .init(checkedAt: "2026-08-11T19:46:51Z"),
+            summary: .init(selections: 1, current: 1, ready: 0, attention: 0),
+            sources: [], userSkills: [], projectSkills: [],
+            skillInventory: [.init(
+                version: 2, id: "live-skill", scope: "user", projectRoot: nil, name: "Live Skill",
+                installedPath: "/tmp/live-skill", enabled: true, managed: false, selectionId: nil,
+                origin: nil, shadowsSkillId: nil, status: "unmanaged", permissionFolder: nil
+            )],
+            projects: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
+            pendingActions: [], outsideEffects: [], pause: .init(active: false, reason: nil, safetyTriggered: false),
+            watchSet: [], recovery: nil, continuations: []
+        )
+        let model = AppModel(client: CountingTool(statusResult: live), defaults: testDefaults(), loginItem: DisabledLoginItem())
+        let refreshed = expectation(description: "inventory presentation refreshes")
+        let observation = model.$inventoryPresentation.dropFirst().sink { presentation in
+            if presentation.userSkills.map(\.name) == ["Live Skill"] { refreshed.fulfill() }
+        }
+
+        model.start()
+        await fulfillment(of: [refreshed], timeout: 1)
+        _ = observation
     }
 
     @MainActor
@@ -193,10 +221,17 @@ final class MenuCacheTests: XCTestCase {
 private actor CountingTool: ToolCalling {
     private(set) var callCount = 0
     private var safetyResumeCount = 0
+    private let statusResult: AppSnapshot
     private let resumeResult: Result<AppSnapshot, TestFault>
-    init(resumeResult: Result<AppSnapshot, TestFault> = .success(.empty)) { self.resumeResult = resumeResult }
-    func status() async throws -> AppSnapshot { callCount += 1; return .empty }
-    func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot { callCount += 1; return .empty }
+    init(
+        statusResult: AppSnapshot = .empty,
+        resumeResult: Result<AppSnapshot, TestFault> = .success(.empty)
+    ) {
+        self.statusResult = statusResult
+        self.resumeResult = resumeResult
+    }
+    func status() async throws -> AppSnapshot { callCount += 1; return statusResult }
+    func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot { callCount += 1; return statusResult }
     func request(_ intent: AppActionIntent) async throws -> AppSnapshot { callCount += 1; return .empty }
     func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot { callCount += 1; return .empty }
     func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot { callCount += 1; return .empty }

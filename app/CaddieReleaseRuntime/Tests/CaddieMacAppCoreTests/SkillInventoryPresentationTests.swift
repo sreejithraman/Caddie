@@ -72,6 +72,17 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.needsReview)
     }
 
+    func testAppStatusUsesOnePriorityAcrossMenuAndWindow() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        object["summary"] = ["selections": 2, "current": 1, "ready": 0, "attention": 1]
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        XCTAssertEqual(CaddieAppStatus(snapshot: snapshot, isRunningCycle: true, updatesPaused: true), .checking)
+        XCTAssertEqual(CaddieAppStatus(snapshot: snapshot, isRunningCycle: false, updatesPaused: true), .paused)
+        XCTAssertEqual(CaddieAppStatus(snapshot: snapshot, isRunningCycle: false, updatesPaused: false), .needsReview)
+        XCTAssertEqual(CaddieAppStatus(snapshot: .empty, isRunningCycle: false, updatesPaused: false), .waiting)
+    }
+
     func testSourcesUseGitOrFolderLocationAndKeepUnmanagedSkillsVisible() throws {
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(Self.fixture.utf8))
 
@@ -124,6 +135,9 @@ final class SkillInventoryPresentationTests: XCTestCase {
         let presentation = SkillInventoryPresentation(snapshot: snapshot)
 
         XCTAssertEqual(presentation.userSkillAttentionCount, 1)
+        XCTAssertEqual(presentation.inventoryOnlyUserReviewCount, 1)
+        XCTAssertEqual(presentation.reviewCount, 1)
+        XCTAssertEqual(CaddieAppStatus(snapshot: snapshot, isRunningCycle: false, updatesPaused: false), .needsReview)
         XCTAssertEqual(presentation.sources.first { $0.name == "Unmanaged" }?.skills.map(\.name), ["denied", "loose"])
     }
 

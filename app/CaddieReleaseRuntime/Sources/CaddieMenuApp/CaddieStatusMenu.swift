@@ -7,15 +7,20 @@ struct CaddieStatusMenu: View {
     let openCaddie: () -> Void
 
     var body: some View {
+        let status = CaddieAppStatusPresentation(CaddieAppStatus(
+            snapshot: model.snapshot,
+            isRunningCycle: model.isRunningCycle,
+            updatesPaused: model.updatesPaused
+        ))
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: statusSymbol)
+                    Image(systemName: status.symbol)
                         .font(.title2)
-                        .foregroundStyle(statusColor)
+                        .foregroundStyle(status.color)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(statusTitle).font(.headline)
-                        Text(statusMessage).font(.caption).foregroundStyle(.secondary)
+                        Text(status.title).font(.headline)
+                        Text(status.message).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if model.isRunningCycle { ProgressView().controlSize(.small) }
@@ -55,43 +60,72 @@ struct CaddieStatusMenu: View {
         .frame(width: 330)
     }
 
-    private var statusTitle: String {
-        if model.isRunningCycle { return "Checking skills" }
-        if model.updatesPaused { return "Updates paused" }
-        if needsReview { return "Needs review" }
-        if !model.snapshot.readyWork.isEmpty { return "Updates ready" }
-        return "All good"
-    }
-
-    private var statusMessage: String {
-        if model.isRunningCycle { return "Caddie is checking your skills and projects." }
-        if model.updatesPaused { return "Automatic updates will not run until you resume them." }
-        if needsReview { return "Open Caddie to see what needs your help." }
-        if !model.snapshot.readyWork.isEmpty { return "Caddie found skill updates you can review." }
-        return "Your checked skills and projects are current."
-    }
-
-    private var statusSymbol: String {
-        if model.isRunningCycle { return "arrow.triangle.2.circlepath" }
-        if model.updatesPaused { return "pause.circle.fill" }
-        if needsReview { return "exclamationmark.triangle.fill" }
-        if !model.snapshot.readyWork.isEmpty { return "arrow.down.circle.fill" }
-        return "checkmark.circle.fill"
-    }
-
-    private var statusColor: Color {
-        if model.updatesPaused || needsReview { return .orange }
-        if !model.snapshot.readyWork.isEmpty { return .blue }
-        return .green
-    }
-
-    private var needsReview: Bool {
-        SkillInventoryPresentation(snapshot: model.snapshot).needsReview
-    }
-
     private var lastChecked: String {
         guard let checked = model.snapshot.freshness.checkedAt else { return "Waiting for first check" }
         return "Last checked \(checked)"
+    }
+}
+
+struct CaddieAppStatusPresentation {
+    let title: String
+    let message: String
+    let symbol: String
+    let menuBarSymbol: String
+    let overviewTitle: String
+    let overviewMessage: String
+    let color: Color
+
+    init(_ status: CaddieAppStatus) {
+        switch status {
+        case .checking:
+            title = "Checking skills"
+            message = "Caddie is checking your skills and projects."
+            symbol = "arrow.triangle.2.circlepath"
+            menuBarSymbol = symbol
+            overviewTitle = "Checking your skills"
+            overviewMessage = "This view will update when the check finishes."
+            color = .green
+        case .paused:
+            title = "Updates paused"
+            message = "Automatic updates will not run until you resume them."
+            symbol = "pause.circle.fill"
+            menuBarSymbol = "pause.circle"
+            overviewTitle = "Updates are paused"
+            overviewMessage = message
+            color = .orange
+        case .waiting:
+            title = "Waiting for first check"
+            message = "Caddie has not checked your skills yet."
+            symbol = "clock"
+            menuBarSymbol = "wrench.and.screwdriver"
+            overviewTitle = title
+            overviewMessage = "Use Sync now if the first check does not start."
+            color = .secondary
+        case .needsReview:
+            title = "Needs review"
+            message = "Open Caddie to see what needs your help."
+            symbol = "exclamationmark.triangle.fill"
+            menuBarSymbol = "exclamationmark.circle.fill"
+            overviewTitle = "Caddie needs your help"
+            overviewMessage = "Review the items below before Caddie changes anything."
+            color = .orange
+        case .updatesReady:
+            title = "Updates ready"
+            message = "Caddie found skill updates you can review."
+            symbol = "arrow.down.circle.fill"
+            menuBarSymbol = symbol
+            overviewTitle = "Updates are ready"
+            overviewMessage = "Review the updates below when you are ready."
+            color = .blue
+        case .current:
+            title = "All good"
+            message = "Your checked skills and projects are current."
+            symbol = "checkmark.circle.fill"
+            menuBarSymbol = "wrench.and.screwdriver"
+            overviewTitle = "Everything looks good"
+            overviewMessage = "Your checked User Skills and Project Skills are current."
+            color = .green
+        }
     }
 }
 

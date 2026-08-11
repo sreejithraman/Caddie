@@ -42,7 +42,7 @@ struct CaddieMainWindow: View {
     }
 
     @ViewBuilder private var pageContent: some View {
-        let presentation = SkillInventoryPresentation(snapshot: model.snapshot)
+        let presentation = model.inventoryPresentation
         switch page {
         case .overview:
             CaddieOverview(model: model, presentation: presentation, selectPage: { page = $0 })
@@ -89,33 +89,16 @@ private struct CaddieOverview: View {
     let selectPage: (CaddiePage) -> Void
 
     var body: some View {
+        let status = CaddieAppStatusPresentation(CaddieAppStatus(
+            snapshot: model.snapshot,
+            isRunningCycle: model.isRunningCycle,
+            updatesPaused: model.updatesPaused
+        ))
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(heading).font(.largeTitle).fontWeight(.semibold)
-                    Text(subheading).foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 12) {
-                    SummaryButton(
-                        title: "Needs review", value: presentation.reviewCount,
-                        symbol: "exclamationmark.triangle", color: presentation.needsReview ? .orange : .secondary,
-                        action: { selectPage(.projects) }
-                    )
-                    SummaryButton(
-                        title: "Ready work", value: model.snapshot.readyWork.count,
-                        symbol: "arrow.down.circle", color: .blue, action: {}
-                    )
-                    SummaryButton(
-                        title: "User skills", value: presentation.userSkills.count,
-                        symbol: "person.crop.circle", color: .accentColor,
-                        action: { selectPage(.userSkills) }
-                    )
-                    SummaryButton(
-                        title: "Projects", value: presentation.projectGroups.count,
-                        symbol: "folder", color: .accentColor,
-                        action: { selectPage(.projects) }
-                    )
+                    Text(status.overviewTitle).font(.largeTitle).fontWeight(.semibold)
+                    Text(status.overviewMessage).foregroundStyle(.secondary)
                 }
 
                 if let recovery = model.snapshot.recovery {
@@ -164,6 +147,27 @@ private struct CaddieOverview: View {
                     }
                 }
 
+                HStack(spacing: 12) {
+                    SummaryButton(
+                        title: "Needs review", value: presentation.reviewCount,
+                        symbol: "exclamationmark.triangle", color: presentation.needsReview ? .orange : .secondary
+                    )
+                    SummaryButton(
+                        title: "Ready work", value: model.snapshot.readyWork.count,
+                        symbol: "arrow.down.circle", color: .blue
+                    )
+                    SummaryButton(
+                        title: "User skills", value: presentation.userSkills.count,
+                        symbol: "person.crop.circle", color: .accentColor,
+                        action: { selectPage(.userSkills) }
+                    )
+                    SummaryButton(
+                        title: "Projects", value: presentation.projectGroups.count,
+                        symbol: "folder", color: .accentColor,
+                        action: { selectPage(.projects) }
+                    )
+                }
+
                 if !projectReviewGroups.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -172,7 +176,9 @@ private struct CaddieOverview: View {
                             Button("View all") { selectPage(.projects) }
                         }
                         ForEach(projectReviewGroups) { group in
-                            Button { selectPage(.projects) } label: {
+                            NavigationLink {
+                                ProjectDetailView(model: model, groupID: group.id)
+                            } label: {
                                 ProjectSummaryRow(group: group)
                                     .contentShape(Rectangle())
                             }
@@ -228,18 +234,6 @@ private struct CaddieOverview: View {
         model.snapshot.pendingActions.filter { ["finish-recovery", "rollback-recovery"].contains($0.intent.type) }
     }
 
-    private var heading: String {
-        if model.isRunningCycle { return "Checking your skills" }
-        if presentation.needsReview { return "Caddie needs your help" }
-        if model.updatesPaused { return "Updates are paused" }
-        return "Everything looks good"
-    }
-
-    private var subheading: String {
-        if model.isRunningCycle { return "This view will update when the check finishes." }
-        if presentation.needsReview { return "Review the items below before Caddie changes anything." }
-        return "Your checked User Skills and Project Skills are current."
-    }
 }
 
 private struct SummaryButton: View {
@@ -247,21 +241,28 @@ private struct SummaryButton: View {
     let value: Int
     let symbol: String
     let color: Color
-    let action: () -> Void
+    var action: (() -> Void)?
 
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: symbol).foregroundStyle(color)
-                Text("\(value)").font(.title).fontWeight(.semibold)
-                Text(title).font(.caption).foregroundStyle(.secondary)
+        Group {
+            if let action {
+                Button(action: action) { content.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+            } else {
+                content
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: symbol).foregroundStyle(color)
+            Text("\(value)").font(.title).fontWeight(.semibold)
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 

@@ -46,13 +46,11 @@ struct CaddieMenuApp: App {
     }
 
     private var menuSymbol: String {
-        let presentation = SkillInventoryPresentation(snapshot: model.snapshot)
-        if presentation.needsReview {
-            return "exclamationmark.circle.fill"
-        }
-        if model.isRunningCycle { return "arrow.triangle.2.circlepath" }
-        if model.updatesPaused { return "pause.circle" }
-        return "wrench.and.screwdriver"
+        CaddieAppStatusPresentation(CaddieAppStatus(
+            snapshot: model.snapshot,
+            isRunningCycle: model.isRunningCycle,
+            updatesPaused: model.updatesPaused
+        )).menuBarSymbol
     }
 }
 

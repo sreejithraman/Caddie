@@ -24,7 +24,7 @@ struct UserSkillsPage: View {
             } else {
                 ForEach(filteredSkills) { skill in
                     NavigationLink {
-                        SkillDetailView(model: model, skill: skill)
+                        SkillDetailView(model: model, skillID: skill.id)
                     } label: {
                         SkillSummaryRow(skill: skill)
                             .contentShape(Rectangle())
@@ -69,7 +69,7 @@ struct ProjectsPage: View {
             } else {
                 ForEach(filteredGroups) { group in
                     NavigationLink {
-                        ProjectDetailView(model: model, group: group)
+                        ProjectDetailView(model: model, groupID: group.id)
                     } label: {
                         ProjectSummaryRow(group: group)
                             .contentShape(Rectangle())
@@ -116,7 +116,7 @@ struct SourcesPage: View {
             } else {
                 ForEach(filteredSources) { source in
                     NavigationLink {
-                        SourceDetailView(model: model, source: source)
+                        SourceDetailView(model: model, sourceID: source.id)
                     } label: {
                         SourceSummaryRow(source: source)
                             .contentShape(Rectangle())
@@ -147,6 +147,9 @@ struct ProjectSummaryRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(group.name).fontWeight(.semibold)
                 Text(summary).font(.caption).foregroundStyle(.secondary)
+                if let folder = group.checkouts.first?.project.root {
+                    Text(folder).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                }
             }
             Spacer()
             if group.needsReview {
@@ -165,28 +168,35 @@ struct ProjectSummaryRow: View {
     }
 }
 
-private struct ProjectDetailView: View {
+struct ProjectDetailView: View {
     @ObservedObject var model: AppModel
-    let group: SkillInventoryPresentation.ProjectGroup
+    let groupID: String
 
     var body: some View {
-        List {
-            Section {
-                ForEach(group.checkouts) { checkout in
-                    NavigationLink {
-                        CheckoutDetailView(model: model, section: checkout)
-                    } label: {
-                        CheckoutSummaryRow(section: checkout)
-                            .contentShape(Rectangle())
+        let group = model.inventoryPresentation.projectGroups.first { $0.id == groupID }
+        Group {
+            if let group {
+                List {
+                    Section {
+                        ForEach(group.checkouts) { checkout in
+                            NavigationLink {
+                                CheckoutDetailView(model: model, projectID: checkout.project.id)
+                            } label: {
+                                CheckoutSummaryRow(section: checkout)
+                                    .contentShape(Rectangle())
+                            }
+                        }
+                    } header: {
+                        Text("Checkouts")
+                    } footer: {
+                        Text("Main and worktree checkouts share a project because they belong to the same Git repository.")
                     }
                 }
-            } header: {
-                Text("Checkouts")
-            } footer: {
-                Text("Main and worktree checkouts share a project because they belong to the same Git repository.")
+            } else {
+                MissingInventoryItem(title: "Project no longer found")
             }
         }
-        .navigationTitle(group.name)
+        .navigationTitle(group?.name ?? "Project")
     }
 }
 
@@ -218,11 +228,10 @@ private struct CheckoutSummaryRow: View {
     }
 
     private var title: String {
-        switch section.project.checkoutKind {
-        case "main": return "Main"
-        case "worktree": return section.project.branch.map { "Worktree · \($0)" } ?? "Worktree"
-        default: return section.project.name
+        if section.project.checkoutKind == "worktree", let branch = section.project.branch {
+            return "\(section.project.checkoutKindLabel) · \(branch)"
         }
+        return section.project.checkoutKind == "project" ? section.project.name : section.project.checkoutKindLabel
     }
 
     private var countLabel: String {
@@ -235,28 +244,70 @@ private struct CheckoutSummaryRow: View {
 
 private struct CheckoutDetailView: View {
     @ObservedObject var model: AppModel
-    let section: SkillInventoryPresentation.ProjectSection
+    let projectID: String
     @State private var confirmsStopTracking = false
 
     var body: some View {
+        let section = currentSection()
+        Group {
+            if let section {
+                checkoutList(section)
+            } else {
+                MissingInventoryItem(title: "Checkout no longer found")
+            }
+        }
+        .navigationTitle(section?.project.checkoutKindLabel ?? "Checkout")
+        .confirmationDialog("Stop tracking this checkout?", isPresented: $confirmsStopTracking) {
+            Button("Stop tracking", role: .destructive) {
+                guard let projectRoot = currentSection()?.project.root else { return }
+                Task { await model.stopTrackingProject(projectRoot) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(stopTrackingMessage)
+        }
+    }
+
+    private func checkoutList(_ section: SkillInventoryPresentation.ProjectSection) -> some View {
         List {
             Section("Checkout") {
-                DetailValue(label: "Kind", value: checkoutKind)
+                DetailValue(label: "Kind", value: section.project.checkoutKindLabel)
                 if let branch = section.project.branch { DetailValue(label: "Branch", value: branch) }
                 DetailValue(label: "Folder", value: section.project.root)
                 DetailValue(label: "Status", value: section.project.status == "attention" ? "Needs review" : "Current")
+                if section.project.overrideCount > 0 {
+                    DetailValue(label: "Overrides", value: "\(section.project.overrideCount)")
+                }
+                if let mainProjectRoot = section.project.mainProjectRoot, mainProjectRoot != section.project.root {
+                    DetailValue(label: "Main checkout", value: mainProjectRoot)
+                }
+                if let workingTreeClean = section.project.workingTreeClean {
+                    DetailValue(label: "Working tree", value: workingTreeClean ? "Clean" : "Has changes")
+                }
+                if let upstreamState = section.project.upstreamState {
+                    DetailValue(label: "Upstream", value: upstreamState.capitalized)
+                }
+                if let included = section.project.includedInDefaultBranch {
+                    DetailValue(label: "In default branch", value: included ? "Yes" : "No")
+                }
+                if let lifecycle = section.project.lifecycle {
+                    DetailValue(label: "Lifecycle", value: lifecycle == "likely-finished" ? "Likely finished" : "Active")
+                }
             }
 
             if section.project.status == "attention" {
                 Section("Needs review") {
-                    Label(reviewMessage, systemImage: "exclamationmark.triangle.fill")
+                    Label(reviewMessage(for: section), systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     HStack {
                         if section.project.repairAvailable == true {
-                            Button("Repair") { Task { await model.repairProject(section.project.root) } }
+                            Button("Repair") {
+                                guard let current = currentSection(), current.project.repairAvailable == true else { return }
+                                Task { await model.repairProject(current.project.root) }
+                            }
                         }
-                        if section.project.issueCode == "source-unavailable" || section.project.issueCode == "permission-denied" {
-                            Button("Grant Access") { model.grantAccess(to: section.project.root) }
+                        if section.project.issueCode == "permission-denied" {
+                            Button("Grant Access") { model.grantAccess(to: accessPath(for: section)) }
                         }
                         Button("Stop tracking…", role: .destructive) { confirmsStopTracking = true }
                     }
@@ -269,7 +320,7 @@ private struct CheckoutDetailView: View {
                 }
                 ForEach(section.projectSkills) { skill in
                     NavigationLink {
-                        SkillDetailView(model: model, skill: skill)
+                        SkillDetailView(model: model, skillID: skill.id)
                     } label: {
                         SkillSummaryRow(skill: skill)
                             .contentShape(Rectangle())
@@ -283,7 +334,7 @@ private struct CheckoutDetailView: View {
                 }
                 ForEach(section.inheritedUserSkills) { skill in
                     NavigationLink {
-                        SkillDetailView(model: model, skill: skill)
+                        SkillDetailView(model: model, skillID: skill.id)
                     } label: {
                         SkillSummaryRow(skill: skill, inherited: true)
                             .contentShape(Rectangle())
@@ -291,26 +342,20 @@ private struct CheckoutDetailView: View {
                 }
             }
         }
-        .navigationTitle(checkoutKind)
-        .confirmationDialog("Stop tracking this checkout?", isPresented: $confirmsStopTracking) {
-            Button("Stop tracking", role: .destructive) {
-                Task { await model.stopTrackingProject(section.project.root) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Caddie will forget \(section.project.root). The folder, Git worktree, Skills, and project files will stay unchanged.")
-        }
     }
 
-    private var checkoutKind: String {
-        switch section.project.checkoutKind {
-        case "main": return "Main"
-        case "worktree": return "Worktree"
-        default: return "Project"
-        }
+    private func currentSection() -> SkillInventoryPresentation.ProjectSection? {
+        model.inventoryPresentation.projects.first { $0.project.id == projectID }
     }
 
-    private var reviewMessage: String {
+    private var stopTrackingMessage: String {
+        guard let projectRoot = currentSection()?.project.root else {
+            return "This checkout is no longer in Caddie."
+        }
+        return "Caddie will forget \(projectRoot). The folder, Git worktree, Skills, and project files will stay unchanged."
+    }
+
+    private func reviewMessage(for section: SkillInventoryPresentation.ProjectSection) -> String {
         switch section.project.issueCode {
         case "legacy-project-scope":
             return "This checkout has an older Caddie record. Caddie can repair it after every owned Skill matches."
@@ -325,6 +370,10 @@ private struct CheckoutDetailView: View {
         default:
             return "Caddie cannot verify this checkout’s Skill record."
         }
+    }
+
+    private func accessPath(for section: SkillInventoryPresentation.ProjectSection) -> String {
+        section.projectSkills.compactMap(\.permissionFolder).first ?? section.project.root
     }
 }
 
@@ -348,26 +397,33 @@ private struct SourceSummaryRow: View {
 
 private struct SourceDetailView: View {
     @ObservedObject var model: AppModel
-    let source: SkillInventoryPresentation.SourceSection
+    let sourceID: String
 
     var body: some View {
-        List {
-            Section("Source") {
-                DetailValue(label: "Type", value: source.type.capitalized)
-                DetailValue(label: source.type == "git" ? "Git URL" : "Folder", value: source.location)
-            }
-            Section("Skills") {
-                ForEach(source.skills) { skill in
-                    NavigationLink {
-                        SkillDetailView(model: model, skill: skill)
-                    } label: {
-                        SkillSummaryRow(skill: skill)
-                            .contentShape(Rectangle())
+        let source = model.inventoryPresentation.sources.first { $0.id == sourceID }
+        Group {
+            if let source {
+                List {
+                    Section("Source") {
+                        DetailValue(label: "Type", value: source.type.capitalized)
+                        DetailValue(label: source.type == "git" ? "Git URL" : "Folder", value: source.location)
+                    }
+                    Section("Skills") {
+                        ForEach(source.skills) { skill in
+                            NavigationLink {
+                                SkillDetailView(model: model, skillID: skill.id)
+                            } label: {
+                                SkillSummaryRow(skill: skill)
+                                    .contentShape(Rectangle())
+                            }
+                        }
                     }
                 }
+            } else {
+                MissingInventoryItem(title: "Source no longer found")
             }
         }
-        .navigationTitle(source.name)
+        .navigationTitle(source?.name ?? "Source")
     }
 }
 
@@ -378,7 +434,7 @@ struct SkillSummaryRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: skill.scope == "project" ? "folder.badge.gearshape" : "wrench.and.screwdriver")
-                .font(.title3).foregroundStyle(statusColor)
+                .font(.title3).foregroundStyle(skill.statusColor)
             VStack(alignment: .leading, spacing: 4) {
                 Text(skill.name).fontWeight(.medium)
                 Text(originLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -390,38 +446,40 @@ struct SkillSummaryRow: View {
             if inherited {
                 Text("User").font(.caption).foregroundStyle(.secondary)
             }
-            Text(statusLabel).font(.caption).foregroundStyle(statusColor)
+            Text(skill.statusLabel).font(.caption).foregroundStyle(skill.statusColor)
         }
         .padding(.vertical, 6)
     }
 
     private var originLabel: String {
-        if skill.permissionFolder != nil { return "Access needed" }
-        return skill.origin?.name ?? "Unmanaged"
-    }
-
-    private var statusLabel: String {
-        switch skill.status {
-        case "manual-only": return "Manual"
-        case "unmanaged": return "Unmanaged"
-        case "attention": return "Needs review"
-        default: return skill.status.capitalized
-        }
-    }
-
-    private var statusColor: Color {
-        skill.status == "attention" ? .orange : skill.status == "ready" ? .blue : .secondary
+        let source = skill.origin.map { "\($0.name) · \($0.location)" }
+            ?? "Unmanaged · \(skill.installedPath)"
+        return skill.permissionFolder == nil ? source : "Access needed · \(source)"
     }
 }
 
 struct SkillDetailView: View {
     @ObservedObject var model: AppModel
-    let skill: AppSnapshot.InventorySkill
+    let skillID: String
 
     var body: some View {
-        List {
+        let skill = model.snapshot.inventorySkills.first { $0.id == skillID }
+        Group {
+            if let skill {
+                skillList(skill)
+            } else {
+                MissingInventoryItem(title: "Skill no longer found")
+            }
+        }
+        .navigationTitle(skill?.name ?? "Skill")
+    }
+
+    private func skillList(_ skill: AppSnapshot.InventorySkill) -> some View {
+        let attentionItems = attentionItems(for: skill)
+        let folderAccessPath = folderAccessPath(for: skill, attentionItems: attentionItems)
+        return List {
             Section("Skill") {
-                DetailValue(label: "Status", value: statusLabel)
+                DetailValue(label: "Status", value: skill.statusLabel)
                 DetailValue(label: "Scope", value: skill.scope == "project" ? "Project Skill" : "User Skill")
                 DetailValue(label: "Installed folder", value: skill.installedPath)
                 if let origin = skill.origin {
@@ -463,25 +521,18 @@ struct SkillDetailView: View {
                 }
             }
         }
-        .navigationTitle(skill.name)
     }
 
-    private var statusLabel: String {
-        switch skill.status {
-        case "manual-only": return "Manual"
-        case "unmanaged": return "Unmanaged"
-        case "attention": return "Needs review"
-        default: return skill.status.capitalized
-        }
-    }
-
-    private var attentionItems: [AppSnapshot.Attention] {
+    private func attentionItems(for skill: AppSnapshot.InventorySkill) -> [AppSnapshot.Attention] {
         model.snapshot.attention.filter { item in
             item.subjectId == skill.selectionId || item.subjectId == skill.origin?.sourceId
         }
     }
 
-    private var folderAccessPath: String? {
+    private func folderAccessPath(
+        for skill: AppSnapshot.InventorySkill,
+        attentionItems: [AppSnapshot.Attention]
+    ) -> String? {
         if let permissionFolder = skill.permissionFolder { return permissionFolder }
         if attentionItems.contains(where: {
             $0.code.contains("permission") || $0.code.contains("unavailable") || $0.code.contains("missing-source")
@@ -540,5 +591,46 @@ private struct EmptyInventoryView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 220)
         .multilineTextAlignment(.center)
+    }
+}
+
+private struct MissingInventoryItem: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "arrow.clockwise").font(.largeTitle).foregroundStyle(.secondary)
+            Text(title).font(.headline)
+            Text("Caddie refreshed while this page was open. Go back to see the current list.")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .multilineTextAlignment(.center)
+        .padding()
+    }
+}
+
+private extension AppSnapshot.ProjectInventory {
+    var checkoutKindLabel: String {
+        switch checkoutKind {
+        case "main": return "Main"
+        case "worktree": return "Worktree"
+        default: return "Project"
+        }
+    }
+}
+
+private extension AppSnapshot.InventorySkill {
+    var statusLabel: String {
+        switch status {
+        case "manual-only": return "Manual"
+        case "unmanaged": return "Unmanaged"
+        case "attention": return "Needs review"
+        default: return status.capitalized
+        }
+    }
+
+    var statusColor: Color {
+        status == "attention" ? .orange : status == "ready" ? .blue : .secondary
     }
 }

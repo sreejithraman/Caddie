@@ -32,9 +32,10 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
     public let sources: [SourceSection]
     public let isAvailable: Bool
     public let durableAttentionCount: Int
+    public let inventoryOnlyUserReviewCount: Int
     public let projectReviewCount: Int
 
-    public var reviewCount: Int { durableAttentionCount + projectReviewCount }
+    public var reviewCount: Int { durableAttentionCount + inventoryOnlyUserReviewCount + projectReviewCount }
     public var needsReview: Bool { reviewCount > 0 }
 
     public init(snapshot: AppSnapshot) {
@@ -45,6 +46,7 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
             .sorted(by: Self.skillOrder)
         userSkills = presentedUserSkills
         userSkillAttentionCount = presentedUserSkills.filter { $0.status == "attention" }.count
+        inventoryOnlyUserReviewCount = presentedUserSkills.filter(\.needsStandaloneInventoryReview).count
 
         let presentedProjects = snapshot.inventoryProjects.map { project in
             let projectSkills = inventory
@@ -125,5 +127,11 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         if order != .orderedSame { return order == .orderedAscending }
         if left.name != right.name { return left.name < right.name }
         return left.installedPath < right.installedPath
+    }
+}
+
+extension AppSnapshot.InventorySkill {
+    var needsStandaloneInventoryReview: Bool {
+        scope == "user" && status == "attention" && selectionId == nil
     }
 }

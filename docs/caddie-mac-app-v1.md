@@ -90,11 +90,11 @@ Settings includes:
 
 - Pause Automatic Updates or Resume Automatic Updates;
 - Start at login;
-- Install updates automatically;
 - notification settings;
-- Check for Updates;
 - Remove Caddie App; and
 - About Caddie.
+
+When the app update service ships, put Install updates automatically and Check for Updates in Settings.
 
 ## Observation and scheduling
 
