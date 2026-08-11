@@ -257,13 +257,27 @@ function validSkillOrigin(value) {
 export function validProjectSummary(value) {
   return exactShape(value, [
     'version', 'id', 'name', 'root', 'projectSkillCount', 'inheritedUserSkillCount', 'overrideCount', 'status',
+  ], [
+    'selectedSkillCount', 'issueCode', 'repairAvailable', 'repositoryId', 'checkoutKind', 'branch', 'mainProjectRoot',
+    'workingTreeClean', 'upstreamState', 'includedInDefaultBranch', 'lifecycle',
   ])
     && value.version === MANAGEMENT_STATE_VERSION && boundedText(value.id, 4096)
     && boundedText(value.name, 512) && boundedText(value.root, 4096)
     && Number.isSafeInteger(value.projectSkillCount) && value.projectSkillCount >= 0
     && Number.isSafeInteger(value.inheritedUserSkillCount) && value.inheritedUserSkillCount >= 0
     && Number.isSafeInteger(value.overrideCount) && value.overrideCount >= 0
-    && ['current', 'attention'].includes(value.status);
+    && ['current', 'attention'].includes(value.status)
+    && (value.selectedSkillCount === undefined || (Number.isSafeInteger(value.selectedSkillCount) && value.selectedSkillCount >= 0))
+    && (value.issueCode === undefined || value.issueCode === null || boundedText(value.issueCode, 128))
+    && (value.repairAvailable === undefined || typeof value.repairAvailable === 'boolean')
+    && (value.repositoryId === undefined || boundedText(value.repositoryId, 4096))
+    && (value.checkoutKind === undefined || ['main', 'worktree', 'project'].includes(value.checkoutKind))
+    && (value.branch === undefined || value.branch === null || boundedText(value.branch, 512))
+    && (value.mainProjectRoot === undefined || boundedText(value.mainProjectRoot, 4096))
+    && (value.workingTreeClean === undefined || value.workingTreeClean === null || typeof value.workingTreeClean === 'boolean')
+    && (value.upstreamState === undefined || ['tracked', 'gone', 'none', 'unknown'].includes(value.upstreamState))
+    && (value.includedInDefaultBranch === undefined || value.includedInDefaultBranch === null || typeof value.includedInDefaultBranch === 'boolean')
+    && (value.lifecycle === undefined || ['active', 'likely-finished'].includes(value.lifecycle));
 }
 
 function validReadyWork(value) {
@@ -312,13 +326,15 @@ function validActivity(value) {
 }
 
 function validPendingAction(value) {
-  return exactShape(value, ['version', 'id', 'status', 'subjectId', 'intent', 'boundRevision', 'createdAt', 'expiresAt', 'approvalPrompt', 'preservationRules', 'recoveryEffect'], ['preconditions', 'outsideEffect', 'recoveryPlan', 'invokedAt'])
+  return exactShape(value, ['version', 'id', 'status', 'subjectId', 'intent', 'boundRevision', 'createdAt', 'expiresAt', 'approvalPrompt', 'preservationRules', 'recoveryEffect'], ['preconditions', 'projectPreconditions', 'outsideEffect', 'recoveryPlan', 'invokedAt'])
     && value.version === MANAGEMENT_STATE_VERSION && safeId(value.id) && safeId(value.subjectId)
     && ['pending', 'invoked', 'cancelled', 'superseded', 'expired'].includes(value.status)
     && validStoredIntent(value.intent) && boundedText(value.approvalPrompt, 512)
     && Array.isArray(value.preservationRules) && value.preservationRules.length <= 20 && value.preservationRules.every((item) => boundedText(item, 512))
     && boundedText(value.recoveryEffect, 512) && Number.isSafeInteger(value.boundRevision) && value.boundRevision >= 0
     && (value.preconditions === undefined || validPreconditions(value.preconditions))
+    && (value.projectPreconditions === undefined || validProjectPreconditions(value.projectPreconditions))
+    && validProjectActionBinding(value)
     && (value.outsideEffect === undefined || validPendingEffect(value.outsideEffect))
     && validTime(value.createdAt) && validTime(value.expiresAt);
 }
@@ -374,12 +390,32 @@ function validStoredIntent(value) {
     'agent-handoff': ['type', 'attentionId', 'provider'],
     'finish-recovery': ['type'],
     'rollback-recovery': ['type'],
+    'repair-project-state': ['type', 'projectRoot'],
+    'stop-tracking-project': ['type', 'projectRoot'],
   };
   const keys = shapes[value.type];
   return keys !== undefined && exactShape(value, keys)
     && (value.selectionId === undefined || safeId(value.selectionId))
     && (value.attentionId === undefined || safeId(value.attentionId))
+    && (value.projectRoot === undefined || (boundedText(value.projectRoot, 4096)
+      && path.isAbsolute(value.projectRoot) && path.resolve(value.projectRoot) === value.projectRoot))
     && (value.provider === undefined || ['codex', 'claude'].includes(value.provider));
+}
+
+function validProjectPreconditions(value) {
+  return exactShape(value, ['kind', 'projectRoot', 'registryFingerprint', 'ledgerFingerprint', 'manifestFingerprint'])
+    && ['repair-project-state', 'stop-tracking-project'].includes(value.kind)
+    && boundedText(value.projectRoot, 4096) && path.isAbsolute(value.projectRoot)
+    && path.resolve(value.projectRoot) === value.projectRoot && sha256(value.registryFingerprint)
+    && (value.ledgerFingerprint === null || sha256(value.ledgerFingerprint))
+    && (value.manifestFingerprint === null || sha256(value.manifestFingerprint));
+}
+
+function validProjectActionBinding(value) {
+  const projectAction = ['repair-project-state', 'stop-tracking-project'].includes(value.intent.type);
+  if (!projectAction) return value.projectPreconditions === undefined;
+  return value.projectPreconditions?.kind === value.intent.type
+    && value.projectPreconditions.projectRoot === value.intent.projectRoot;
 }
 
 function validStoredResult(value) {

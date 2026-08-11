@@ -30,6 +30,8 @@ public enum AppActionIntent: Equatable, Sendable {
     case retry(attentionID: String)
     case handoff(attentionID: String, provider: AgentProvider)
     case resumeReconciliation
+    case repairProject(projectRoot: String)
+    case stopTrackingProject(projectRoot: String)
 
     var fields: [String: JSONValue] {
         switch self {
@@ -39,6 +41,8 @@ public enum AppActionIntent: Equatable, Sendable {
         case let .retry(id): return ["type": .string("retry"), "attentionId": .string(id)]
         case let .handoff(id, provider): return ["type": .string("agent-handoff"), "attentionId": .string(id), "provider": .string(provider.rawValue)]
         case .resumeReconciliation: return ["type": .string("resume-reconciliation")]
+        case let .repairProject(root): return ["type": .string("repair-project-state"), "projectRoot": .string(root)]
+        case let .stopTrackingProject(root): return ["type": .string("stop-tracking-project"), "projectRoot": .string(root)]
         }
     }
 
@@ -52,6 +56,13 @@ public enum AppActionIntent: Equatable, Sendable {
         return false
     }
 
+    var usesExtendedTimeout: Bool {
+        switch self {
+        case .repairProject, .stopTrackingProject: return true
+        default: return false
+        }
+    }
+
     func matches(_ stored: AppSnapshot.PendingAction.Intent) -> Bool {
         guard stored.type == type else { return false }
         switch self {
@@ -60,6 +71,7 @@ public enum AppActionIntent: Equatable, Sendable {
         case let .retry(id): return stored.attentionId == id
         case let .handoff(id, provider): return stored.attentionId == id && stored.provider == provider.rawValue
         case .resumeReconciliation: return true
+        case let .repairProject(root), let .stopTrackingProject(root): return stored.projectRoot == root
         }
     }
 }

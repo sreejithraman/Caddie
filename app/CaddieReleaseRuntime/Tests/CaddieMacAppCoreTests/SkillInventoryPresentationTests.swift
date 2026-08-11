@@ -2,6 +2,20 @@ import XCTest
 @testable import CaddieMacAppCore
 
 final class SkillInventoryPresentationTests: XCTestCase {
+    func testMissingInventoryProjectionIsUnavailableInsteadOfEmpty() throws {
+        let data = try JSONEncoder().encode(AppSnapshot.empty)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "skillInventory")
+        object.removeValue(forKey: "projects")
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let presentation = SkillInventoryPresentation(snapshot: snapshot)
+
+        XCTAssertFalse(presentation.isAvailable)
+        XCTAssertEqual(presentation.userSkills, [])
+        XCTAssertEqual(presentation.projects, [])
+    }
+
     func testSkillsAreGroupedByUserAndProjectWithOverridesAndInheritedUserSkills() throws {
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(Self.fixture.utf8))
 
@@ -12,6 +26,28 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.projects[0].projectSkills.map(\.name), ["project-only", "shared"])
         XCTAssertEqual(presentation.projects[0].inheritedUserSkills.map(\.name), ["loose", "user-only"])
         XCTAssertNotNil(presentation.projects[0].projectSkills.first { $0.name == "shared" }?.shadowsSkillId)
+        XCTAssertEqual(presentation.projectGroups.map(\.name), ["Example"])
+    }
+
+    func testCheckoutsFromOneRepositoryStayInOneProjectGroupWithMainFirst() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        object["projects"] = [
+            ["version": 2, "id": "worktree", "name": "Example", "root": "/tmp/worktrees/example", "projectSkillCount": 0,
+             "inheritedUserSkillCount": 3, "overrideCount": 0, "status": "attention", "repositoryId": "/tmp/repo/.git",
+             "checkoutKind": "worktree", "branch": "codex/change", "mainProjectRoot": "/tmp/example", "lifecycle": "likely-finished",
+             "issueCode": "legacy-project-scope", "repairAvailable": true, "selectedSkillCount": 0],
+            ["version": 2, "id": "main", "name": "Example", "root": "/tmp/example", "projectSkillCount": 2,
+             "inheritedUserSkillCount": 2, "overrideCount": 1, "status": "current", "repositoryId": "/tmp/repo/.git",
+             "checkoutKind": "main", "branch": "main", "mainProjectRoot": "/tmp/example", "lifecycle": "active",
+             "issueCode": NSNull(), "repairAvailable": false, "selectedSkillCount": 2],
+        ]
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let groups = SkillInventoryPresentation(snapshot: snapshot).projectGroups
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].checkouts.map(\.project.id), ["main", "worktree"])
+        XCTAssertTrue(groups[0].needsReview)
     }
 
     func testSourcesUseGitOrFolderLocationAndKeepUnmanagedSkillsVisible() throws {
@@ -34,6 +70,12 @@ final class SkillInventoryPresentationTests: XCTestCase {
             "managed": false, "selectionId": NSNull(), "origin": NSNull(), "shadowsSkillId": NSNull(),
             "status": "attention", "permissionFolder": "/tmp/example/.agents/skills",
         ])
+        inventory.append([
+            "version": 2, "id": "named-project-skills", "scope": "project", "projectRoot": "/tmp/example",
+            "name": "Project Skills", "installedPath": "/tmp/example/.agents/skills/Project Skills", "enabled": true,
+            "managed": false, "selectionId": NSNull(), "origin": NSNull(), "shadowsSkillId": NSNull(),
+            "status": "attention", "permissionFolder": "/tmp/example/.agents/skills/Project Skills",
+        ])
         object["skillInventory"] = inventory
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
 
@@ -42,6 +84,25 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.projects[0].projectSkills.first { $0.id == "permission" }?.permissionFolder,
                        "/tmp/example/.agents/skills")
         XCTAssertFalse(presentation.sources.flatMap(\.skills).contains { $0.id == "permission" })
+        XCTAssertTrue(presentation.sources.flatMap(\.skills).contains { $0.id == "named-project-skills" })
+    }
+
+    func testUnreadableUserSkillStaysInUnmanagedAndMarksTheUserHeaderForAttention() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        var inventory = try XCTUnwrap(object["skillInventory"] as? [[String: Any]])
+        inventory.append([
+            "version": 2, "id": "denied-user", "scope": "user", "projectRoot": NSNull(),
+            "name": "denied", "installedPath": "/tmp/user/denied", "enabled": true,
+            "managed": false, "selectionId": NSNull(), "origin": NSNull(), "shadowsSkillId": NSNull(),
+            "status": "attention", "permissionFolder": "/tmp/user/denied",
+        ])
+        object["skillInventory"] = inventory
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let presentation = SkillInventoryPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(presentation.userSkillAttentionCount, 1)
+        XCTAssertEqual(presentation.sources.first { $0.name == "Unmanaged" }?.skills.map(\.name), ["denied", "loose"])
     }
 
     func testSourcesWithMatchingNamesAndLocationsUseTheirIDsAsTheFinalSortKey() throws {

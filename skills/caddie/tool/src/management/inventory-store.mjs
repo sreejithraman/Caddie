@@ -14,12 +14,23 @@ export async function readInventoryProjection(candidate, revision) {
   return store?.projections.filter((item) => item.revision <= revision).at(-1) ?? null;
 }
 
-export async function preflightInventoryProjection(candidate, projection, retainedRevisions) {
-  await nextStore(candidate, projection, retainedRevisions);
+export async function inventoryProjectionNeedsRepair(candidate) {
+  try { return await readStore(candidate) === null; } catch (error) {
+    if (error?.code === 'invalid-inventory-projection') return true;
+    throw error;
+  }
 }
 
-export async function writeInventoryProjection(candidate, projection, retainedRevisions) {
-  const value = await nextStore(candidate, projection, retainedRevisions);
+export async function preflightInventoryProjection(candidate, projection, retainedRevisions) {
+  const { replacesInvalid } = await nextStore(candidate, projection, retainedRevisions);
+  return { replacesInvalid };
+}
+
+export async function writeInventoryProjection(candidate, projection, retainedRevisions, { allowRepair = false } = {}) {
+  const { value, replacesInvalid } = await nextStore(candidate, projection, retainedRevisions);
+  if (replacesInvalid && !allowRepair) {
+    throw new ManagementError('invalid-inventory-projection', 'Caddie inventory data needs safe repair', 'needs-user');
+  }
   const serialized = `${JSON.stringify(value, null, 2)}\n`;
   await mkdir(path.dirname(candidate), { recursive: true });
   const temporary = path.join(path.dirname(candidate), `.${path.basename(candidate)}.${process.pid}.${randomUUID()}.tmp`);
@@ -35,11 +46,19 @@ export async function writeInventoryProjection(candidate, projection, retainedRe
     if (handle) await handle.close().catch(() => {});
     await rm(temporary, { force: true }).catch(() => {});
   }
+  return { replacesInvalid };
 }
 
 async function nextStore(candidate, projection, retainedRevisions) {
   if (!validProjection(projection)) throw new ManagementError('invalid-inventory-projection', 'Caddie inventory projection is invalid', 'bug');
-  const prior = await readStore(candidate) ?? { version: INVENTORY_STORE_VERSION, projections: [] };
+  let prior;
+  let replacesInvalid = false;
+  try { prior = await readStore(candidate); } catch (error) {
+    if (error?.code !== 'invalid-inventory-projection') throw error;
+    prior = null;
+    replacesInvalid = true;
+  }
+  prior ??= { version: INVENTORY_STORE_VERSION, projections: [] };
   const byRevision = new Map(prior.projections.map((item) => [item.revision, item]));
   const latest = prior.projections.at(-1);
   if (!latest || !sameInventory(latest, projection)) byRevision.set(projection.revision, projection);
@@ -52,7 +71,7 @@ async function nextStore(candidate, projection, retainedRevisions) {
   if (Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`) > MAX_INVENTORY_BYTES) {
     throw new ManagementError('inventory-capacity', 'Caddie inventory history is too large', 'needs-user');
   }
-  return value;
+  return { value, replacesInvalid };
 }
 
 function sameInventory(left, right) {
@@ -66,13 +85,19 @@ async function readStore(candidate) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
-  if (Buffer.byteLength(raw) > MAX_INVENTORY_BYTES) return null;
+  if (Buffer.byteLength(raw) > MAX_INVENTORY_BYTES) {
+    throw new ManagementError('invalid-inventory-projection', 'Caddie inventory data is too large', 'needs-user');
+  }
   let value;
-  try { value = JSON.parse(raw); } catch { return null; }
+  try { value = JSON.parse(raw); } catch {
+    throw new ManagementError('invalid-inventory-projection', 'Caddie inventory data is not valid JSON', 'needs-user');
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.keys(value).sort().join(',') !== 'projections,version'
       || value.version !== INVENTORY_STORE_VERSION || !Array.isArray(value.projections)
-      || value.projections.some((item) => !validProjection(item))) return null;
+      || value.projections.some((item) => !validProjection(item))) {
+    throw new ManagementError('invalid-inventory-projection', 'Caddie inventory data is invalid', 'needs-user');
+  }
   value.projections.sort((left, right) => left.revision - right.revision);
   return value;
 }

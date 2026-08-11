@@ -35,6 +35,22 @@ final class MenuCacheTests: XCTestCase {
     }
 
     @MainActor
+    func testOlderSuccessfulStatusDoesNotClearANewerActionError() async {
+        let tool = SuspendingStatusTool(statusResult: snapshot(safetyPaused: false))
+        let model = AppModel(client: tool, defaults: testDefaults(), loginItem: DisabledLoginItem())
+
+        model.start()
+        await tool.waitUntilStatusStarts()
+        await model.invoke(actionID: "expected-failure")
+        let newerError = model.lastError
+        await tool.resumeStatus()
+        for _ in 0..<1_000 where model.menuSnapshot.revision != 2 { await Task.yield() }
+
+        XCTAssertEqual(model.menuSnapshot.revision, 2)
+        XCTAssertEqual(model.lastError, newerError)
+    }
+
+    @MainActor
     func testAutomaticUpdatePausePersistsAsAnAppSchedulingChoice() async {
         let defaults = UserDefaults(suiteName: "MenuPauseTests-\(UUID().uuidString)")!
         let first = AppModel(client: CountingTool(), defaults: defaults, loginItem: DisabledLoginItem())
@@ -214,6 +230,29 @@ private actor SuspendingCycleTool: ToolCalling {
         if let cycleContinuation { cycleContinuation.resume(); self.cycleContinuation = nil }
         else { resumeRequested = true }
     }
+}
+
+private actor SuspendingStatusTool: ToolCalling {
+    private let statusResult: AppSnapshot
+    private var statusContinuation: CheckedContinuation<Void, Never>?
+    private var statusStarted = false
+
+    init(statusResult: AppSnapshot) { self.statusResult = statusResult }
+
+    func status() async throws -> AppSnapshot {
+        statusStarted = true
+        await withCheckedContinuation { statusContinuation = $0 }
+        return statusResult
+    }
+    func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot { statusResult }
+    func request(_ intent: AppActionIntent) async throws -> AppSnapshot { statusResult }
+    func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot { throw TestFault.resumeFailed }
+    func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot { statusResult }
+    func requestResume() async throws -> AppSnapshot { statusResult }
+    func waitUntilStatusStarts() async {
+        while !statusStarted { await Task.yield() }
+    }
+    func resumeStatus() { statusContinuation?.resume(); statusContinuation = nil }
 }
 
 private enum TestFault: Error { case resumeFailed }

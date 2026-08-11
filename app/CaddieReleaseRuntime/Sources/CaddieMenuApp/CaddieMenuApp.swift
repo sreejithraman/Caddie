@@ -168,25 +168,38 @@ private struct CaddieMenu: View {
     private var skillsSection: some View {
         let presentation = SkillInventoryPresentation(snapshot: model.menuSnapshot)
         return VStack(alignment: .leading, spacing: 14) {
-            DisclosureGroup(isExpanded: $userSkillsExpanded) {
-                VStack(alignment: .leading, spacing: 7) {
-                    if presentation.userSkills.isEmpty {
-                        Text("No User Skills found").foregroundStyle(.secondary)
+            if !presentation.isAvailable {
+                Label("Skill inventory is not available yet. Use Sync now to check it.", systemImage: "arrow.clockwise")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                DisclosureGroup(isExpanded: $userSkillsExpanded) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        if presentation.userSkills.isEmpty {
+                            Text("No User Skills found").foregroundStyle(.secondary)
+                        }
+                        ForEach(presentation.userSkills) { skill in
+                            InventorySkillRow(model: model, skill: skill)
+                        }
                     }
-                    ForEach(presentation.userSkills) { skill in
-                        InventorySkillRow(model: model, skill: skill)
+                    .padding(.top, 7)
+                } label: {
+                    HStack {
+                        Text("User Skills").font(.headline)
+                        Spacer()
+                        if presentation.userSkillAttentionCount > 0 {
+                            Label("Attention", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                        Text("\(presentation.userSkills.count) skills").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                .padding(.top, 7)
-            } label: {
-                HStack {
-                    Text("User Skills").font(.headline)
-                    Spacer()
-                    Text("\(presentation.userSkills.count) skills").font(.caption).foregroundStyle(.secondary)
+                ForEach(presentation.projectGroups) { group in
+                    if group.checkouts.count == 1, let section = group.checkouts.first {
+                        ProjectInventorySection(model: model, section: section, title: group.name)
+                    } else {
+                        ProjectGroupSection(model: model, group: group)
+                    }
                 }
-            }
-            ForEach(presentation.projects) { section in
-                ProjectInventorySection(model: model, section: section)
             }
         }
     }
@@ -195,9 +208,14 @@ private struct CaddieMenu: View {
         let presentation = SkillInventoryPresentation(snapshot: model.menuSnapshot)
         return VStack(alignment: .leading, spacing: 8) {
             Text("Sources").font(.headline)
-            if presentation.sources.isEmpty { Text("No skill sources found").foregroundStyle(.secondary) }
-            ForEach(presentation.sources) { source in
-                InventorySourceCard(model: model, source: source)
+            if !presentation.isAvailable {
+                Text("Skill inventory is not available yet. Use Sync now to check it.")
+                    .foregroundStyle(.secondary)
+            } else {
+                if presentation.sources.isEmpty { Text("No skill sources found").foregroundStyle(.secondary) }
+                ForEach(presentation.sources) { source in
+                    InventorySourceCard(model: model, source: source)
+                }
             }
         }
     }
@@ -272,15 +290,61 @@ private struct CaddieMenu: View {
     }
 }
 
+private struct ProjectGroupSection: View {
+    @ObservedObject var model: AppModel
+    let group: SkillInventoryPresentation.ProjectGroup
+    @State private var expanded = true
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(group.checkouts) { section in
+                    ProjectInventorySection(model: model, section: section, title: checkoutTitle(section.project))
+                }
+            }
+            .padding(.top, 7)
+        } label: {
+            HStack {
+                Text(group.name).font(.headline)
+                Spacer()
+                if group.needsReview {
+                    Label("Needs review", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Text("\(group.checkouts.count) checkouts").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func checkoutTitle(_ project: AppSnapshot.ProjectInventory) -> String {
+        switch project.checkoutKind {
+        case "main": return "Main"
+        case "worktree": return project.branch.map { "Worktree · \($0)" } ?? "Worktree"
+        default: return project.name
+        }
+    }
+}
+
 private struct ProjectInventorySection: View {
     @ObservedObject var model: AppModel
     let section: SkillInventoryPresentation.ProjectSection
-    @State private var expanded = true
+    let title: String
+    @State private var expanded: Bool
     @State private var inheritedExpanded = false
+
+    init(model: AppModel, section: SkillInventoryPresentation.ProjectSection, title: String) {
+        self.model = model
+        self.section = section
+        self.title = title
+        _expanded = State(initialValue: section.project.lifecycle != "likely-finished")
+    }
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 7) {
+                if section.project.status == "attention" {
+                    projectReview
+                }
                 if section.projectSkills.isEmpty {
                     Text("No Project Skills found").foregroundStyle(.secondary)
                 }
@@ -305,20 +369,66 @@ private struct ProjectInventorySection: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text(section.project.name).font(.headline)
+                    Text(title).font(.headline)
                     Spacer()
                     if section.project.status == "attention" {
-                        Label("Attention", systemImage: "exclamationmark.triangle.fill")
+                        Label("Needs review", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption).foregroundStyle(.orange)
+                    }
+                    if section.project.lifecycle == "likely-finished" {
+                        Text("Likely finished").font(.caption).foregroundStyle(.secondary)
                     }
                     if section.project.overrideCount > 0 {
                         Text("\(section.project.overrideCount) overrides")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("\(section.projectSkills.count) skills").font(.caption).foregroundStyle(.secondary)
+                    Text(skillCountLabel).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(section.project.root).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
+        }
+    }
+
+    private var skillCountLabel: String {
+        guard let selected = section.project.selectedSkillCount else { return "\(section.projectSkills.count) skills" }
+        return "\(selected) selected · \(section.projectSkills.count) detected"
+    }
+
+    private var reviewMessage: String {
+        switch section.project.issueCode {
+        case "legacy-project-scope":
+            return "This checkout has an older Caddie record. Caddie can repair it after every owned Skill matches."
+        case "invalid-ledger-content":
+            return "The Skill list does not match this checkout’s Caddie record."
+        case "missing-content":
+            return "A selected Skill or source folder is missing."
+        case "permission-denied":
+            return "Caddie cannot read this checkout’s Skill folder."
+        default:
+            return "Caddie cannot verify this checkout’s Skill record."
+        }
+    }
+
+    private var projectReview: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(reviewMessage).font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    if section.project.repairAvailable == true {
+                        Button("Repair") { Task { await model.repairProject(section.project.root) } }
+                    }
+                    if section.project.issueCode == "source-unavailable" || section.project.issueCode == "permission-denied" {
+                        Button("Grant Access") { model.grantAccess(to: section.project.root) }
+                    }
+                    Button("Stop tracking") { Task { await model.stopTrackingProject(section.project.root) } }
+                    Spacer()
+                }
+                Text("Stop tracking removes this checkout from Caddie. Its folder and Skills stay unchanged.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        } label: {
+            Label("Needs review", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
         }
     }
 }
@@ -366,6 +476,8 @@ private struct InventorySkillRow: View {
                             set: { enabled in Task { await model.setAuthorization(selectionID: selectionID, enabled: enabled) } }
                         ))
                         .font(.caption)
+                    } else if skill.scope == "project", skill.managed {
+                        detail("Updates", "Manual")
                     }
                 }
             }

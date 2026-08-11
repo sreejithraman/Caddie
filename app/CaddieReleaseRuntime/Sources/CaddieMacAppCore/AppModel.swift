@@ -39,6 +39,7 @@ public final class AppModel: ObservableObject {
     private var toolStateRefreshSubjectIDs: Set<String> = []
     private var verification = InspectionVerificationState()
     private var notificationToggleRevision = 0
+    private var errorRevision = 0
     private var handoffsInFlight: Set<String> = []
     private var openedHandoffs: [String: AppSnapshot.OutsideEffect] = [:]
 
@@ -82,7 +83,7 @@ public final class AppModel: ObservableObject {
                     else if !observation.watchIDs.isEmpty { self.receive(.filesChanged(subjectIDs: observation.watchIDs)) }
                 }
             },
-            onFault: { [weak self] message in Task { @MainActor in self?.lastError = message } }
+            onFault: { [weak self] message in Task { @MainActor in self?.showError(message) } }
         )
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -96,10 +97,12 @@ public final class AppModel: ObservableObject {
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.refreshLoginStatus() } }
         Task {
+            let priorErrorRevision = errorRevision
             do {
                 let cached = try await client.status()
                 accept(cached)
-            } catch { lastError = readable(error) }
+                clearError(ifUnchangedSince: priorErrorRevision)
+            } catch { showError(readable(error)) }
             receive(.appStart)
         }
     }
@@ -113,11 +116,12 @@ public final class AppModel: ObservableObject {
         }
         automaticUpdatesPaused = false
         if snapshot.pause.active {
+            let priorErrorRevision = errorRevision
             do {
                 accept(try await client.requestResume())
-                lastError = nil
+                clearError(ifUnchangedSince: priorErrorRevision)
             } catch {
-                lastError = "Caddie is still safety paused. \(readable(error))"
+                showError("Caddie is still safety paused. \(readable(error))")
                 return
             }
         }
@@ -126,14 +130,14 @@ public final class AppModel: ObservableObject {
 
     public func setStartAtLogin(_ enabled: Bool) {
         guard snapshot.state == "ready" else {
-            lastError = "Finish Caddie setup before turning on Start at login."
+            showError("Finish Caddie setup before turning on Start at login.")
             return
         }
         do {
             try loginItem.setEnabled(enabled)
             loginItemStatus = loginItem.status
             if loginItemStatus == .requiresApproval { loginItem.openSystemSettings() }
-        } catch { lastError = readable(error) }
+        } catch { showError(readable(error)) }
     }
 
     public func openLoginItemSettings() { loginItem.openSystemSettings() }
@@ -146,7 +150,7 @@ public final class AppModel: ObservableObject {
             loginItemStatus = loginItem.status
             return true
         } catch {
-            lastError = "Caddie could not turn off Start at login. \(readable(error))"
+            showError("Caddie could not turn off Start at login. \(readable(error))")
             return false
         }
     }
@@ -156,13 +160,16 @@ public final class AppModel: ObservableObject {
     public func grantAccess(to exactPath: String) {
         guard let selected = FolderAccess.chooseFolder(for: exactPath) else { return }
         guard selected.standardizedFileURL.path == URL(fileURLWithPath: exactPath).standardizedFileURL.path else {
-            lastError = "Choose the exact folder Caddie could not read."
+            showError("Choose the exact folder Caddie could not read.")
             return
         }
         receive(.registrationChanged)
     }
 
-    public func clearError() { lastError = nil }
+    public func clearError() {
+        errorRevision += 1
+        lastError = nil
+    }
 
     public func setNotificationsEnabled(_ enabled: Bool) async {
         notificationToggleRevision += 1
@@ -183,7 +190,7 @@ public final class AppModel: ObservableObject {
             scheduleEffectDrain()
         } catch {
             guard revision == notificationToggleRevision else { return }
-            lastError = readable(error)
+            showError(readable(error))
         }
     }
 
@@ -193,10 +200,17 @@ public final class AppModel: ObservableObject {
 
     public func update(selectionID: String) async { await perform(.update(selectionID: selectionID)) }
     public func retry(attentionID: String) async { await perform(.retry(attentionID: attentionID)) }
+    public func repairProject(_ projectRoot: String) async { await perform(.repairProject(projectRoot: projectRoot)) }
+    public func stopTrackingProject(_ projectRoot: String) async {
+        await perform(.stopTrackingProject(projectRoot: projectRoot))
+    }
 
     public func invoke(actionID: String, extendedTimeout: Bool = false) async {
-        do { accept(try await client.invoke(actionID: actionID, extendedTimeout: extendedTimeout)); lastError = nil }
-        catch { lastError = readable(error) }
+        let priorErrorRevision = errorRevision
+        do {
+            accept(try await client.invoke(actionID: actionID, extendedTimeout: extendedTimeout))
+            clearError(ifUnchangedSince: priorErrorRevision)
+        } catch { showError(readable(error)) }
     }
 
     public func mute(_ item: AppSnapshot.Attention) { notificationPreferences.muteAttention(stableKey: item.stableKey) }
@@ -220,6 +234,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func handoff(attentionID: String, provider: AgentProvider) async {
+        let priorErrorRevision = errorRevision
         let handoffKey = "\(attentionID)\u{0}\(provider.rawValue)"
         guard handoffsInFlight.insert(handoffKey).inserted else { return }
         defer { handoffsInFlight.remove(handoffKey) }
@@ -230,7 +245,7 @@ public final class AppModel: ObservableObject {
                let folder = prior.workFolder, let prompt = prior.prompt {
                 let url = try AgentHandoffLink.url(provider: provider, workFolder: folder, prompt: prompt)
                 guard workspace.open(url) else { throw AppActionFault.missingOutsideEffect }
-                lastError = nil
+                clearError(ifUnchangedSince: priorErrorRevision)
                 return
             }
             var current = snapshot
@@ -270,8 +285,8 @@ public final class AppModel: ObservableObject {
             }
             accept(try await client.report(effectID: effect.id, outcome: outcome))
             if outcome == .opened { openedHandoffs[handoffKey] = effect }
-            lastError = nil
-        } catch { lastError = readable(error) }
+            clearError(ifUnchangedSince: priorErrorRevision)
+        } catch { showError(readable(error)) }
     }
 
     private func matchingHandoffEffect(
@@ -283,19 +298,20 @@ public final class AppModel: ObservableObject {
     }
 
     private func perform(_ intent: AppActionIntent) async {
+        let priorErrorRevision = errorRevision
         do {
             let requested = try await client.request(intent)
             if intent.completesOnRequest {
                 accept(requested)
-                lastError = nil
+                clearError(ifUnchangedSince: priorErrorRevision)
                 return
             }
             guard let action = requested.pendingActions.first(where: { intent.matches($0.intent) }) else {
                 throw AppActionFault.missingPendingAction
             }
-            accept(try await client.invoke(actionID: action.id, extendedTimeout: false))
-            lastError = nil
-        } catch { lastError = readable(error) }
+            accept(try await client.invoke(actionID: action.id, extendedTimeout: intent.usesExtendedTimeout))
+            clearError(ifUnchangedSince: priorErrorRevision)
+        } catch { showError(readable(error)) }
     }
 
     private func receive(_ event: ObservationEvent) {
@@ -319,16 +335,17 @@ public final class AppModel: ObservableObject {
             return
         }
         isRunningCycle = true
+        let priorErrorRevision = errorRevision
         let priorVerification = verification.beginCycle()
         do {
             let prior = snapshot
             let next = try await client.cycle(cycle)
             verification.finishCycle(changed: next.hasInspectionRelevantChanges(comparedTo: prior))
             accept(next)
-            lastError = nil
+            clearError(ifUnchangedSince: priorErrorRevision)
         } catch {
             verification.failCycle(restoring: priorVerification)
-            lastError = readable(error)
+            showError(readable(error))
         }
         isRunningCycle = false
         schedule(at: scheduler.finishCycle())
@@ -336,7 +353,6 @@ public final class AppModel: ObservableObject {
     }
 
     private func accept(_ next: AppSnapshot) {
-        lastError = nil
         install(next)
         scheduleEffectDrain()
     }
@@ -357,15 +373,17 @@ public final class AppModel: ObservableObject {
             toolStateRefreshDirty = false
             let subjectIDs = toolStateRefreshSubjectIDs
             toolStateRefreshSubjectIDs = []
+            let priorErrorRevision = errorRevision
             do {
                 let current = try await client.status()
                 let changed = current != snapshot
                 if changed { accept(current) }
+                clearError(ifUnchangedSince: priorErrorRevision)
                 if verification.consumeToolStateHint(snapshotChanged: changed) {
                     receive(.filesChanged(subjectIDs: subjectIDs))
                 }
             } catch {
-                lastError = readable(error)
+                showError(readable(error))
                 if verification.consumeToolStateHint(snapshotChanged: nil) {
                     receive(.filesChanged(subjectIDs: subjectIDs))
                 }
@@ -412,7 +430,7 @@ public final class AppModel: ObservableObject {
             do {
                 install(try await client.report(effectID: effect.id, outcome: outcome))
                 effectDrainDirty = true
-            } catch { lastError = readable(error) }
+            } catch { showError(readable(error)) }
         }
         effectDrainTask = nil
         if effectDrainDirty { scheduleEffectDrain() }
@@ -430,6 +448,16 @@ public final class AppModel: ObservableObject {
     private func readable(_ error: Error) -> String {
         if let tool = error as? ToolResponse.ErrorBody { return tool.message }
         return error.localizedDescription
+    }
+
+    private func showError(_ message: String) {
+        errorRevision += 1
+        lastError = message
+    }
+
+    private func clearError(ifUnchangedSince revision: Int) {
+        guard errorRevision == revision else { return }
+        lastError = nil
     }
 
     private func sourceID(for item: AppSnapshot.Attention) -> String? {
