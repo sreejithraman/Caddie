@@ -48,6 +48,28 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups[0].checkouts.map(\.project.id), ["main", "worktree"])
         XCTAssertTrue(groups[0].needsReview)
+
+        let presentation = SkillInventoryPresentation(snapshot: snapshot)
+        XCTAssertEqual(presentation.durableAttentionCount, 0)
+        XCTAssertEqual(presentation.projectReviewCount, 1)
+        XCTAssertEqual(presentation.reviewCount, 1)
+        XCTAssertTrue(presentation.needsReview)
+    }
+
+    func testReviewCountAddsDurableAttentionAndProjectReviewWithoutCountingInventoryRows() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        object["summary"] = ["selections": 2, "current": 1, "ready": 0, "attention": 2]
+        var projects = try XCTUnwrap(object["projects"] as? [[String: Any]])
+        projects[0]["status"] = "attention"
+        object["projects"] = projects
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let presentation = SkillInventoryPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(presentation.durableAttentionCount, 2)
+        XCTAssertEqual(presentation.projectReviewCount, 1)
+        XCTAssertEqual(presentation.reviewCount, 3)
+        XCTAssertTrue(presentation.needsReview)
     }
 
     func testSourcesUseGitOrFolderLocationAndKeepUnmanagedSkillsVisible() throws {

@@ -31,6 +31,11 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
     public let projectGroups: [ProjectGroup]
     public let sources: [SourceSection]
     public let isAvailable: Bool
+    public let durableAttentionCount: Int
+    public let projectReviewCount: Int
+
+    public var reviewCount: Int { durableAttentionCount + projectReviewCount }
+    public var needsReview: Bool { reviewCount > 0 }
 
     public init(snapshot: AppSnapshot) {
         isAvailable = snapshot.skillInventory != nil && snapshot.projects != nil
@@ -71,6 +76,8 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
             if order != .orderedSame { return order == .orderedAscending }
             return $0.id < $1.id
         }
+        durableAttentionCount = snapshot.summary.attention
+        projectReviewCount = presentedProjects.filter { $0.project.status == "attention" }.count
 
         var grouped: [String: [AppSnapshot.InventorySkill]] = [:]
         for skill in inventory where !Self.isProjectPermissionPlaceholder(skill) {
