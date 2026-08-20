@@ -23,18 +23,17 @@ struct UserSkillsPage: View {
                 )
             } else {
                 Section {
-                    PageGuide(
-                        title: "Skills installed for your account",
-                        message: "Enabled User Skills are available in each project unless a Project Skill takes their place."
-                    )
-                }
-                ForEach(filteredSkills) { skill in
-                    NavigationLink {
-                        SkillDetailView(model: model, skillID: skill.id)
-                    } label: {
-                        SkillSummaryRow(skill: skill)
-                            .contentShape(Rectangle())
+                    ForEach(filteredSkills) { skill in
+                        NavigationLink {
+                            SkillDetailView(model: model, skillID: skill.id)
+                        } label: {
+                            SkillSummaryRow(skill: skill)
+                        }
                     }
+                } header: {
+                    Text("Skills installed for your account")
+                } footer: {
+                    Text("Enabled User Skills are available in each project unless a Project Skill takes their place.")
                 }
             }
         }
@@ -70,18 +69,17 @@ struct ProjectsPage: View {
                 )
             } else {
                 Section {
-                    PageGuide(
-                        title: "Skills by project",
-                        message: "Open a project to see its main checkout and worktrees, then see which Skills each one uses."
-                    )
-                }
-                ForEach(filteredGroups) { group in
-                    NavigationLink {
-                        ProjectDetailView(model: model, groupID: group.id)
-                    } label: {
-                        ProjectSummaryRow(group: group)
-                            .contentShape(Rectangle())
+                    ForEach(filteredGroups) { group in
+                        NavigationLink {
+                            ProjectDetailView(model: model, groupID: group.id)
+                        } label: {
+                            ProjectSummaryRow(group: group)
+                        }
                     }
+                } header: {
+                    Text("Skills by project")
+                } footer: {
+                    Text("Open a project to see its main checkout and worktrees, then see which Skills each one uses.")
                 }
             }
         }
@@ -123,18 +121,17 @@ struct SourcesPage: View {
                 )
             } else {
                 Section {
-                    PageGuide(
-                        title: "Where Skills come from",
-                        message: "A source is a Git repository or folder that provides one or more Skills."
-                    )
-                }
-                ForEach(filteredSources) { source in
-                    NavigationLink {
-                        SourceDetailView(model: model, sourceID: source.id)
-                    } label: {
-                        SourceSummaryRow(source: source)
-                            .contentShape(Rectangle())
+                    ForEach(filteredSources) { source in
+                        NavigationLink {
+                            SourceDetailView(model: model, sourceID: source.id)
+                        } label: {
+                            SourceSummaryRow(source: source)
+                        }
                     }
+                } header: {
+                    Text("Where Skills come from")
+                } footer: {
+                    Text("A source is a Git repository or folder that provides one or more Skills.")
                 }
             }
         }
@@ -172,9 +169,7 @@ struct ProjectSummaryRow: View {
             } else {
                 Text("Up to date").font(.caption).foregroundStyle(.secondary)
             }
-            NavigationHint()
         }
-        .padding(.vertical, 7)
     }
 
     private var summary: String {
@@ -193,22 +188,17 @@ struct ProjectDetailView: View {
             if let group {
                 List {
                     Section {
-                        PageGuide(
-                            title: "\(group.checkouts.count) \(group.checkouts.count == 1 ? "checkout" : "checkouts")",
-                            message: "The main checkout and its worktrees belong to the same Git repository."
-                        )
-                    }
-                    Section {
                         ForEach(group.checkouts) { checkout in
                             NavigationLink {
                                 CheckoutDetailView(model: model, projectID: checkout.project.id)
                             } label: {
                                 CheckoutSummaryRow(section: checkout)
-                                    .contentShape(Rectangle())
                             }
                         }
                     } header: {
-                        Text("Checkouts")
+                        Text("\(group.checkouts.count) \(group.checkouts.count == 1 ? "checkout" : "checkouts")")
+                    } footer: {
+                        Text("The main checkout and its worktrees belong to the same Git repository.")
                     }
                 }
             } else {
@@ -242,9 +232,7 @@ private struct CheckoutSummaryRow: View {
             } else {
                 Text("Up to date").font(.caption).foregroundStyle(.secondary)
             }
-            NavigationHint()
         }
-        .padding(.vertical, 7)
     }
 
     private var title: String {
@@ -304,12 +292,13 @@ private struct CheckoutDetailView: View {
 
             if section.project.status == "attention" {
                 Section("This checkout needs review") {
-                    Label {
-                        Text(reviewMessage(for: section)).foregroundStyle(.primary)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    }
-                    HStack {
+                    HStack(alignment: .center, spacing: 12) {
+                        Label {
+                            Text(reviewMessage(for: section)).foregroundStyle(.primary)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                        Spacer()
                         if section.project.repairAvailable == true {
                             Button("Repair") {
                                 guard let current = currentSection(), current.project.repairAvailable == true else { return }
@@ -442,9 +431,6 @@ private struct CheckoutSkillsView: View {
     var body: some View {
         let skills = filteredSkills
         List {
-            Section {
-                PageGuide(title: guideTitle, message: guideMessage)
-            }
             if skills.isEmpty {
                 EmptyInventoryView(
                     title: query.isEmpty ? "No \(scope.title)" : "No matching Skills",
@@ -452,13 +438,18 @@ private struct CheckoutSkillsView: View {
                     symbol: "magnifyingglass"
                 )
             } else {
-                ForEach(skills) { skill in
-                    NavigationLink {
-                        SkillDetailView(model: model, skillID: skill.id)
-                    } label: {
-                        SkillSummaryRow(skill: skill)
-                            .contentShape(Rectangle())
+                Section {
+                    ForEach(skills) { skill in
+                        NavigationLink {
+                            SkillDetailView(model: model, skillID: skill.id)
+                        } label: {
+                            SkillSummaryRow(skill: skill)
+                        }
                     }
+                } header: {
+                    Text(guideTitle)
+                } footer: {
+                    Text(guideMessage)
                 }
             }
         }
@@ -506,9 +497,7 @@ private struct CheckoutSkillGroupRow: View {
             }
             Spacer()
             Text("\(count)").font(.title3).foregroundStyle(.secondary)
-            NavigationHint()
         }
-        .padding(.vertical, 5)
     }
 }
 
@@ -525,9 +514,7 @@ private struct SourceSummaryRow: View {
             }
             Spacer()
             Text(source.skillCountLabel).font(.caption).foregroundStyle(.secondary)
-            NavigationHint()
         }
-        .padding(.vertical, 7)
     }
 }
 
@@ -583,9 +570,7 @@ struct SkillSummaryRow: View {
                 Text("User").font(.caption).foregroundStyle(.secondary)
             }
             Text(skill.statusLabel).font(.caption).foregroundStyle(skill.statusColor)
-            NavigationHint()
         }
-        .padding(.vertical, 6)
     }
 
     private var originLabel: String {
@@ -724,13 +709,19 @@ private struct EmptyInventoryView: View {
     let symbol: String
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: symbol).font(.largeTitle).foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            Text(message).foregroundStyle(.secondary)
+        Group {
+            if #available(macOS 14.0, *) {
+                ContentUnavailableView(title, systemImage: symbol, description: Text(message))
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: symbol).font(.largeTitle).foregroundStyle(.secondary)
+                    Text(title).font(.headline)
+                    Text(message).foregroundStyle(.secondary)
+                }
+                .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 220)
-        .multilineTextAlignment(.center)
     }
 }
 
@@ -738,15 +729,25 @@ private struct MissingInventoryItem: View {
     let title: String
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "arrow.clockwise").font(.largeTitle).foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            Text("Caddie refreshed while this page was open. Go back to see the current list.")
-                .foregroundStyle(.secondary)
+        Group {
+            if #available(macOS 14.0, *) {
+                ContentUnavailableView(
+                    title,
+                    systemImage: "arrow.clockwise",
+                    description: Text("Caddie refreshed while this page was open. Go back to see the current list.")
+                )
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "arrow.clockwise").font(.largeTitle).foregroundStyle(.secondary)
+                    Text(title).font(.headline)
+                    Text("Caddie refreshed while this page was open. Go back to see the current list.")
+                        .foregroundStyle(.secondary)
+                }
+                .multilineTextAlignment(.center)
+                .padding()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .multilineTextAlignment(.center)
-        .padding()
     }
 }
 
@@ -770,27 +771,5 @@ private extension AppSnapshot.InventorySkill {
     var statusColor: Color {
         if !enabled { return .secondary }
         return status == "attention" ? .orange : status == "ready" ? .blue : .secondary
-    }
-}
-
-private struct PageGuide: View {
-    let title: String
-    let message: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).fontWeight(.semibold)
-            Text(message).font(.callout).foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-private struct NavigationHint: View {
-    var body: some View {
-        Image(systemName: "chevron.right")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
-            .accessibilityHidden(true)
     }
 }
