@@ -15,14 +15,45 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         public let inheritedUserSkills: [AppSnapshot.InventorySkill]
 
         public var id: String { project.id }
+        public var skillStateLabel: String { project.status == "attention" ? "Skill review needed" : "Skills OK" }
+
+        public var gitStateLabel: String {
+            if project.workingTreeClean == false { return "Git: Has changes" }
+            if project.upstreamState == "gone" { return "Git: Upstream gone" }
+            if project.lifecycle == "likely-finished" { return "Git: May be finished" }
+            if project.workingTreeClean == true { return "Git: Clean" }
+            return "Git status unavailable"
+        }
+    }
+
+    public struct SourceUse: Equatable, Identifiable, Sendable {
+        public let skillID: String
+        public let skillName: String
+        public let scope: String
+        public let projectRoot: String?
+        public let targetName: String
+        public let targetPath: String?
+
+        public var id: String { skillID }
     }
 
     public struct SourceSection: Equatable, Identifiable, Sendable {
         public let id: String
         public let name: String
-        public let location: String
+        public let locations: [String]
         public let type: String
         public let skills: [AppSnapshot.InventorySkill]
+        public let uses: [SourceUse]
+
+        public var location: String { locations.first ?? "Unknown source" }
+        public var isRepository: Bool {
+            type == "git" || id.hasPrefix("origin-remote-git-") || id.hasPrefix("origin-local-git-")
+                || (id.hasPrefix("origin-") && locations.count > 1)
+        }
+        public var kindLabel: String { isRepository ? "Git repository" : "Local folder" }
+        public var summaryLabel: String {
+            locations.count > 1 ? "\(locations.count) source folders" : location
+        }
 
         public var skillCountLabel: String {
             "\(skills.count) \(skills.count == 1 ? "skill" : "skills")"
@@ -50,6 +81,7 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
     public let projects: [ProjectSection]
     public let projectGroups: [ProjectGroup]
     public let sources: [SourceSection]
+    public let unmanagedUserSkills: [AppSnapshot.InventorySkill]
     public let readySkills: [ReadySkill]
     public let recentActivity: [RecentActivity]
     public let isAvailable: Bool
@@ -103,18 +135,32 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         durableAttentionCount = snapshot.summary.attention
         projectReviewCount = presentedProjects.filter { $0.project.status == "attention" }.count
 
+        unmanagedUserSkills = inventory
+            .filter { $0.scope == "user" && $0.origin == nil }
+            .sorted(by: Self.skillOrder)
         var grouped: [String: [AppSnapshot.InventorySkill]] = [:]
-        for skill in inventory where !Self.isProjectPermissionPlaceholder(skill) {
-            grouped[skill.origin?.id ?? "unmanaged", default: []].append(skill)
+        for skill in inventory where !Self.isProjectPermissionPlaceholder(skill)
+            && !Self.isInPlaceProjectSkill(skill) {
+            guard let origin = skill.origin else { continue }
+            grouped[origin.id, default: []].append(skill)
         }
         sources = grouped.map { id, skills in
-            let origin = skills.compactMap(\.origin).first
+            let origins = skills.compactMap(\.origin)
+            let origin = origins.sorted {
+                let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+                if order != .orderedSame { return order == .orderedAscending }
+                return $0.location < $1.location
+            }.first
+            let locations = Array(Set(origins.map(\.location))).sorted()
+            var seenNames = Set<String>()
+            let providedSkills = skills.sorted(by: Self.skillOrder).filter { seenNames.insert($0.name).inserted }
             return SourceSection(
                 id: id,
-                name: origin?.name ?? "Unmanaged",
-                location: origin?.location ?? "Installed skill folders",
-                type: origin?.type ?? "unmanaged",
-                skills: skills.sorted(by: Self.skillOrder)
+                name: origin?.name ?? "Source",
+                locations: locations,
+                type: origin?.type ?? "local",
+                skills: providedSkills,
+                uses: skills.sorted(by: Self.skillOrder).map { Self.sourceUse(for: $0, projects: presentedProjects) }
             )
         }.sorted {
             let order = $0.name.localizedCaseInsensitiveCompare($1.name)
@@ -207,6 +253,48 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         return URL(fileURLWithPath: skill.installedPath).standardizedFileURL.path == projectSkillsRoot
     }
 
+    private static func isInPlaceProjectSkill(_ skill: AppSnapshot.InventorySkill) -> Bool {
+        guard skill.scope == "project", let origin = skill.origin, let localFolder = origin.localFolder else {
+            return false
+        }
+        let sourcePath = URL(fileURLWithPath: localFolder, isDirectory: true)
+            .appendingPathComponent(origin.selectedPath, isDirectory: true)
+            .standardizedFileURL.path
+        return URL(fileURLWithPath: skill.installedPath).standardizedFileURL.path == sourcePath
+    }
+
+    private static func sourceUse(
+        for skill: AppSnapshot.InventorySkill,
+        projects: [ProjectSection]
+    ) -> SourceUse {
+        guard let projectRoot = skill.projectRoot,
+              let project = projects.first(where: { $0.project.root == projectRoot })?.project else {
+            return SourceUse(
+                skillID: skill.id,
+                skillName: skill.name,
+                scope: skill.scope,
+                projectRoot: skill.projectRoot,
+                targetName: "User Skills",
+                targetPath: nil
+            )
+        }
+        let checkout: String
+        switch project.checkoutKind {
+        case "main": checkout = "Main"
+        case "worktree": checkout = "Worktree"
+        default: checkout = "Project"
+        }
+        let targetName = project.branch.map { "\(checkout) · \($0)" } ?? checkout
+        return SourceUse(
+            skillID: skill.id,
+            skillName: skill.name,
+            scope: skill.scope,
+            projectRoot: projectRoot,
+            targetName: targetName,
+            targetPath: projectRoot
+        )
+    }
+
     private static func skillOrder(_ left: AppSnapshot.InventorySkill, _ right: AppSnapshot.InventorySkill) -> Bool {
         let order = left.name.localizedCaseInsensitiveCompare(right.name)
         if order != .orderedSame { return order == .orderedAscending }
@@ -222,11 +310,11 @@ extension AppSnapshot.InventorySkill {
 
     public var updateStatusLabel: String {
         switch status {
-        case "current": return "Up to date"
+        case "current": return "Skills OK"
         case "ready": return "Update available"
         case "manual-only": return "Auto-update off"
         case "unmanaged": return "Not managed"
-        case "attention": return "Needs review"
+        case "attention": return "Skill review needed"
         default: return status.capitalized
         }
     }

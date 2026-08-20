@@ -102,6 +102,7 @@ struct ProjectsPage: View {
 struct SourcesPage: View {
     @ObservedObject var model: AppModel
     let sources: [SkillInventoryPresentation.SourceSection]
+    let unmanagedUserSkills: [AppSnapshot.InventorySkill]
     let isAvailable: Bool
     @State private var query = ""
 
@@ -113,7 +114,7 @@ struct SourcesPage: View {
                     message: "Use Sync now to check your skill sources.",
                     symbol: "arrow.clockwise"
                 )
-            } else if filteredSources.isEmpty {
+            } else if filteredSources.isEmpty && filteredUnmanagedUserSkills.isEmpty {
                 EmptyInventoryView(
                     title: query.isEmpty ? "No Sources" : "No matching Sources",
                     message: query.isEmpty ? "Caddie did not find any skill sources." : "Try a different search.",
@@ -131,7 +132,24 @@ struct SourcesPage: View {
                 } header: {
                     Text("Where Skills come from")
                 } footer: {
-                    Text("A source is a Git repository or folder that provides one or more Skills.")
+                    Text("A source is a Git repository or folder. Its checkouts can supply Skills to User Skills and projects.")
+                }
+                if !filteredUnmanagedUserSkills.isEmpty {
+                    Section {
+                        NavigationLink {
+                            UnmanagedUserSkillsView(model: model, skills: filteredUnmanagedUserSkills)
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("No source record").fontWeight(.semibold)
+                                    Text("User Skills that Caddie did not install")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "questionmark.folder").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -143,8 +161,18 @@ struct SourcesPage: View {
         guard !query.isEmpty else { return sources }
         return sources.filter {
             $0.name.localizedCaseInsensitiveContains(query)
-                || $0.location.localizedCaseInsensitiveContains(query)
+                || $0.locations.contains { $0.localizedCaseInsensitiveContains(query) }
+                || $0.uses.contains {
+                    $0.skillName.localizedCaseInsensitiveContains(query)
+                        || $0.targetName.localizedCaseInsensitiveContains(query)
+                        || $0.targetPath?.localizedCaseInsensitiveContains(query) == true
+                }
         }
+    }
+
+    private var filteredUnmanagedUserSkills: [AppSnapshot.InventorySkill] {
+        guard !query.isEmpty else { return unmanagedUserSkills }
+        return unmanagedUserSkills.filter { $0.matches(query) }
     }
 }
 
@@ -158,16 +186,17 @@ struct ProjectSummaryRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(group.name).fontWeight(.semibold)
                 Text(summary).font(.caption).foregroundStyle(.secondary)
+                Text(gitSummary).font(.caption2).foregroundStyle(.tertiary)
                 if let folder = group.checkouts.first?.project.root {
                     Text(folder).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
             }
             Spacer()
             if group.needsReview {
-                Label("Needs review", systemImage: "exclamationmark.triangle.fill")
+                Label("Skill review needed", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
             } else {
-                Text("Up to date").font(.caption).foregroundStyle(.secondary)
+                Text("Skills OK").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -175,6 +204,14 @@ struct ProjectSummaryRow: View {
     private var summary: String {
         let count = group.checkouts.reduce(0) { $0 + $1.projectSkills.count }
         return "\(group.checkouts.count) \(group.checkouts.count == 1 ? "checkout" : "checkouts") · \(count) Project Skills"
+    }
+
+    private var gitSummary: String {
+        if group.checkouts.contains(where: { $0.project.workingTreeClean == false }) { return "Git: Has changes" }
+        if group.checkouts.contains(where: { $0.project.upstreamState == "gone" }) { return "Git: Upstream gone" }
+        if group.checkouts.contains(where: { $0.project.lifecycle == "likely-finished" }) { return "Git: May be finished" }
+        if group.checkouts.allSatisfy({ $0.project.workingTreeClean == true }) { return "Git: Clean" }
+        return "Git status unavailable"
     }
 }
 
@@ -224,13 +261,14 @@ private struct CheckoutSummaryRow: View {
                     }
                 }
                 Text(countLabel).font(.caption).foregroundStyle(.secondary)
+                Text(section.gitStateLabel).font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
             if section.project.status == "attention" {
-                Label("Needs review", systemImage: "exclamationmark.triangle.fill")
+                Label("Skill review needed", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
             } else {
-                Text("Up to date").font(.caption).foregroundStyle(.secondary)
+                Text("Skills OK").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -291,7 +329,7 @@ private struct CheckoutDetailView: View {
             }
 
             if section.project.status == "attention" {
-                Section("This checkout needs review") {
+                Section("Skills need review") {
                     HStack(alignment: .center, spacing: 12) {
                         Label {
                             Text(reviewMessage(for: section)).foregroundStyle(.primary)
@@ -312,7 +350,7 @@ private struct CheckoutDetailView: View {
                 }
             } else {
                 Section {
-                    Label("Caddie checked this checkout and found no issues.", systemImage: "checkmark.circle.fill")
+                    Label("Caddie checked this checkout’s Skills and found no issues.", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
             }
@@ -349,6 +387,9 @@ private struct CheckoutDetailView: View {
                 if let mainProjectRoot = section.project.mainProjectRoot, mainProjectRoot != section.project.root {
                     DetailValue(label: "Main checkout", value: mainProjectRoot)
                 }
+            }
+
+            Section("Git") {
                 if let workingTreeClean = section.project.workingTreeClean {
                     DetailValue(label: "Working tree", value: workingTreeClean ? "Clean" : "Has changes")
                 }
@@ -356,7 +397,7 @@ private struct CheckoutDetailView: View {
                     DetailValue(label: "Upstream branch", value: upstreamState == "gone" ? "Gone" : upstreamState.capitalized)
                 }
                 if let included = section.project.includedInDefaultBranch {
-                    DetailValue(label: "Changes in default branch", value: included ? "Yes" : "No")
+                    DetailValue(label: "Branch changes in default branch", value: included ? "Yes" : "No")
                 }
                 if let lifecycle = section.project.lifecycle {
                     DetailValue(label: "Work", value: lifecycle == "likely-finished" ? "May be finished" : "Active")
@@ -506,11 +547,11 @@ private struct SourceSummaryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: source.type == "git" ? "network" : source.type == "unmanaged" ? "questionmark.folder" : "folder")
+            Image(systemName: source.type == "git" ? "network" : "folder")
                 .font(.title3).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 Text(source.name).fontWeight(.semibold)
-                Text(source.location).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(source.summaryLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             Text(source.skillCountLabel).font(.caption).foregroundStyle(.secondary)
@@ -528,8 +569,32 @@ private struct SourceDetailView: View {
             if let source {
                 List {
                     Section("Source") {
-                        DetailValue(label: "Type", value: source.type.capitalized)
-                        DetailValue(label: source.type == "git" ? "Git URL" : "Folder", value: source.location)
+                        DetailValue(label: "Type", value: source.kindLabel)
+                        if source.type == "git" {
+                            DetailValue(label: "Git URL", value: source.location)
+                        } else if source.locations.count == 1 {
+                            DetailValue(label: "Folder", value: source.location)
+                        }
+                    }
+                    Section("Used by") {
+                        ForEach(source.uses) { use in
+                            VStack(alignment: .leading, spacing: 3) {
+                                LabeledContent(use.targetName, value: use.skillName)
+                                if let path = use.targetPath {
+                                    Text(path)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+                    if source.locations.count > 1 {
+                        Section("Source folders") {
+                            ForEach(source.locations, id: \.self) { location in
+                                Text(location).textSelection(.enabled)
+                            }
+                        }
                     }
                     Section("Skills") {
                         ForEach(source.skills) { skill in
@@ -547,6 +612,28 @@ private struct SourceDetailView: View {
             }
         }
         .navigationTitle(source?.name ?? "Source")
+    }
+}
+
+private struct UnmanagedUserSkillsView: View {
+    @ObservedObject var model: AppModel
+    let skills: [AppSnapshot.InventorySkill]
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(skills) { skill in
+                    NavigationLink {
+                        SkillDetailView(model: model, skillID: skill.id)
+                    } label: {
+                        SkillSummaryRow(skill: skill)
+                    }
+                }
+            } footer: {
+                Text("These User Skills are installed, but Caddie has no source record for them.")
+            }
+        }
+        .navigationTitle("No source record")
     }
 }
 

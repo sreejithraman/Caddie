@@ -76,7 +76,12 @@ struct CaddieMainWindow: View {
         case .projects:
             ProjectsPage(model: model, groups: presentation.projectGroups, isAvailable: presentation.isAvailable)
         case .sources:
-            SourcesPage(model: model, sources: presentation.sources, isAvailable: presentation.isAvailable)
+            SourcesPage(
+                model: model,
+                sources: presentation.sources,
+                unmanagedUserSkills: presentation.unmanagedUserSkills,
+                isAvailable: presentation.isAvailable
+            )
         case .settings:
             CaddieSettings(model: model)
         }
