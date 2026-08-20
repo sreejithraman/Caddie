@@ -110,7 +110,7 @@ async function v1Lifecycle(useLastGoodTool) {
 async function verifyFrozenArtifacts() {
   const manifestPath = path.join(repositoryRoot, 'test', 'fixtures', 'c5115ad-artifact-manifest.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  assert.equal(manifest.sourceCommit, 'c5115ad643dd983b5a8e1037d9ef52b6598f90cd');
+  assert.equal(manifest.sourceCommit, '6881667a1ff7a3915a5e9e670646682b919da229');
   const expectedTool = Object.keys(manifest.priorToolFiles).sort();
   const expectedSkill = Object.keys(manifest.priorSkillFiles).sort();
   assert.deepEqual(await priorToolFiles(), expectedTool);
