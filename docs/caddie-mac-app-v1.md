@@ -66,30 +66,35 @@ Keep the app unsandboxed. It uses the current user's normal file rights and macO
 
 Use a folder picker when the user adds a new local Skill Source. Existing registered paths remain valid without being added again. When macOS denies one path, show Grant Access for that exact folder. Preserve the source registration and installed skills while the path is unavailable.
 
-## Menu experience
+## App experience
 
-Open on the Skills view. Show all detected skills, including skills that Caddie does not manage.
+Keep the menu bar panel small. Show one state, the last check time, Sync now, Open Caddie, Pause or Resume updates, and Quit. Do not put skill, project, or source lists in the panel. Errors stay in the panel as an inline notice and never open a modal alert.
 
-The Skills view starts with User Skills, then groups registered checkouts by Git repository. A repository with more than one registered checkout shows Main and Worktree sections. Each checkout section shows its Project Skills and overrides. An expandable “Also uses N User Skills” row shows enabled User Skills that the checkout does not override.
+Open Caddie's inventory in one resizable window. Reuse that window each time the user opens it. Closing the window keeps the menu bar app running, and login must not open the window on its own.
+
+The window has fixed sidebar links for Overview, User Skills, Projects, Sources, and Settings. Sidebar links do not expand. Lists use full-row clicks and clear navigation. Do not use nested disclosure rows.
+
+Show all detected skills, including skills that Caddie does not manage. User Skills is a flat, searchable list. A selected Skill shows its full source, installed path, selected path, status, and update setting.
+
+Projects groups registered checkouts by Git repository. A project page shows Main and Worktree as sibling rows. A selected checkout shows plain Project Skills and User Skills sections. It also shows overrides, full checkout details, and any review action.
 
 Project inspection faults use “Needs review,” not durable Attention. Show the exact reason when known. A verified older Project ledger may offer Repair; the Tool must prove every owned Skill before it changes only the old Project ID. Stop tracking removes only the exact registry entry and keeps the project folder, Project Skills, and project state unchanged. A clean worktree whose commit is in the default branch and whose upstream is gone may be marked “Likely finished,” but Caddie never removes or changes a Git worktree.
 
-Each skill row shows its name, status, and source. Use the Git URL for Git sources and the folder path for local sources. Show the installed path, selected path, and update setting when the user expands the row. Show an unmanaged skill's installed path instead of an unknown source message.
+Each skill row shows its name, status, and source. Use the Git URL for Git sources and the folder path for local sources. Keep long paths in the detail page, where the user can select them. Show an unmanaged skill's installed path instead of an unknown source message.
 
-Offer Sources as a second view. Group managed skills by their exact source and keep unmanaged skills in their own group.
+Sources is a flat, searchable list. Group managed skills by their exact source and keep unmanaged skills in their own group.
 
-Show Recovery and Tool-wide Attention above the inventory. Opening the menu reads the cached Caddie Snapshot and last-check time; it does not start inspection.
+Overview shows Recovery and Tool-wide Attention first, then Project review work, ready updates, and recent activity. Opening the menu or window reads the cached Caddie Snapshot and last-check time; it does not start inspection.
 
-The menu includes:
+Settings includes:
 
-- Sync now;
 - Pause Automatic Updates or Resume Automatic Updates;
 - Start at login;
-- Install updates automatically;
 - notification settings;
-- Check for Updates;
 - Remove Caddie App; and
-- Quit.
+- About Caddie.
+
+When the app update service ships, put Install updates automatically and Check for Updates in Settings.
 
 ## Observation and scheduling
 

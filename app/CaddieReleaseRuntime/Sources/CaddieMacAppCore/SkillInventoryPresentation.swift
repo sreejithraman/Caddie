@@ -23,6 +23,26 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         public let location: String
         public let type: String
         public let skills: [AppSnapshot.InventorySkill]
+
+        public var skillCountLabel: String {
+            "\(skills.count) \(skills.count == 1 ? "skill" : "skills")"
+        }
+    }
+
+    public struct ReadySkill: Equatable, Identifiable, Sendable {
+        public let work: AppSnapshot.ReadyWork
+        public let name: String
+        public let sourceName: String?
+
+        public var id: String { work.id }
+    }
+
+    public struct RecentActivity: Equatable, Identifiable, Sendable {
+        public let activity: AppSnapshot.Activity
+        public let title: String
+        public let subject: String
+
+        public var id: String { activity.id }
     }
 
     public let userSkills: [AppSnapshot.InventorySkill]
@@ -30,7 +50,15 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
     public let projects: [ProjectSection]
     public let projectGroups: [ProjectGroup]
     public let sources: [SourceSection]
+    public let readySkills: [ReadySkill]
+    public let recentActivity: [RecentActivity]
     public let isAvailable: Bool
+    public let durableAttentionCount: Int
+    public let inventoryOnlyUserReviewCount: Int
+    public let projectReviewCount: Int
+
+    public var reviewCount: Int { durableAttentionCount + inventoryOnlyUserReviewCount + projectReviewCount }
+    public var needsReview: Bool { reviewCount > 0 }
 
     public init(snapshot: AppSnapshot) {
         isAvailable = snapshot.skillInventory != nil && snapshot.projects != nil
@@ -40,6 +68,7 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
             .sorted(by: Self.skillOrder)
         userSkills = presentedUserSkills
         userSkillAttentionCount = presentedUserSkills.filter { $0.status == "attention" }.count
+        inventoryOnlyUserReviewCount = presentedUserSkills.filter(\.needsStandaloneInventoryReview).count
 
         let presentedProjects = snapshot.inventoryProjects.map { project in
             let projectSkills = inventory
@@ -71,6 +100,8 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
             if order != .orderedSame { return order == .orderedAscending }
             return $0.id < $1.id
         }
+        durableAttentionCount = snapshot.summary.attention
+        projectReviewCount = presentedProjects.filter { $0.project.status == "attention" }.count
 
         var grouped: [String: [AppSnapshot.InventorySkill]] = [:]
         for skill in inventory where !Self.isProjectPermissionPlaceholder(skill) {
@@ -92,6 +123,42 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
             if $0.location != $1.location { return $0.location < $1.location }
             return $0.id < $1.id
         }
+
+        var skillsBySelectionID: [String: AppSnapshot.InventorySkill] = [:]
+        for skill in inventory {
+            if let selectionID = skill.selectionId, skillsBySelectionID[selectionID] == nil {
+                skillsBySelectionID[selectionID] = skill
+            }
+        }
+        readySkills = snapshot.readyWork.map { work in
+            let skill = skillsBySelectionID[work.selectionId]
+            return ReadySkill(
+                work: work,
+                name: skill?.name ?? work.selectionId.split(separator: ":").last.map(String.init) ?? work.selectionId,
+                sourceName: skill?.origin?.name
+            )
+        }.sorted {
+            let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+            if order != .orderedSame { return order == .orderedAscending }
+            return $0.id < $1.id
+        }
+        var attentionSubjects: [String: String] = [:]
+        for attention in snapshot.attention + snapshot.recentAttention where attentionSubjects[attention.id] == nil {
+            attentionSubjects[attention.id] = attention.subjectId
+        }
+        recentActivity = snapshot.activity.map { activity in
+            let subjectID = attentionSubjects[activity.subjectId] ?? activity.subjectId
+            let subject = Self.activitySubject(
+                subjectID,
+                skillsBySelectionID: skillsBySelectionID,
+                projects: presentedProjects
+            )
+            return RecentActivity(
+                activity: activity,
+                title: Self.activityTitle(activity.kind),
+                subject: subject
+            )
+        }
     }
 
     private static func checkoutOrder(_ left: ProjectSection, _ right: ProjectSection) -> Bool {
@@ -101,6 +168,33 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         if leftRank != rightRank { return leftRank < rightRank }
         if left.project.lifecycle != right.project.lifecycle { return left.project.lifecycle != "likely-finished" }
         return left.project.root < right.project.root
+    }
+
+    private static func activityTitle(_ kind: String) -> String {
+        switch kind {
+        case "reconciled": return "Skill updated"
+        case "attention-engaged": return "Review needed"
+        case "attention-resolved", "attention-closed": return "Review resolved"
+        case "outside-effect-reported": return "Notice sent"
+        case "action-invoked": return "Action finished"
+        default:
+            return kind.replacingOccurrences(of: "-", with: " ").capitalized
+        }
+    }
+
+    private static func activitySubject(
+        _ subjectID: String,
+        skillsBySelectionID: [String: AppSnapshot.InventorySkill],
+        projects: [ProjectSection]
+    ) -> String {
+        if let skill = skillsBySelectionID[subjectID] { return skill.name }
+        if let project = projects.first(where: { $0.project.id == subjectID || $0.project.root == subjectID }) {
+            return project.project.name
+        }
+        if subjectID == "tool" || subjectID == "recovery" { return "Caddie" }
+        if subjectID.hasPrefix("attention-") { return "Caddie" }
+        if subjectID.hasPrefix("/") { return URL(fileURLWithPath: subjectID).lastPathComponent }
+        return subjectID.split(separator: ":").last.map(String.init) ?? subjectID
     }
 
     private static func isProjectPermissionPlaceholder(_ skill: AppSnapshot.InventorySkill) -> Bool {
@@ -118,5 +212,26 @@ public struct SkillInventoryPresentation: Equatable, Sendable {
         if order != .orderedSame { return order == .orderedAscending }
         if left.name != right.name { return left.name < right.name }
         return left.installedPath < right.installedPath
+    }
+}
+
+extension AppSnapshot.InventorySkill {
+    public var statusLabel: String {
+        enabled ? updateStatusLabel : "Disabled"
+    }
+
+    public var updateStatusLabel: String {
+        switch status {
+        case "current": return "Up to date"
+        case "ready": return "Update available"
+        case "manual-only": return "Auto-update off"
+        case "unmanaged": return "Not managed"
+        case "attention": return "Needs review"
+        default: return status.capitalized
+        }
+    }
+
+    var needsStandaloneInventoryReview: Bool {
+        scope == "user" && status == "attention" && selectionId == nil
     }
 }

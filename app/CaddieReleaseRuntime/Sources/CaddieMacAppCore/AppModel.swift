@@ -5,6 +5,7 @@ import ServiceManagement
 @MainActor
 public final class AppModel: ObservableObject {
     @Published public private(set) var snapshot: AppSnapshot = .empty
+    @Published public private(set) var inventoryPresentation = SkillInventoryPresentation(snapshot: .empty)
     @Published public private(set) var isRunningCycle = false
     @Published public private(set) var lastError: String?
     @Published public private(set) var loginItemStatus: SMAppService.Status
@@ -62,6 +63,7 @@ public final class AppModel: ObservableObject {
         notificationPreferences = NotificationPreferences(defaults: defaults)
         notificationsEnabled = notificationPreferences.enabled
         lastAgentProvider = AgentProvider(rawValue: defaults.string(forKey: Self.providerKey) ?? "") ?? .codex
+        inventoryPresentation = SkillInventoryPresentation(snapshot: initialSnapshot)
         snapshot = initialSnapshot
         AttentionPanelRouter.shared.update(initialSnapshot)
         automaticUpdatesPaused = defaults.bool(forKey: Self.pauseKey)
@@ -394,6 +396,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func install(_ next: AppSnapshot) {
+        inventoryPresentation = SkillInventoryPresentation(snapshot: next)
         snapshot = next
         watcher?.replaceWatches(next.watchSet)
         notificationPreferences.reconcile(open: next.attention)
