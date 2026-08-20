@@ -147,7 +147,7 @@ function validAuthorization(value, id) {
 }
 
 function validSnapshot(value) {
-  if (!exactShape(value, ['version', 'state', 'revision', 'freshness', 'compatibility', 'coverage', 'summary', 'sources', 'userSkills', 'projectSkills', 'readyWork', 'authorizations', 'attention', 'recentAttention', 'activity', 'pendingActions', 'outsideEffects', 'pause', 'watchSet', 'continuations'], ['recovery'])
+  if (!exactShape(value, ['version', 'state', 'revision', 'freshness', 'compatibility', 'coverage', 'summary', 'sources', 'userSkills', 'projectSkills', 'readyWork', 'authorizations', 'attention', 'recentAttention', 'activity', 'pendingActions', 'outsideEffects', 'pause', 'watchSet', 'continuations'], ['recovery', 'skillInventory', 'projects'])
     || value.version !== MANAGEMENT_STATE_VERSION
     || !['uninitialized', 'ready'].includes(value.state)
     || !Number.isSafeInteger(value.revision)
@@ -177,8 +177,12 @@ function validSnapshot(value) {
     outsideEffects: validOutsideEffect,
     watchSet: validWatchEntry,
   };
-  return Object.entries(lists).every(([field, validate]) => Array.isArray(value[field])
-    && value[field].length <= MAX_SNAPSHOT_DETAIL_RECORDS && value[field].every((entry) => validate(entry)));
+  if (!Object.entries(lists).every(([field, validate]) => Array.isArray(value[field])
+    && value[field].length <= MAX_SNAPSHOT_DETAIL_RECORDS && value[field].every((entry) => validate(entry)))) return false;
+  return (value.skillInventory === undefined || (Array.isArray(value.skillInventory)
+      && value.skillInventory.length <= MAX_SNAPSHOT_DETAIL_RECORDS && value.skillInventory.every(validSkillInventory)))
+    && (value.projects === undefined || (Array.isArray(value.projects)
+      && value.projects.length <= MAX_SNAPSHOT_DETAIL_RECORDS && value.projects.every(validProjectSummary)));
 }
 
 function validCoverageIssue(value) {
@@ -220,6 +224,46 @@ function validProjectSkill(value) {
     && (value.selectedPath === undefined || boundedText(value.selectedPath, 4096))
     && (value.enabled === undefined || typeof value.enabled === 'boolean')
     && (value.code === undefined || boundedText(value.code, 128));
+}
+
+export function validSkillInventory(value) {
+  return exactShape(value, [
+    'version', 'id', 'scope', 'projectRoot', 'name', 'installedPath', 'enabled', 'managed',
+    'selectionId', 'origin', 'shadowsSkillId', 'status',
+  ], ['permissionFolder'])
+    && value.version === MANAGEMENT_STATE_VERSION && boundedText(value.id, 4096)
+    && ['user', 'project'].includes(value.scope)
+    && (value.projectRoot === null || boundedText(value.projectRoot, 4096))
+    && boundedText(value.name, 512) && boundedText(value.installedPath, 4096)
+    && typeof value.enabled === 'boolean' && typeof value.managed === 'boolean'
+    && (value.selectionId === null || boundedText(value.selectionId, 4096))
+    && (value.origin === null || validSkillOrigin(value.origin))
+    && (value.shadowsSkillId === null || boundedText(value.shadowsSkillId, 4096))
+    && (value.permissionFolder === undefined || value.permissionFolder === null
+      || boundedText(value.permissionFolder, 4096))
+    && ['current', 'ready', 'attention', 'manual-only', 'unmanaged'].includes(value.status);
+}
+
+function validSkillOrigin(value) {
+  return exactShape(value, ['id', 'sourceId', 'name', 'type', 'gitUrl', 'localFolder', 'selectedPath'])
+    && boundedText(value.id, 4096) && boundedText(value.sourceId, 512)
+    && boundedText(value.name, 512) && ['git', 'local'].includes(value.type)
+    && (value.gitUrl === null || boundedText(value.gitUrl, 4096))
+    && (value.localFolder === null || boundedText(value.localFolder, 4096))
+    && ((value.gitUrl === null) !== (value.localFolder === null))
+    && boundedText(value.selectedPath, 4096);
+}
+
+export function validProjectSummary(value) {
+  return exactShape(value, [
+    'version', 'id', 'name', 'root', 'projectSkillCount', 'inheritedUserSkillCount', 'overrideCount', 'status',
+  ])
+    && value.version === MANAGEMENT_STATE_VERSION && boundedText(value.id, 4096)
+    && boundedText(value.name, 512) && boundedText(value.root, 4096)
+    && Number.isSafeInteger(value.projectSkillCount) && value.projectSkillCount >= 0
+    && Number.isSafeInteger(value.inheritedUserSkillCount) && value.inheritedUserSkillCount >= 0
+    && Number.isSafeInteger(value.overrideCount) && value.overrideCount >= 0
+    && ['current', 'attention'].includes(value.status);
 }
 
 function validReadyWork(value) {

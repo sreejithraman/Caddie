@@ -152,6 +152,15 @@ public actor ToolLaunchClient: ToolCalling {
         input: [String: JSONValue],
         timeoutOverride: TimeInterval? = nil
     ) async throws -> AppSnapshot {
+        let snapshot = try await executeOnce(operation: operation, input: input, timeoutOverride: timeoutOverride)
+        return try await completePages(in: snapshot)
+    }
+
+    private func executeOnce(
+        operation: String,
+        input: [String: JSONValue],
+        timeoutOverride: TimeInterval? = nil
+    ) async throws -> AppSnapshot {
         let request = ToolRequest(
             version: 2, requestId: UUID().uuidString.lowercased(), caller: "app", operation: operation, input: input
         )
@@ -173,6 +182,37 @@ public actor ToolLaunchClient: ToolCalling {
         let response = try ToolResponse.validated(output, requestId: request.requestId, operation: operation)
         if let snapshot = response.result?.snapshot, response.ok { return snapshot }
         throw response.error ?? ToolClientFault.invalidResponse
+    }
+
+    private func completePages(in first: AppSnapshot) async throws -> AppSnapshot {
+        let supported = Set([
+            "sources", "userSkills", "projectSkills", "skillInventory", "projects", "readyWork", "authorizations",
+            "attention", "recentAttention", "activity", "pendingActions", "outsideEffects", "watchSet",
+        ])
+        let fields = first.continuations?.map(\.field).reduce(into: [String]()) { result, field in
+            if !result.contains(field) { result.append(field) }
+        } ?? []
+        guard fields.allSatisfy(supported.contains) else { throw ToolClientFault.invalidResponse }
+        var pages: [String: [AppSnapshot]] = [:]
+        var seen = Set<String>()
+        for field in fields {
+            var continuation = first.continuations?.first { $0.field == field }
+            var fieldPageCount = 0
+            while let current = continuation {
+                fieldPageCount += 1
+                guard seen.insert(current.token).inserted, fieldPageCount <= 100 else {
+                    throw ToolClientFault.invalidResponse
+                }
+                let page = try await executeOnce(
+                    operation: "status", input: ["continuationToken": .string(current.token)]
+                )
+                if field == "skillInventory", page.skillInventory == nil { throw ToolClientFault.invalidResponse }
+                if field == "projects", page.projects == nil { throw ToolClientFault.invalidResponse }
+                pages[field, default: []].append(page)
+                continuation = page.continuations?.first { $0.field == field }
+            }
+        }
+        return first.completingPages(pages)
     }
 
 }

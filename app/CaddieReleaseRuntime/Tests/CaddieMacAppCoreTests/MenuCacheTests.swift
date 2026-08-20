@@ -16,6 +16,25 @@ final class MenuCacheTests: XCTestCase {
     }
 
     @MainActor
+    func testSuccessfulToolStatusClearsAnOlderErrorBeforeTheNextCycleFinishes() async {
+        let tool = SuspendingCycleTool(statusResult: snapshot(safetyPaused: false))
+        let model = AppModel(
+            client: tool, defaults: testDefaults(), loginItem: DisabledLoginItem(),
+            toolStateRoot: FileManager.default.temporaryDirectory
+                .appendingPathComponent("caddie-stale-error-\(UUID().uuidString)", isDirectory: true)
+        )
+        await model.invoke(actionID: "expected-failure")
+        XCTAssertNotNil(model.lastError)
+
+        model.start()
+        for _ in 0..<1_000 where model.menuSnapshot.revision != 2 { await Task.yield() }
+
+        XCTAssertEqual(model.menuSnapshot.revision, 2)
+        XCTAssertNil(model.lastError)
+        await tool.resumeCycle()
+    }
+
+    @MainActor
     func testAutomaticUpdatePausePersistsAsAnAppSchedulingChoice() async {
         let defaults = UserDefaults(suiteName: "MenuPauseTests-\(UUID().uuidString)")!
         let first = AppModel(client: CountingTool(), defaults: defaults, loginItem: DisabledLoginItem())
@@ -127,9 +146,11 @@ final class MenuCacheTests: XCTestCase {
             version: prior.version, state: prior.state, revision: prior.revision + 1,
             freshness: .init(checkedAt: "2026-08-03T14:01:00Z"), summary: prior.summary,
             sources: prior.sources, userSkills: prior.userSkills, projectSkills: prior.projectSkills,
+            skillInventory: prior.skillInventory, projects: prior.projects,
             readyWork: prior.readyWork, authorizations: prior.authorizations, attention: prior.attention,
             recentAttention: prior.recentAttention, activity: prior.activity, pendingActions: prior.pendingActions,
-            outsideEffects: prior.outsideEffects, pause: prior.pause, watchSet: prior.watchSet, recovery: prior.recovery
+            outsideEffects: prior.outsideEffects, pause: prior.pause, watchSet: prior.watchSet, recovery: prior.recovery,
+            continuations: prior.continuations
         )
 
         XCTAssertFalse(bookkeepingOnly.hasInspectionRelevantChanges(comparedTo: prior))
@@ -145,10 +166,10 @@ final class MenuCacheTests: XCTestCase {
             version: 2, state: "ready", revision: safetyPaused ? 1 : 2,
             freshness: .init(checkedAt: "2026-08-03T14:00:00Z"),
             summary: .init(selections: 0, current: 0, ready: 0, attention: safetyPaused ? 1 : 0),
-            sources: [], userSkills: [], projectSkills: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
+            sources: [], userSkills: [], projectSkills: [], skillInventory: [], projects: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
             pendingActions: [], outsideEffects: [],
             pause: .init(active: safetyPaused, reason: safetyPaused ? "verification-failed" : nil, safetyTriggered: safetyPaused),
-            watchSet: [], recovery: nil
+            watchSet: [], recovery: nil, continuations: []
         )
     }
 }
@@ -170,6 +191,29 @@ private actor CountingTool: ToolCalling {
     }
     func count() -> Int { callCount }
     func resumeCount() -> Int { safetyResumeCount }
+}
+
+private actor SuspendingCycleTool: ToolCalling {
+    private let statusResult: AppSnapshot
+    private var cycleContinuation: CheckedContinuation<Void, Never>?
+    private var resumeRequested = false
+
+    init(statusResult: AppSnapshot) { self.statusResult = statusResult }
+
+    func status() async throws -> AppSnapshot { statusResult }
+    func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot {
+        if resumeRequested { resumeRequested = false }
+        else { await withCheckedContinuation { cycleContinuation = $0 } }
+        return statusResult
+    }
+    func request(_ intent: AppActionIntent) async throws -> AppSnapshot { statusResult }
+    func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot { throw TestFault.resumeFailed }
+    func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot { statusResult }
+    func requestResume() async throws -> AppSnapshot { statusResult }
+    func resumeCycle() {
+        if let cycleContinuation { cycleContinuation.resume(); self.cycleContinuation = nil }
+        else { resumeRequested = true }
+    }
 }
 
 private enum TestFault: Error { case resumeFailed }

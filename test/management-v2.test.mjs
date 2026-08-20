@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -205,6 +205,64 @@ test('Local Source Inspection proves branch, commit, ancestry, and selected dirt
   assert.equal(localGitCommandPolicy().some((command) => ['fetch', 'pull', 'switch', 'merge', 'checkout', 'push'].includes(command[0])), false);
 });
 
+test('Local Source Inspection accepts a declared source folder inside its Git repository', async () => {
+  const fixture = await repositoryFixture(['one']);
+  const sourceFolder = path.join(fixture.repo, 'skills');
+
+  const inspected = await inspectLocalGitSource({
+    checkout: sourceFolder, selectedPath: 'one', acceptedCommit: fixture.commit,
+  });
+
+  assert.equal(inspected.kind, 'git');
+  assert.equal(inspected.checkout, await realpath(sourceFolder));
+  assert.equal(inspected.repositoryRoot, await realpath(fixture.repo));
+  assert.equal(inspected.selectedPath, 'one');
+  assert.equal(inspected.branch, 'main');
+  assert.equal(inspected.commit, fixture.commit);
+  assert.equal(inspected.selectedPathDirty, false);
+  assert.equal(inspected.unrelatedDirty, false);
+});
+
+test('Local Source Inspection accepts the repository root as the selected skill', async () => {
+  const fixture = await repositoryFixture(['one']);
+
+  const inspected = await inspectLocalGitSource({ checkout: fixture.repo, selectedPath: '.' });
+
+  assert.equal(inspected.kind, 'git');
+  assert.equal(inspected.selectedPathDirty, false);
+  assert.equal(inspected.unrelatedDirty, false);
+});
+
+test('a managed source folder inside a repository stays current and hands agents the Git work folder', async () => {
+  const fixture = await managedFixture(['one']);
+  const sourceFolder = path.join(fixture.repo, 'skills');
+  await json(fixture.manifestPath, {
+    version: 1, scope: 'user', sources: { authored: { type: 'local', path: sourceFolder } },
+    selections: [{ source: 'authored', path: 'one' }],
+  });
+  const ledger = JSON.parse(await readFile(fixture.ledgerPath, 'utf8'));
+  ledger.entries[0].selectedPath = 'one';
+  await json(fixture.ledgerPath, ledger);
+  const management = createManagementModule({ home: fixture.home });
+
+  const baseline = await management.execute(cycleRequest('observe-only', 'nested-managed-baseline'));
+  const repositoryRoot = await realpath(fixture.repo);
+  assert.equal(baseline.result.snapshot.userSkills[0].status, 'current');
+  assert.equal(baseline.result.snapshot.userSkills[0].sourceCheckout, sourceFolder);
+  assert.equal(baseline.result.snapshot.userSkills[0].selectedPath, 'one');
+  assert.equal(baseline.result.snapshot.watchSet.some((item) => item.path === repositoryRoot), true);
+
+  await writeSkill(path.join(sourceFolder, 'one'), 'one', 'dirty for nested handoff');
+  const blocked = await management.execute(cycleRequest('observe-only', 'nested-managed-dirty'));
+  const attention = blocked.result.snapshot.attention.find((item) => item.code === 'selected-path-dirty');
+  const requested = await management.execute(actRequest({
+    type: 'agent-handoff', attentionId: attention.id, provider: 'codex',
+  }, 'nested-handoff-request'));
+  const action = requested.result.snapshot.pendingActions.find((item) => item.intent.type === 'agent-handoff');
+  const invoked = await management.execute(actInvoke(action.id, 'nested-handoff-invoke'));
+  assert.equal(invoked.result.snapshot.outsideEffects.find((item) => item.kind === 'agent-handoff').workFolder, repositoryRoot);
+});
+
 test('Local Source Inspection compares selected bytes with HEAD despite Git concealment flags', async (t) => {
   for (const flag of ['--assume-unchanged', '--skip-worktree']) {
     await t.test(flag, async () => {
@@ -302,16 +360,32 @@ test('Snapshot watch paths cover sources, installs, User Caddie state, and owned
 
 test('event cycles keep cached Project Skill status without reading registered projects', async () => {
   const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'cached-project');
+  const projectState = path.join(projectRoot, '.agents', '.caddie');
+  await writeSkill(path.join(projectRoot, '.agents', 'skills', 'project-only'), 'project-only', 'project');
+  await json(path.join(projectState, 'manifest.json'), {
+    version: 1, scope: 'project', sources: {}, selections: [],
+  });
+  await json(path.join(projectState, 'ledger.json'), {
+    version: 1, scopeId: `project:${projectRoot}`, entries: [], harnessLinks: [], harnessSettings: [],
+  });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
   const management = createManagementModule({ home: fixture.home });
   const first = await management.execute(cycleRequest('observe-only', 'project-refresh-baseline'));
-  assert.deepEqual(first.result.snapshot.projectSkills, []);
+  assert.equal(first.result.snapshot.projects.length, 1);
+  assert.equal(first.result.snapshot.skillInventory.filter((item) => item.scope === 'project').length, 1);
   await writeFile(path.join(fixture.stateRoot, 'registry.json'), '{broken registry\n');
 
   const eventCycle = cycleRequest('observe-only', 'project-refresh-skipped');
   eventCycle.input.refreshProjects = false;
   const result = await management.execute(eventCycle);
 
-  assert.deepEqual(result.result.snapshot.projectSkills, []);
+  assert.deepEqual(result.result.snapshot.projectSkills, first.result.snapshot.projectSkills);
+  assert.deepEqual(result.result.snapshot.projects, first.result.snapshot.projects);
+  assert.deepEqual(
+    result.result.snapshot.skillInventory.filter((item) => item.scope === 'project'),
+    first.result.snapshot.skillInventory.filter((item) => item.scope === 'project'),
+  );
 });
 
 test('source summaries carry source-first menu facts', async () => {
@@ -323,6 +397,185 @@ test('source summaries carry source-first menu facts', async () => {
     version: 2, id: 'authored', checkout: fixture.repo, branch: 'main',
     skillCount: 1, attentionCount: 0, state: 'current', automaticUpdates: false, nextAction: 'none',
   }]);
+});
+
+test('Snapshot inventory lists managed and unmanaged User and Project Skills with exact origins and overrides', async () => {
+  const fixture = await managedFixture(['one']);
+  const unmanagedPath = path.join(fixture.home, '.agents', 'skills', 'loose');
+  await writeSkill(unmanagedPath, 'loose', 'unmanaged');
+
+  const projectRoot = path.join(fixture.root, 'sample-project');
+  const projectSource = path.join(projectRoot, 'skill-source');
+  const projectState = path.join(projectRoot, '.agents', '.caddie');
+  const projectSkillsRoot = path.join(projectRoot, '.agents', 'skills');
+  await writeSkill(path.join(projectSource, 'one'), 'one', 'project override');
+  await writeSkill(path.join(projectSource, 'project-only'), 'project-only', 'project only');
+  await cp(path.join(projectSource, 'one'), path.join(projectSkillsRoot, 'one'), { recursive: true });
+  await cp(path.join(projectSource, 'project-only'), path.join(projectSkillsRoot, 'project-only'), { recursive: true });
+  const projectEntries = [];
+  for (const name of ['one', 'project-only']) {
+    const installedPath = path.join(projectSkillsRoot, name);
+    projectEntries.push({
+      name, path: installedPath, sourceId: 'project-source', selectedPath: name,
+      fingerprint: await fingerprint(installedPath),
+    });
+  }
+  await json(path.join(projectState, 'manifest.json'), {
+    version: 1, scope: 'project', sources: { 'project-source': { type: 'local', path: projectSource } },
+    selections: ['one', 'project-only'].map((name) => ({
+      source: 'project-source', path: name, ...(name === 'one' ? { enabled: false } : {}),
+    })),
+  });
+  await json(path.join(projectState, 'ledger.json'), {
+    version: 1, scopeId: `project:${projectRoot}`, entries: projectEntries, harnessLinks: [], harnessSettings: [],
+  });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+
+  const management = createManagementModule({ home: fixture.home });
+  const snapshot = (await management.execute(cycleRequest('observe-only', 'rich-inventory'))).result.snapshot;
+
+  const user = snapshot.skillInventory.filter((item) => item.scope === 'user');
+  assert.deepEqual(user.map((item) => [item.name, item.managed]), [['loose', false], ['one', true]]);
+  assert.equal(user.find((item) => item.name === 'one').origin.localFolder, fixture.repo);
+  assert.equal(user.find((item) => item.name === 'loose').origin, null);
+
+  const project = snapshot.projects[0];
+  assert.equal(project.name, 'sample-project');
+  assert.equal(project.projectSkillCount, 2);
+  assert.equal(project.overrideCount, 1);
+  assert.equal(project.inheritedUserSkillCount, 1);
+  const projectOne = snapshot.skillInventory.find((item) => item.scope === 'project' && item.name === 'one');
+  assert.equal(projectOne.origin.localFolder, projectSource);
+  assert.equal(projectOne.enabled, false);
+  assert.equal(projectOne.shadowsSkillId, user.find((item) => item.name === 'one').id);
+
+  const durable = JSON.parse(await readFile(path.join(fixture.stateRoot, 'management-v2.json'), 'utf8'));
+  assertPriorV2StateShape(durable);
+  assert.equal(hasObjectKey(durable, 'skillInventory'), false);
+  const stored = await management.execute(request('status', {}, 'rich-inventory-status'));
+  assert.equal(stored.result.snapshot.skillInventory.length, snapshot.skillInventory.length);
+  const action = await management.execute(actRequest({
+    type: 'authorize-reconciliation', selectionId: 'authored:skills/one',
+  }, 'rich-inventory-action'));
+  assert.deepEqual(action.result.snapshot.skillInventory, snapshot.skillInventory);
+  assert.deepEqual(action.result.snapshot.projects, snapshot.projects);
+  const later = await management.execute(cycleRequest('observe-only', 'rich-inventory-later'));
+  const replay = await management.execute(cycleRequest('observe-only', 'rich-inventory'));
+  assert.equal(later.result.snapshot.revision > replay.result.snapshot.revision, true);
+  assert.deepEqual(replay.result.snapshot.skillInventory, snapshot.skillInventory);
+  assert.deepEqual(replay.result.snapshot.projects, snapshot.projects);
+  const inventoryStore = JSON.parse(await readFile(`${fixture.statePath}.inventory-v1.json`, 'utf8'));
+  assert.equal(inventoryStore.projections.length, 1);
+});
+
+test('inventory capacity stops authorized reconciliation before any skill write', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  await management.execute(cycleRequest('observe-only', 'inventory-capacity-baseline'));
+  await authorize(management, 'authored:skills/one', 'inventory-capacity');
+  await writeSkill(path.join(fixture.repo, 'skills', 'one'), 'one', 'new source');
+  await git(fixture.repo, 'add', 'skills/one');
+  await git(fixture.repo, 'commit', '-m', 'new source');
+  let applied = false;
+  const blocked = createManagementModule({
+    home: fixture.home,
+    preflightInventoryProjection: async (_path, projection) => {
+      assert.equal(projection.skillInventory.find((item) => item.managed).status, 'attention');
+      throw new ManagementError('inventory-capacity', 'Inventory is full', 'needs-user');
+    },
+    applySelection: async () => { applied = true; throw new Error('must not apply'); },
+  });
+
+  await assert.rejects(
+    blocked.execute(cycleRequest('authorized-user-reconciliation', 'inventory-capacity-blocked')),
+    (error) => error instanceof ManagementError && error.code === 'inventory-capacity',
+  );
+  assert.equal(applied, false);
+  assert.equal(await readFile(path.join(fixture.installed.one, 'body.txt'), 'utf8'), 'baseline\n');
+});
+
+test('a replay migrates complete inline inventory ahead of a paged receipt and strips the core state', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  await management.execute(cycleRequest('observe-only', 'inline-inventory-baseline'));
+  await management.execute(cycleRequest('observe-only', 'inline-inventory-current'));
+  const state = JSON.parse(await readFile(fixture.statePath, 'utf8'));
+  const inventoryStore = JSON.parse(await readFile(`${fixture.statePath}.inventory-v1.json`, 'utf8'));
+  const projection = inventoryStore.projections[0];
+  const template = projection.skillInventory[0];
+  const legacyInventory = Array.from({ length: 105 }, (_, index) => ({
+    ...template, id: `legacy-skill-${index}`, name: `legacy-skill-${index}`,
+    installedPath: `${template.installedPath}-${index}`, selectionId: `legacy-selection-${index}`,
+  })).map(({ permissionFolder: _permissionFolder, ...skill }) => skill);
+  state.snapshot.skillInventory = legacyInventory;
+  state.snapshot.projects = projection.projects;
+  state.receipts[0].result.result.snapshot.skillInventory = legacyInventory.slice(0, 100);
+  state.receipts[0].result.result.snapshot.projects = projection.projects;
+  state.receipts[0].result.result.snapshot.continuations.push({
+    field: 'skillInventory', token: 'legacy-continuation', remaining: 5,
+  });
+  const olderInventory = legacyInventory.map((skill, index) => ({ ...skill, name: `older-skill-${index}` }));
+  state.receipts[1].result.result.snapshot.skillInventory = olderInventory.slice(0, 100);
+  state.receipts[1].result.result.snapshot.projects = projection.projects;
+  state.receipts[1].result.result.snapshot.continuations.push({
+    field: 'skillInventory', token: 'older-legacy-continuation', remaining: 5,
+  });
+  await writeFile(fixture.statePath, `${JSON.stringify(state, null, 2)}\n`);
+  await rm(`${fixture.statePath}.inventory-v1.json`);
+
+  const replay = await management.execute(cycleRequest('observe-only', 'inline-inventory-current'));
+
+  assert.equal(replay.result.snapshot.skillInventory.length, 100);
+  const durable = JSON.parse(await readFile(fixture.statePath, 'utf8'));
+  assert.equal(hasObjectKey(durable, 'skillInventory'), false);
+  assert.equal(hasObjectKey(durable, 'projects'), false);
+  const migratedStore = JSON.parse(await readFile(`${fixture.statePath}.inventory-v1.json`, 'utf8'));
+  assert.equal(migratedStore.projections[0].skillInventory.length, 105);
+  await assert.rejects(
+    management.execute(cycleRequest('observe-only', 'inline-inventory-baseline')),
+    (error) => error instanceof ManagementError && error.code === 'idempotency-result-expired',
+  );
+});
+
+test('an unreadable Project Skills folder stays project-scoped and names the folder that needs access', async (t) => {
+  const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'denied-project');
+  const projectSkillsRoot = path.join(projectRoot, '.agents', 'skills');
+  await mkdir(projectSkillsRoot, { recursive: true });
+  await json(path.join(projectRoot, '.agents', '.caddie', 'manifest.json'), {
+    version: 1, scope: 'project', sources: {}, selections: [],
+  });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+  await chmod(projectSkillsRoot, 0o000);
+  t.after(async () => chmod(projectSkillsRoot, 0o700));
+
+  const snapshot = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'denied-project'))).result.snapshot;
+
+  assert.equal(snapshot.userSkills.length, 1);
+  assert.equal(snapshot.projects[0].status, 'attention');
+  assert.deepEqual(snapshot.skillInventory.filter((item) => item.projectRoot === projectRoot).map((item) => ({
+    name: item.name, installedPath: item.installedPath, status: item.status, permissionFolder: item.permissionFolder,
+  })), [{
+    name: 'Project Skills', installedPath: projectSkillsRoot, status: 'attention', permissionFolder: projectSkillsRoot,
+  }]);
+});
+
+test('a malformed or wrong-scope Project Ledger yields Project Attention instead of managed claims', async () => {
+  const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'wrong-ledger-project');
+  const projectState = path.join(projectRoot, '.agents', '.caddie');
+  await mkdir(path.join(projectRoot, '.agents', 'skills'), { recursive: true });
+  await json(path.join(projectState, 'manifest.json'), { version: 1, scope: 'project', sources: {}, selections: [] });
+  await json(path.join(projectState, 'ledger.json'), { version: 1, scopeId: 'user', entries: [] });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+
+  const snapshot = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'wrong-project-ledger'))).result.snapshot;
+
+  assert.equal(snapshot.projects[0].status, 'attention');
+  assert.equal(snapshot.projectSkills[0].code, 'invalid-ledger-content');
+  assert.equal(snapshot.skillInventory.some((item) => item.projectRoot === projectRoot && item.managed), false);
 });
 
 test('large Snapshots page safely across status calls after a managed write', async () => {
@@ -349,18 +602,29 @@ test('large Snapshots page safely across status calls after a managed write', as
   const changed = await management.execute(cycleRequest('authorized-user-reconciliation', 'large-page-write'));
   assert.equal(await readFile(path.join(fixture.installed[names[0]], 'body.txt'), 'utf8'), 'paged update\n');
   assert.equal(changed.result.snapshot.userSkills.length, 100);
+  assert.equal(changed.result.snapshot.skillInventory.length, 100);
   assert.equal(changed.result.snapshot.watchSet.length, 100);
   assert.equal(changed.result.snapshot.coverage.issues.some((item) => item.field === 'userSkills'), true);
+  assert.equal(changed.result.snapshot.coverage.issues.some((item) => item.field === 'skillInventory'), true);
   assert.equal(changed.result.snapshot.coverage.issues.some((item) => item.field === 'watchSet'), true);
+  const replayed = await management.execute(cycleRequest('authorized-user-reconciliation', 'large-page-write'));
+  assert.deepEqual(
+    replayed.result.snapshot.continuations.map((item) => item.field).sort(),
+    changed.result.snapshot.continuations.map((item) => item.field).sort(),
+  );
 
   const userToken = changed.result.snapshot.continuations.find((item) => item.field === 'userSkills').token;
   const watchToken = changed.result.snapshot.continuations.find((item) => item.field === 'watchSet').token;
+  const inventoryToken = changed.result.snapshot.continuations.find((item) => item.field === 'skillInventory').token;
   const userPage = await management.execute(request('status', { continuationToken: userToken }, 'large-user-page'));
   const watchPage = await management.execute(request('status', { continuationToken: watchToken }, 'large-watch-page'));
+  const inventoryPage = await management.execute(request('status', { continuationToken: inventoryToken }, 'large-inventory-page'));
   assert.equal(userPage.result.snapshot.userSkills.length, 5);
   assert.equal(watchPage.result.snapshot.watchSet.length, 7);
+  assert.equal(inventoryPage.result.snapshot.skillInventory.length, 5);
   const durable = await readManagementState(fixture.statePath);
   assert.equal(durable.snapshot.userSkills.length, 105);
+  assert.equal(durable.snapshot.skillInventory, undefined);
   assert.equal(durable.snapshot.watchSet.length, 107);
 
   const [payload, signature] = userToken.split('.');
@@ -1009,6 +1273,10 @@ function assertPriorV2StateShape(state) {
     'activity', 'attention', 'authorizations', 'idempotencyTombstones', 'outsideEffects', 'pagingKey',
     'pause', 'pendingActions', 'receipts', 'revision', 'snapshot', 'version',
   ]);
+  if (state.snapshot) assertPriorV2SnapshotShape(state.snapshot);
+  for (const receipt of state.receipts) {
+    if (receipt.result?.result?.snapshot) assertPriorV2SnapshotShape(receipt.result.result.snapshot);
+  }
   for (const item of state.attention) {
     const allowed = new Set([
       'version', 'id', 'stableKey', 'subjectId', 'code', 'condition', 'priority', 'state', 'observations',
@@ -1030,4 +1298,13 @@ function assertPriorV2StateShape(state) {
     assert.equal(Object.keys(item).every((key) => allowed.has(key)), true);
     if (item.kind === 'notification') assert.equal(['opened', 'priority-raised'].includes(item.reason), true);
   }
+}
+
+function assertPriorV2SnapshotShape(snapshot) {
+  const allowed = [
+    'activity', 'attention', 'authorizations', 'compatibility', 'continuations', 'coverage', 'freshness',
+    'outsideEffects', 'pause', 'pendingActions', 'projectSkills', 'readyWork', 'recentAttention', 'recovery',
+    'revision', 'sources', 'state', 'summary', 'userSkills', 'version', 'watchSet',
+  ];
+  assert.deepEqual(Object.keys(snapshot).filter((key) => !allowed.includes(key)), []);
 }

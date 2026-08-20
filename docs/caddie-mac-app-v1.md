@@ -20,7 +20,7 @@ The first release:
 
 - runs only on macOS;
 - targets macOS 13 or later;
-- keeps eligible User Skills current from registered local Git checkouts;
+- keeps eligible User Skills current from registered local folders backed by Git checkouts;
 - shows manual Ready Work for eligible changes without Reconciliation Authorization;
 - shows Project Skill status without updating Project Skills automatically;
 - supports manual Sync now;
@@ -68,20 +68,15 @@ Use a folder picker when the user adds a new local Skill Source. Existing regist
 
 ## Menu experience
 
-Use the source-first menu from prototype Variant C.
+Open on the Skills view. Show all detected skills, including skills that Caddie does not manage.
 
-The main list shows each registered source with:
+The Skills view starts with User Skills, then shows one section for each registered project. Each project section shows its Project Skills and overrides. An expandable “Also uses N User Skills” row shows enabled User Skills that the project does not override.
 
-- source name and exact checkout;
-- current branch;
-- selected skill count;
-- current, Ready, updating, or Attention state;
-- automatic-update policy; and
-- the next useful action.
+Each skill row shows its name, status, and source. Use the Git URL for Git sources and the folder path for local sources. Show the installed path, selected path, and update setting when the user expands the row. Show an unmanaged skill's installed path instead of an unknown source message.
 
-Opening a source shows its selected skills and all Attention. Each source card shows its open Attention count and highest-priority item.
+Offer Sources as a second view. Group managed skills by their exact source and keep unmanaged skills in their own group.
 
-Show Recovery and Tool-wide Attention above sources. Keep Project Skills in a separate status-only section. Opening the menu reads the cached Caddie Snapshot and last-check time; it does not start inspection.
+Show Recovery and Tool-wide Attention above the inventory. Opening the menu reads the cached Caddie Snapshot and last-check time; it does not start inspection.
 
 The menu includes:
 
@@ -131,7 +126,7 @@ The grant remains active until the user turns it off. Changing the source, selec
 
 Automatic reconciliation requires all of these facts:
 
-- the source is one exact local Git checkout;
+- the source is one exact local folder inside one readable Git checkout;
 - the selected skill matches committed content;
 - the checkout remains on the approved branch;
 - the current commit descends from the last accepted commit;
@@ -215,6 +210,8 @@ Every successful call returns one full bounded Caddie Snapshot with:
 - revision, freshness, and full summary counts;
 - Skill Sources and watch status;
 - User and Project Skill status;
+- every detected managed or unmanaged skill, its origin, and its installed path;
+- registered project counts, overrides, and inherited User Skill counts;
 - Ready Work and Reconciliation Authorization;
 - open and recent Attention;
 - recent Activity;
@@ -310,6 +307,8 @@ Stage and verify a new private runtime before switching the Tool Launch Record. 
 
 Each release supports one release boundary. The new Tool accepts the prior Skill, the new Skill can use the last-good Tool, and state written during activation stays readable by the last-good Tool. Keep the version 1 request adapter for one compatibility release; route it into the same management module.
 
+Keep the richer skill inventory in a separate versioned projection file. Keep the revisions needed by saved request results. The last-good Tool ignores that file and can still read the core management state after a rollback.
+
 The versioned declaration in `skills/caddie/tool/src/adapter/compatibility.mjs` sets the end marker. Tool protocol 2 is the last version that accepts protocol 1 Skill requests. Tool protocol 3 must remove that bridge once protocol 2 is the oldest supported Skill contract.
 
 This bridge is a narrow, one-release exception. The frozen prior Skill may still submit its old Caddie Plan request shape, including its allow-listed filesystem operations. The management-owned legacy lane applies the old validation, exact plan binding, approval, apply, and Recovery rules. It rejects unknown operations, new fields, internal plan intent, and direct Agent Harness settings writes. Protocol 2 and app callers can never enter this lane.
@@ -357,7 +356,7 @@ Attach a private-data-safe Release Verification Record to the exact GitHub Relea
 1. Build the version 2 management module, state formats, Reconciliation Authorization, Local Source Inspection, Caddie Snapshot, Attention, Activity, pending actions, idempotency, and Reconciliation Pause.
 2. Add the version 1 adapter and run the same contract through in-process and child-process Adapters.
 3. Build the Caddie Release layout, private runtime staging, Tool Launch Record, compatibility checks, live-process retention, and last-good fallback.
-4. Build the Swift menu app, Tool process Adapter, scheduler, File System Events Adapter, login item, and source-first status UI.
+4. Build the Swift menu app, Tool process Adapter, scheduler, File System Events Adapter, login item, and Skills-first status UI.
 5. Add Ready Work, Attention, notifications, Retry, Recovery actions, Reconciliation Authorization controls, and Agent Handoff.
 6. Add Bootstrap adoption, Homebrew Cask, disk image, Sparkle, signing, notarization, App Removal, and repair paths.
 7. Add macOS release automation, failure injection, packaged checks, Release Verification Record generation, and the live rollout gates.
@@ -370,7 +369,7 @@ The first release is complete when:
 
 - an existing user can install the app without moving skills, sources, projects, or Caddie state;
 - the app starts at login and catches changes made while it was closed;
-- source cards show accurate saved state without inspecting on menu open;
+- skill and project sections show accurate saved state without inspecting on menu open;
 - one authorized eligible User Skill updates and verifies after its source settles;
 - unsafe changes remain untouched with correct Attention;
 - manual Sync now and exact Ready Work function;
