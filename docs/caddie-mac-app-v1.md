@@ -76,13 +76,13 @@ The window has fixed sidebar links for Overview, User Skills, Projects, Sources,
 
 Show all detected skills, including skills that Caddie does not manage. User Skills is a flat, searchable list. A selected Skill shows its full source, installed path, selected path, status, and update setting.
 
-Projects groups registered checkouts by Git repository. A project page shows Main and Worktree as sibling rows. A selected checkout shows plain Project Skills and User Skills sections. It also shows overrides, full checkout details, and any review action.
+Projects groups registered checkouts by Git repository. A project page shows Main and Worktree as sibling rows. A selected checkout shows plain Project Skills and User Skills sections. It also shows overrides, full checkout details, and any review action. Show Git facts and Skill state separately. Git facts remain neutral and never imply that Caddie will update a branch.
 
 Project inspection faults use “Needs review,” not durable Attention. Show the exact reason when known. A verified older Project ledger may offer Repair; the Tool must prove every owned Skill before it changes only the old Project ID. Stop tracking removes only the exact registry entry and keeps the project folder, Project Skills, and project state unchanged. A clean worktree whose commit is in the default branch and whose upstream is gone may be marked “Likely finished,” but Caddie never removes or changes a Git worktree.
 
-Each skill row shows its name, status, and source. Use the Git URL for Git sources and the folder path for local sources. Keep long paths in the detail page, where the user can select them. Show an unmanaged skill's installed path instead of an unknown source message.
+Each skill row shows its name, Skill state, and source. Use the Git URL for Git sources and the folder path for local sources. Keep long paths in the detail page, where the user can select them. Show an unmanaged skill's installed path instead of an unknown source message.
 
-Sources is a flat, searchable list. Group managed skills by their exact source and keep unmanaged skills in their own group.
+Sources is a flat, searchable list of logical Skill Sources. Group a local Git source by its shared Git repository and source-root path within that repository. Show its main checkout and worktrees as Source Checkout details, not separate Source rows. Keep distinct source roots in one repository separate. Keep standalone non-Git folders as separate Sources. Show unmanaged User Skills under No source record, and keep In-place or unmanaged Project Skills under Projects.
 
 Overview shows Recovery and Tool-wide Attention first, then Project review work, ready updates, and recent activity. Opening the menu or window reads the cached Caddie Snapshot and last-check time; it does not start inspection.
 

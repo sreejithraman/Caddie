@@ -80,6 +80,11 @@ export async function inspectLocalGitSourceInProcess({ checkout, selectedPath, a
   if (!inside(repositoryRoot, exactCheckout)) {
     throw new LocalSourceInspectionError('invalid-repository-root', 'Git returned a repository root outside the local source');
   }
+  const commonValue = (await git(runGit, repositoryRoot, ['rev-parse', '--git-common-dir'])).stdout.trim();
+  const commonDirectory = await realpath(path.resolve(repositoryRoot, commonValue));
+  const mainRepositoryRoot = path.basename(commonDirectory) === '.git' ? path.dirname(commonDirectory) : repositoryRoot;
+  const checkoutKind = path.resolve(repositoryRoot) === path.resolve(mainRepositoryRoot) ? 'main' : 'worktree';
+  const sourceRootRelativePath = path.relative(repositoryRoot, exactCheckout) || '.';
   const repositorySelection = path.relative(repositoryRoot, exactSelected);
   const selectedPathspec = repositorySelection === '' ? '.' : `:(literal)${repositorySelection}`;
 
@@ -118,7 +123,9 @@ export async function inspectLocalGitSourceInProcess({ checkout, selectedPath, a
     }
   }
   return {
-    kind: 'git', checkout: exactCheckout, repositoryRoot, selectedPath: relativeSelection,
+    kind: 'git', checkout: exactCheckout, repositoryRoot,
+    repositoryId: repositoryId(commonDirectory, ''), checkoutKind, sourceRootRelativePath,
+    selectedPath: relativeSelection,
     branch, commit, descendant,
     selectedPathDirty: selectedStatus.length > 0 || ignoredSelected.length > 0 || trackedBytesChanged,
     committedContentMatch: selectedStatus.length === 0 && ignoredSelected.length === 0 && !trackedBytesChanged,
@@ -153,7 +160,7 @@ export async function inspectProjectCheckoutInProcess({ projectRoot, runGit = de
   if (!inside(repositoryRoot, exactProjectRoot)) return plainProjectCheckout(exactProjectRoot);
   const relativeProjectPath = path.relative(repositoryRoot, exactProjectRoot);
   const commonValue = (await git(runGit, repositoryRoot, ['rev-parse', '--git-common-dir'])).stdout.trim();
-  const commonDirectory = path.resolve(repositoryRoot, commonValue);
+  const commonDirectory = await realpath(path.resolve(repositoryRoot, commonValue));
   const mainRepositoryRoot = path.basename(commonDirectory) === '.git' ? path.dirname(commonDirectory) : repositoryRoot;
   const mainProjectRoot = path.resolve(mainRepositoryRoot, relativeProjectPath);
   let branch = null;
@@ -179,6 +186,7 @@ export async function inspectProjectCheckoutInProcess({ projectRoot, runGit = de
   const checkoutKind = path.resolve(exactProjectRoot) === mainProjectRoot ? 'main' : 'worktree';
   return {
     repositoryId: `repository-${createHash('sha256').update(`${commonDirectory}\0${relativeProjectPath}`).digest('hex').slice(0, 24)}`,
+    gitRepositoryId: repositoryId(commonDirectory, ''), repositoryRoot,
     checkoutKind, branch: branch || null, mainProjectRoot,
     workingTreeClean, upstreamState, includedInDefaultBranch,
     lifecycle: checkoutKind === 'worktree' && workingTreeClean && upstreamState === 'gone'
@@ -189,6 +197,7 @@ export async function inspectProjectCheckoutInProcess({ projectRoot, runGit = de
 function plainProjectCheckout(projectRoot) {
   return {
     repositoryId: repositoryId(path.join(projectRoot, '.git'), ''),
+    gitRepositoryId: null, repositoryRoot: null,
     checkoutKind: 'project', branch: null, mainProjectRoot: projectRoot,
     workingTreeClean: null, upstreamState: 'unknown', includedInDefaultBranch: null, lifecycle: 'active',
   };
@@ -226,6 +235,7 @@ export async function inspectProjectCheckoutMarkerInProcess({ projectRoot }) {
   const mainRepositoryRoot = path.dirname(marker.commonDirectory);
   return {
     repositoryId: repositoryId(marker.commonDirectory, relativeProjectPath),
+    gitRepositoryId: repositoryId(marker.commonDirectory, ''), repositoryRoot,
     checkoutKind: marker.kind,
     branch: null,
     mainProjectRoot: path.resolve(mainRepositoryRoot, relativeProjectPath),

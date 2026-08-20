@@ -30,7 +30,9 @@ export function buildSkillInventory(inventory, statuses) {
     userRows.push(inventoryRecord({
       scope: 'user', projectRoot: null, name: selection.name, installedPath: selection.installedPath,
       enabled: selection.enabled, managed: true, selectionId: selection.id,
-      origin: skillOrigin(null, selection.sourceId, selection.sourceDefinition, selection.selectedPath),
+      origin: skillOrigin(null, selection.sourceId, selection.sourceDefinition, selection.selectedPath, {
+        inspection: selection.inspection,
+      }),
       status: statusBySelection.get(selection.id) ?? 'manual-only',
     }));
   }
@@ -196,7 +198,7 @@ export async function inspectProjectSkillInventoryInProcess(home, registeredProj
           skillInventory.push(inventoryRecord({
             scope: 'project', projectRoot, name, installedPath,
             enabled: selection.enabled ?? true, managed: false, selectionId: id,
-            origin: skillOrigin(projectRoot, selection.source, source, selection.path), status: 'attention',
+            origin: skillOrigin(projectRoot, selection.source, source, selection.path, { checkout }), status: 'attention',
           }));
           continue;
         }
@@ -208,7 +210,7 @@ export async function inspectProjectSkillInventoryInProcess(home, registeredProj
         skillInventory.push(inventoryRecord({
           scope: 'project', projectRoot, name, installedPath,
           enabled: selection.enabled ?? true, managed: true, selectionId: id,
-          origin: skillOrigin(projectRoot, selection.source, source, selection.path), status: 'manual-only',
+          origin: skillOrigin(projectRoot, selection.source, source, selection.path, { checkout }), status: 'manual-only',
         }));
         continue;
       }
@@ -235,7 +237,8 @@ export async function inspectProjectSkillInventoryInProcess(home, registeredProj
         managedPaths.add(path.resolve(installedPath));
         skillInventory.push(inventoryRecord({
           scope: 'project', projectRoot, name, installedPath, enabled: selection.enabled ?? true,
-          managed: true, selectionId: id, origin: skillOrigin(projectRoot, selection.source, source, selection.path), status,
+          managed: true, selectionId: id,
+          origin: skillOrigin(projectRoot, selection.source, source, selection.path, { checkout }), status,
         }));
       } catch (error) {
         projectSkills.push({
@@ -252,7 +255,7 @@ export async function inspectProjectSkillInventoryInProcess(home, registeredProj
         skillInventory.push(inventoryRecord({
           scope: 'project', projectRoot, name: safeName, installedPath,
           enabled: selection.enabled ?? true, managed: ownsInstalledPath, selectionId: id,
-          origin: skillOrigin(projectRoot, selection.source, source, selection.path), status: 'attention',
+          origin: skillOrigin(projectRoot, selection.source, source, selection.path, { checkout }), status: 'attention',
         }));
       }
     }
@@ -336,15 +339,52 @@ function inventoryRecord({
   };
 }
 
-function skillOrigin(projectRoot, sourceId, source, selectedPath) {
+function skillOrigin(projectRoot, sourceId, source, selectedPath, { inspection = null, checkout = null } = {}) {
   if (!source) return null;
   return {
-    id: `origin-${digest({ projectRoot, sourceId }).slice(0, 24)}`,
+    id: logicalSourceId(source, { projectRoot, inspection, checkout }),
     sourceId, name: source.name ?? sourceId, type: source.type,
     gitUrl: source.type === 'git' ? source.url : null,
     localFolder: source.type === 'local' ? source.path : null,
     selectedPath,
   };
+}
+
+function logicalSourceId(source, { projectRoot, inspection, checkout }) {
+  if (source.type === 'git') {
+    return `origin-remote-git-${digest({ type: 'git', url: source.url, sourceRoot: '.' }).slice(0, 24)}`;
+  }
+  if (inspection?.kind === 'git' && inspection.repositoryId && inspection.sourceRootRelativePath) {
+    return `origin-local-git-${digest({
+      type: 'local-git', repositoryId: inspection.repositoryId,
+      sourceRoot: portableRelativePath(inspection.sourceRootRelativePath),
+    }).slice(0, 24)}`;
+  }
+  if (checkout?.gitRepositoryId && checkout.repositoryRoot && inside(checkout.repositoryRoot, source.path)) {
+    return `origin-local-git-${digest({
+      type: 'local-git', repositoryId: checkout.gitRepositoryId,
+      sourceRoot: portableRelativePath(path.relative(checkout.repositoryRoot, source.path) || '.'),
+    }).slice(0, 24)}`;
+  }
+  if (['main', 'worktree'].includes(checkout?.checkoutKind) && checkout.repositoryId && projectRoot
+      && inside(projectRoot, source.path)) {
+    return `origin-local-git-${digest({
+      type: 'local-git', repositoryId: checkout.repositoryId,
+      sourceRoot: portableRelativePath(path.relative(projectRoot, source.path) || '.'),
+    }).slice(0, 24)}`;
+  }
+  return `origin-local-folder-${digest({
+    type: 'local-folder', folder: path.resolve(inspection?.checkout ?? source.path),
+  }).slice(0, 24)}`;
+}
+
+function portableRelativePath(value) {
+  return path.normalize(value).split(path.sep).join('/');
+}
+
+function inside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function projectSummary(projectRoot, rows, status, {
