@@ -342,9 +342,11 @@ private struct CheckoutDetailView: View {
                                 guard let current = currentSection(), current.project.repairAvailable == true else { return }
                                 Task { await model.repairProject(current.project.root) }
                             }
+                            .disabled(model.isPreview)
                         }
                         if section.project.issueCode == "permission-denied" {
                             Button("Grant Access") { model.grantAccess(to: accessPath(for: section)) }
+                                .disabled(model.isPreview)
                         }
                     }
                 }
@@ -406,6 +408,7 @@ private struct CheckoutDetailView: View {
 
             Section("Tracking") {
                 Button("Stop tracking this checkout…", role: .destructive) { confirmsStopTracking = true }
+                    .disabled(model.isPreview)
             }
         }
     }
@@ -714,6 +717,7 @@ struct SkillDetailView: View {
                     }
                     if let folderAccessPath {
                         Button("Grant Access") { model.grantAccess(to: folderAccessPath) }
+                            .disabled(model.isPreview)
                     }
                 }
             }
@@ -724,6 +728,7 @@ struct SkillDetailView: View {
                         get: { model.snapshot.isAuthorized(selectionID) },
                         set: { enabled in Task { await model.setAuthorization(selectionID: selectionID, enabled: enabled) } }
                     ))
+                    .disabled(model.isPreview)
                 } else if skill.scope == "project", skill.managed {
                     LabeledContent("Update method", value: "With the project")
                     Text("Caddie checks this Skill but does not change Project Skills automatically.")
@@ -787,6 +792,7 @@ struct CaddieAttentionActions: View {
                 }
             }
         }
+        .disabled(model.isPreview)
     }
 }
 

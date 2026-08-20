@@ -26,6 +26,12 @@ struct CaddieMainWindow: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
+            if model.isPreview {
+                ToolbarItem {
+                    Label("Preview — read only", systemImage: "eye")
+                        .foregroundStyle(.secondary)
+                }
+            }
             if let message = model.lastError {
                 ToolbarItem {
                     Button {
@@ -56,6 +62,7 @@ struct CaddieMainWindow: View {
                 } else {
                     Button("Sync now", systemImage: "arrow.clockwise") { model.syncNow() }
                         .help("Sync now")
+                        .disabled(model.isPreview)
                 }
             }
         }
@@ -146,6 +153,7 @@ private struct CaddieOverview: View {
                     Button("Resume automatic updates") {
                         Task { await model.toggleAutomaticUpdates() }
                     }
+                    .disabled(model.isPreview)
                 }
             } footer: {
                 Text("User Skills can apply across projects. Project Skills stay with one project.")
@@ -158,6 +166,7 @@ private struct CaddieOverview: View {
                         Button(action.intent.type == "finish-recovery" ? "Finish" : "Roll back") {
                             Task { await model.invoke(actionID: action.id, extendedTimeout: true) }
                         }
+                        .disabled(model.isPreview)
                     }
                 }
             }
@@ -223,6 +232,7 @@ private struct CaddieOverview: View {
                     ForEach(presentation.readySkills.prefix(5)) { item in
                         LabeledContent {
                             Button("Update") { Task { await model.update(selectionID: item.work.selectionId) } }
+                                .disabled(model.isPreview)
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Label(item.name, systemImage: "arrow.down.circle")
@@ -276,6 +286,7 @@ private struct CaddieSettings: View {
                     Button(model.updatesPaused ? "Resume" : "Pause") {
                         Task { await model.toggleAutomaticUpdates() }
                     }
+                    .disabled(model.isPreview)
                 }
                 if model.automaticUpdatesPaused {
                     Text("Automatic updates are paused on this Mac.")
@@ -289,20 +300,24 @@ private struct CaddieSettings: View {
                     set: { model.setStartAtLogin($0) }
                 ))
                 .disabled(model.snapshot.state != "ready")
+                .disabled(model.isPreview)
 
                 if model.loginItemStatus == .requiresApproval {
                     Button("Open Login Items settings") { model.openLoginItemSettings() }
+                        .disabled(model.isPreview)
                 }
 
                 Toggle("Notifications", isOn: Binding(
                     get: { model.notificationsEnabled },
                     set: { enabled in Task { await model.setNotificationsEnabled(enabled) } }
                 ))
+                .disabled(model.isPreview)
             }
 
             Section("Caddie") {
                 Button("About Caddie") { NSApplication.shared.orderFrontStandardAboutPanel(nil) }
                 Button("Remove Caddie…", role: .destructive) { confirmsRemoval = true }
+                    .disabled(model.isPreview)
             }
         }
         .formStyle(.grouped)

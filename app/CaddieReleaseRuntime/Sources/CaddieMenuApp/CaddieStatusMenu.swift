@@ -14,6 +14,11 @@ struct CaddieStatusMenu: View {
         ))
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
+                if model.isPreview {
+                    Label("Preview — read only", systemImage: "eye")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: status.symbol)
                         .font(.title2)
@@ -39,11 +44,12 @@ struct CaddieStatusMenu: View {
 
                 HStack {
                     Button("Sync now") { model.syncNow() }
-                        .disabled(model.isRunningCycle)
+                        .disabled(model.isRunningCycle || model.isPreview)
                     Spacer()
                     Button(model.updatesPaused ? "Resume updates" : "Pause updates") {
                         Task { await model.toggleAutomaticUpdates() }
                     }
+                    .disabled(model.isPreview)
                 }
             }
             .padding(16)

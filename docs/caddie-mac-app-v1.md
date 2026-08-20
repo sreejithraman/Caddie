@@ -64,6 +64,8 @@ Build one native Swift menu bar app with `MenuBarExtra`. Set `LSUIElement` so th
 
 Keep the app unsandboxed. It uses the current user's normal file rights and macOS privacy controls. Never request Full Disk Access.
 
+Development previews use a frozen copy of the user's Caddie state and inventory. They load that copy without starting the Tool, file watches, checks, notifications, or change actions. The app marks this mode as read-only. A preview never reads or writes live Caddie state after launch.
+
 Use a folder picker when the user adds a new local Skill Source. Existing registered paths remain valid without being added again. When macOS denies one path, show Grant Access for that exact folder. Preserve the source registration and installed skills while the path is unavailable.
 
 ## App experience
