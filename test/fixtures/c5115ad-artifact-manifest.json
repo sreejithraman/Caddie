@@ -47,7 +47,12 @@
   },
   "priorSkillFiles": {
     "skills/caddie/LICENSE.txt": "163fde4e92ba7ddf7b25a91f41cd34fbeda8f8f03b56789ad96168ac8ffc2572",
-    "skills/caddie/SKILL.md": "4c7046ebc275ab214b1a059400cb4e3a2b22a2873a8e74c34fe7bedd72b7a276",
     "skills/caddie/references/workflows.md": "20135823eb6cea34c7e25029a59aa59616d7d1e3f0f530791249bfa21a753497"
+  },
+  "priorSkillFixtures": {
+    "skills/caddie/SKILL.md": {
+      "path": "test-support/c5115ad-skill/SKILL.md",
+      "sha256": "4c7046ebc275ab214b1a059400cb4e3a2b22a2873a8e74c34fe7bedd72b7a276"
+    }
   }
 }

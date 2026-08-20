@@ -119,22 +119,32 @@ async function verifyFrozenArtifacts() {
     const bytes = await readFile(path.join(repositoryRoot, relative));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, `frozen artifact drifted: ${relative}`);
   }
+  for (const [source, fixture] of Object.entries(manifest.priorSkillFixtures)) {
+    const bytes = await readFile(path.join(repositoryRoot, fixture.path));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), fixture.sha256, `frozen artifact drifted: ${source}`);
+  }
 }
 
 async function priorToolFiles() {
+  const currentLauncherFiles = new Set([
+    'skills/caddie/tool/launch.mjs',
+    'skills/caddie/tool/lease-runner.mjs',
+    'skills/caddie/tool/lifecycle-lock.mjs',
+  ]);
   const roots = ['skills/caddie/tool/src', 'skills/caddie/tool/vendor'];
   const files = (await Promise.all(roots.map((root) => walk(path.join(repositoryRoot, root)))))
     .flat()
     .map(relativeToRepository)
     .filter((file) => !file.startsWith('skills/caddie/tool/src/management/')
-      && !file.startsWith('skills/caddie/tool/src/adapter/'));
+      && !file.startsWith('skills/caddie/tool/src/adapter/')
+      && !currentLauncherFiles.has(file));
   return files.sort();
 }
 
 async function priorSkillFiles() {
   return (await walk(path.join(repositoryRoot, 'skills', 'caddie')))
     .map(relativeToRepository)
-    .filter((file) => !file.startsWith('skills/caddie/tool/'))
+    .filter((file) => !file.startsWith('skills/caddie/tool/') && file !== 'skills/caddie/SKILL.md')
     .sort();
 }
 

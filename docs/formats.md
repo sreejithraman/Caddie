@@ -36,3 +36,13 @@ Each Skill Selection may also declare `invocation: "user-only"`. Caddie projects
 that Invocation Policy into the harness-specific metadata of a disposable
 effective source before fingerprinting and materialization. An absent policy
 preserves the selected source bytes and invocation behavior unchanged.
+
+## Caddie Release files
+
+The app reads `caddie-release.json` at the root of each Caddie Release. Version 1 names one safe release ID and the app, private Node, Tool, and source Skill artifacts. Each artifact binds a relative path, version, and SHA-256 fingerprint. The compatibility declaration binds Tool protocol 2, Skill protocols 1 and 2, and the readable state-format range. The app rejects missing fields, unsafe paths, symbolic links, bad fingerprints, and incompatible ranges before it runs the Tool.
+
+The app copies checked releases to its `Releases/<release-id>` Application Support folder. It writes `Tool Launch Record.json` there as one atomic version 1 record. The record has a rising revision and complete `active` and `lastGood` bindings. Each binding contains the exact release root, release ID, absolute Node, Tool, and source Skill paths, their versions and fingerprints, and the same compatibility declaration. Activation changes only `active`. A separate post-reconciliation check promotes that exact active binding to `lastGood`.
+
+Files in `Leases/` bind one running Tool process ID to one release ID. The Skill launcher and app share the `Release Lifecycle.lock` claim while resolving, leasing, switching, or cleaning releases. The launcher transfers that claim to the private Node process before the Tool loads, then releases it only after the Tool PID lease is durable. Cleanup keeps the active release, the last-good release, and every release with a live lease. A malformed lease or release stops cleanup.
+
+Stale-claim takeover uses a separate, atomically published `Release Lifecycle.takeover` claim. Caddie does not remove an orphaned takeover claim on its own: a PID can be reused, and an unchecked removal could let two lifecycle writers overlap. The app exposes the exact owner, nonce, path, time, and current PID evidence for a repair flow that runs only while every Caddie process is stopped.
