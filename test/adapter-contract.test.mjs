@@ -242,6 +242,45 @@ test('the protocol 1 lane rejects a Skill Enablement selection extension', async
   assert.equal(JSON.parse(result.stdout).error.code, 'legacy-plan-input-field');
 });
 
+test('the protocol 1 lane accepts Skill Rename and rejects its nested extensions', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'caddie-legacy-rename-'));
+  const base = {
+    version: 1,
+    operation: 'plan',
+    input: {
+      workflow: 'skill-rename',
+      scope: { id: 'user', root: home },
+      renames: [{
+        from: { name: 'preview', source: 'authored', path: 'preview' },
+        to: { name: 'showroom', source: 'authored', path: 'showroom' },
+      }],
+      manifest: {
+        version: 1,
+        scope: 'user',
+        sources: { authored: { type: 'local', path: path.join(home, 'source') } },
+        selections: [{ source: 'authored', path: 'showroom' }],
+      },
+      materializations: [{
+        name: 'showroom', sourceId: 'authored', selectedPath: 'showroom',
+        sourcePath: path.join(home, 'source', 'showroom'), sourceFingerprint: 'fingerprint',
+      }],
+    },
+  };
+  const accepted = invokeTool(base, home);
+  assert.notEqual(JSON.parse(accepted.stdout).error?.code, 'unsupported-legacy-plan-kind');
+
+  for (const mutate of [
+    (request) => { request.input.renames[0].from.extra = true; },
+    (request) => { request.input.materializations[0].extra = true; },
+    (request) => { request.input.manifest.selections[0].extra = true; },
+  ]) {
+    const request = structuredClone(base);
+    mutate(request);
+    const result = invokeTool(request, home);
+    assert.equal(JSON.parse(result.stdout).error.code, 'legacy-plan-input-field');
+  }
+});
+
 test('the protocol 1 lane rejects Adoption Ledger extensions at every object level', async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'caddie-legacy-ledger-field-'));
   const base = {

@@ -14,6 +14,9 @@ const LEGACY_PLAN_INPUT_SCHEMAS = deepFreeze({
     'legacyLockPath', 'proposal', 'ledger', 'ledgerExpected',
   ],
   'workflow:skill-enablement': ['home', 'configHome', 'workflow', 'scope', 'selection', 'enabled'],
+  'workflow:skill-rename': [
+    'home', 'configHome', 'workflow', 'scope', 'renames', 'manifest', 'materializations',
+  ],
   'workflow:unmanagement': [
     'home', 'configHome', 'workflow', 'scope', 'ledgerFingerprint', 'registry', 'skillPaths',
     'removeClaudeExposure', 'removeHarnessExposure',
@@ -51,6 +54,18 @@ const LEGACY_ADOPTION_CANDIDATE_FIELDS = Object.freeze([
   'name', 'sourcePath', 'sourceId', 'selectedPath', 'sourceFingerprint',
 ]);
 const LEGACY_SELECTION_FIELDS = Object.freeze(['source', 'path']);
+const LEGACY_RENAME_FIELDS = Object.freeze(['from', 'to']);
+const LEGACY_RENAME_IDENTITY_FIELDS = Object.freeze(['name', 'source', 'path']);
+const LEGACY_RENAME_MATERIALIZATION_FIELDS = Object.freeze([
+  'name', 'sourceId', 'selectedPath', 'sourcePath', 'sourceFingerprint', 'sourceCleanup',
+]);
+const LEGACY_MANIFEST_FIELDS = Object.freeze([
+  'manifestVersion', 'version', 'scope', 'sources', 'skills', 'selections',
+]);
+const LEGACY_MANIFEST_SOURCE_FIELDS = Object.freeze(['name', 'id', 'type', 'path', 'url', 'ref']);
+const LEGACY_MANIFEST_SELECTION_FIELDS = Object.freeze([
+  'source', 'path', 'enabled', 'derivedFrom', 'migrationRecord', 'invocation',
+]);
 const LEGACY_LEDGER_FIELDS = Object.freeze(['version', 'scopeId', 'entries', 'harnessLinks', 'harnessSettings']);
 const LEGACY_LEDGER_ENTRY_FIELDS = Object.freeze([
   'name', 'path', 'fingerprint', 'sourceId', 'source', 'selectedPath', 'adopted',
@@ -187,6 +202,60 @@ function validateWorkflowNestedInput(input) {
     return validateNestedFields(
       input.selection, LEGACY_SELECTION_FIELDS, 'selection', input.workflow, 'legacy-plan-input-field',
     );
+  }
+  if (input.workflow === 'skill-rename') return validateSkillRenameInput(input);
+  return null;
+}
+
+function validateSkillRenameInput(input) {
+  const pairFault = validateObjectArray(
+    input.renames, LEGACY_RENAME_FIELDS, 'renames', input.workflow,
+  );
+  if (pairFault) return pairFault;
+  for (let index = 0; index < (input.renames?.length ?? 0); index += 1) {
+    for (const side of ['from', 'to']) {
+      const identityFault = validateNestedFields(
+        input.renames[index]?.[side], LEGACY_RENAME_IDENTITY_FIELDS,
+        `renames[${index}].${side}`, input.workflow, 'legacy-plan-input-field',
+      );
+      if (identityFault) return identityFault;
+    }
+  }
+  const materializationFault = validateObjectArray(
+    input.materializations, LEGACY_RENAME_MATERIALIZATION_FIELDS, 'materializations', input.workflow,
+  );
+  if (materializationFault) return materializationFault;
+  for (let index = 0; index < (input.materializations?.length ?? 0); index += 1) {
+    const cleanupFault = validateNestedFields(
+      input.materializations[index]?.sourceCleanup, LEGACY_SOURCE_CLEANUP_FIELDS,
+      `materializations[${index}].sourceCleanup`, input.workflow, 'legacy-plan-input-field',
+    );
+    if (cleanupFault) return cleanupFault;
+  }
+  return validateRenameManifest(input.manifest, input.workflow);
+}
+
+function validateRenameManifest(manifest, owner) {
+  const manifestFault = validateNestedFields(
+    manifest, LEGACY_MANIFEST_FIELDS, 'manifest', owner, 'legacy-plan-input-field',
+  );
+  if (manifestFault || !plainObject(manifest)) return manifestFault;
+  const sources = Array.isArray(manifest.sources) ? manifest.sources : Object.values(manifest.sources ?? {});
+  const sourceFault = validateObjectArray(
+    sources, LEGACY_MANIFEST_SOURCE_FIELDS, 'manifest.sources', owner,
+  );
+  if (sourceFault) return sourceFault;
+  const selections = manifest.skills ?? manifest.selections;
+  const selectionFault = validateObjectArray(
+    selections, LEGACY_MANIFEST_SELECTION_FIELDS, 'manifest.selections', owner,
+  );
+  if (selectionFault) return selectionFault;
+  for (let index = 0; index < (selections?.length ?? 0); index += 1) {
+    const lineageFault = validateObjectArray(
+      selections[index]?.derivedFrom, LEGACY_SELECTION_FIELDS,
+      `manifest.selections[${index}].derivedFrom`, owner,
+    );
+    if (lineageFault) return lineageFault;
   }
   return null;
 }
