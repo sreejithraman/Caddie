@@ -275,6 +275,24 @@ test('Project checkout inspection groups a main checkout and finished worktree u
   assert.equal(markerOnlyBranch.mainProjectRoot, await realpath(fixture.repo));
 });
 
+test('Local Git source identity joins worktree checkouts but keeps distinct source roots', async () => {
+  const fixture = await repositoryFixture(['one']);
+  const worktree = path.join(fixture.root, 'source-worktree');
+  await git(fixture.repo, 'worktree', 'add', '-b', 'source-feature', worktree, 'HEAD');
+
+  const main = await inspectLocalGitSource({ checkout: path.join(fixture.repo, 'skills'), selectedPath: 'one' });
+  const branch = await inspectLocalGitSource({ checkout: path.join(worktree, 'skills'), selectedPath: 'one' });
+  const repositoryRoot = await inspectLocalGitSource({ checkout: fixture.repo, selectedPath: 'skills/one' });
+
+  assert.equal(main.repositoryId, branch.repositoryId);
+  assert.equal(main.sourceRootRelativePath, 'skills');
+  assert.equal(branch.sourceRootRelativePath, 'skills');
+  assert.equal(main.checkoutKind, 'main');
+  assert.equal(branch.checkoutKind, 'worktree');
+  assert.equal(repositoryRoot.repositoryId, main.repositoryId);
+  assert.equal(repositoryRoot.sourceRootRelativePath, '.');
+});
+
 test('a managed source folder inside a repository stays current and hands agents the Git work folder', async () => {
   const fixture = await managedFixture(['one']);
   const sourceFolder = path.join(fixture.repo, 'skills');
@@ -508,6 +526,102 @@ test('Snapshot inventory lists managed and unmanaged User and Project Skills wit
   assert.deepEqual(replay.result.snapshot.projects, snapshot.projects);
   const inventoryStore = JSON.parse(await readFile(`${fixture.statePath}.inventory-v1.json`, 'utf8'));
   assert.equal(inventoryStore.projections.length, 1);
+});
+
+test('Snapshot origins group matching source roots across Git worktrees', async () => {
+  const fixture = await managedFixture(['one', 'two']);
+  const worktree = path.join(fixture.root, 'source-worktree');
+  await git(fixture.repo, 'worktree', 'add', '-b', 'source-feature', worktree, 'HEAD');
+  const manifest = JSON.parse(await readFile(fixture.manifestPath, 'utf8'));
+  manifest.sources = {
+    main: { type: 'local', path: fixture.repo },
+    branch: { type: 'local', path: worktree },
+  };
+  manifest.selections = [
+    { source: 'main', path: 'skills/one' },
+    { source: 'branch', path: 'skills/two' },
+  ];
+  await json(fixture.manifestPath, manifest);
+  const ledger = JSON.parse(await readFile(fixture.ledgerPath, 'utf8'));
+  ledger.entries.find((entry) => entry.name === 'one').sourceId = 'main';
+  ledger.entries.find((entry) => entry.name === 'two').sourceId = 'branch';
+  await json(fixture.ledgerPath, ledger);
+
+  const management = createManagementModule({ home: fixture.home });
+  const grouped = (await management.execute(cycleRequest('observe-only', 'group-worktree-sources'))).result.snapshot;
+  const groupedOne = grouped.skillInventory.find((item) => item.scope === 'user' && item.name === 'one');
+  const groupedTwo = grouped.skillInventory.find((item) => item.scope === 'user' && item.name === 'two');
+  assert.equal(groupedOne.origin.id, groupedTwo.origin.id);
+  assert.notEqual(groupedOne.origin.localFolder, groupedTwo.origin.localFolder);
+
+  manifest.sources.branch = { type: 'local', path: path.join(fixture.repo, 'skills') };
+  manifest.selections[1].path = 'two';
+  ledger.entries.find((entry) => entry.name === 'two').selectedPath = 'two';
+  await json(fixture.manifestPath, manifest);
+  await json(fixture.ledgerPath, ledger);
+  const separated = (await management.execute(cycleRequest('observe-only', 'separate-source-roots'))).result.snapshot;
+  const separatedOne = separated.skillInventory.find((item) => item.scope === 'user' && item.name === 'one');
+  const separatedTwo = separated.skillInventory.find((item) => item.scope === 'user' && item.name === 'two');
+  assert.notEqual(separatedOne.origin.id, separatedTwo.origin.id);
+});
+
+test('Project origins group matching source roots across Git worktrees', async () => {
+  const fixture = await managedFixture(['user-only']);
+  const main = path.join(fixture.root, 'project-repo');
+  const worktree = path.join(fixture.root, 'project-worktree');
+  await mkdir(main, { recursive: true });
+  await git(main, 'init', '-b', 'main');
+  await git(main, 'config', 'user.email', 'test@example.com');
+  await git(main, 'config', 'user.name', 'Test User');
+  await writeSkill(path.join(main, 'skills', 'one'), 'one', 'project skill');
+  await git(main, 'add', '.');
+  await git(main, 'commit', '-m', 'initial');
+  await git(main, 'worktree', 'add', '-b', 'project-feature', worktree, 'HEAD');
+
+  async function writeProjectState(projectRoot, sourceRoot, skillName) {
+    const installedPath = path.join(projectRoot, '.agents', 'skills', skillName);
+    await cp(path.join(sourceRoot, skillName), installedPath, { recursive: true });
+    await json(path.join(projectRoot, '.agents', '.caddie', 'manifest.json'), {
+      version: 1, scope: 'project', sources: { project: { type: 'local', path: sourceRoot } },
+      selections: [{ source: 'project', path: skillName }],
+    });
+    await json(path.join(projectRoot, '.agents', '.caddie', 'ledger.json'), {
+      version: 1, scopeId: `project:${projectRoot}`,
+      entries: [{
+        name: skillName, path: installedPath, sourceId: 'project', selectedPath: skillName,
+        fingerprint: await fingerprint(installedPath),
+      }],
+      harnessLinks: [], harnessSettings: [],
+    });
+  }
+
+  await writeProjectState(main, path.join(main, 'skills'), 'one');
+  await writeProjectState(worktree, path.join(worktree, 'skills'), 'one');
+  const mainCheckout = await inspectProjectCheckout({ projectRoot: main });
+  const worktreeCheckout = await inspectProjectCheckout({ projectRoot: worktree });
+  assert.ok(mainCheckout.gitRepositoryId, JSON.stringify(mainCheckout));
+  assert.ok(worktreeCheckout.gitRepositoryId, JSON.stringify(worktreeCheckout));
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [main, worktree] });
+
+  const management = createManagementModule({ home: fixture.home });
+  const grouped = (await management.execute(cycleRequest('observe-only', 'group-project-worktree-sources'))).result.snapshot;
+  assert.equal(grouped.projects.find((item) => item.root === main).checkoutKind, 'main');
+  assert.equal(grouped.projects.find((item) => item.root === worktree).checkoutKind, 'worktree');
+  const mainSkill = grouped.skillInventory.find((item) => item.scope === 'project' && item.projectRoot === main);
+  const worktreeSkill = grouped.skillInventory.find((item) => item.scope === 'project' && item.projectRoot === worktree);
+  assert.equal(mainSkill.origin.id, worktreeSkill.origin.id);
+  assert.match(mainSkill.origin.id, /^origin-local-git-/);
+
+  await writeSkill(path.join(worktree, 'experimental-skills', 'two'), 'two', 'experimental skill');
+  await writeProjectState(worktree, path.join(worktree, 'experimental-skills'), 'two');
+  const separated = (await management.execute(cycleRequest('observe-only', 'separate-project-source-roots'))).result.snapshot;
+  const separatedMain = separated.skillInventory.find((item) => (
+    item.scope === 'project' && item.projectRoot === main && item.name === 'one'
+  ));
+  const separatedWorktree = separated.skillInventory.find((item) => (
+    item.scope === 'project' && item.projectRoot === worktree && item.name === 'two'
+  ));
+  assert.notEqual(separatedMain.origin.id, separatedWorktree.origin.id);
 });
 
 test('inventory skips installed entries whose SKILL.md path cannot be a skill file', async () => {

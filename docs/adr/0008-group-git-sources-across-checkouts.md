@@ -1,0 +1,3 @@
+# Group Git sources across checkouts
+
+A Git worktree is a Source Checkout, not a separate Skill Source, and it has no durable parent branch. Caddie groups a local Git-backed Skill Source by the shared Git repository and its source-root path within that repository, while keeping each checkout path as a Source Use detail. Git state and Skill state stay separate: local Git facts remain neutral, never create Caddie Attention, and never let Caddie fetch, pull, merge, or rebase. Standalone folders remain separate Skill Sources, and In-place Project Skills remain under Projects instead of appearing as Sources.

@@ -94,6 +94,14 @@ _Avoid_: Machine configuration, project manifest
 A named local or remote origin from which Caddie can select skills.
 _Avoid_: Package, registry
 
+**Source Checkout**:
+One local main checkout or worktree through which Caddie reads a Git-backed Skill Source. Several Source Checkouts may expose the same Skill Source.
+_Avoid_: Skill Source, parent source, worktree source
+
+**Source Use**:
+One User or Project Skill Selection supplied by a Skill Source through a particular Source Checkout.
+_Avoid_: Source copy, dependency
+
 **Skill Selection**:
 A choice of one skill directory from a Skill Source for inclusion at a scope.
 _Avoid_: Dependency, package install
