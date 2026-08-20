@@ -738,4 +738,4 @@ async function boundary(hook, name, journal) {
   if (hook) await hook(name, structuredClone(journal));
 }
 
-module.exports = { ApplyError, acquireScopeLock, applyPlan };
+module.exports = { ApplyError, acquireOwnerLock, acquireScopeLock, applyPlan };

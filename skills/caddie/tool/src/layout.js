@@ -43,6 +43,7 @@ function scopeLayout(scope, home = os.homedir()) {
     manifestPath: path.join(stateRoot, 'manifest.json'),
     lockPath: path.join(stateRoot, 'lock.json'),
     ledgerPath: path.join(stateRoot, 'ledger.json'),
+    managementStatePath: path.join(stateRoot, 'management-v2.json'),
     operationJournalPath: path.join(stateRoot, 'operation-journal.json'),
   });
 }
