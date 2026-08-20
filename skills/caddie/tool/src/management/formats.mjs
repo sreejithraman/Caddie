@@ -95,6 +95,13 @@ export function validateManagementState(value, statePath = null) {
   return value;
 }
 
+export function validateManagementSnapshot(value) {
+  if (!validSnapshot(value)) {
+    throw new ManagementStateError('malformed-management-snapshot', 'Caddie management Snapshot is malformed');
+  }
+  return value;
+}
+
 export async function writeManagementState(statePath, state) {
   validateManagementState(state, statePath);
   await mkdir(path.dirname(statePath), { recursive: true });

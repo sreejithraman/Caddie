@@ -306,6 +306,10 @@ Stage and verify a new private runtime before switching the Tool Launch Record. 
 
 Each release supports one release boundary. The new Tool accepts the prior Skill, the new Skill can use the last-good Tool, and state written during activation stays readable by the last-good Tool. Keep the version 1 request adapter for one compatibility release; route it into the same management module.
 
+The versioned declaration in `skills/caddie/tool/src/adapter/compatibility.mjs` sets the end marker. Tool protocol 2 is the last version that accepts protocol 1 Skill requests. Tool protocol 3 must remove that bridge once protocol 2 is the oldest supported Skill contract.
+
+This bridge is a narrow, one-release exception. The frozen prior Skill may still submit its old Caddie Plan request shape, including its allow-listed filesystem operations. The management-owned legacy lane applies the old validation, exact plan binding, approval, apply, and Recovery rules. It rejects unknown operations, new fields, internal plan intent, and direct Agent Harness settings writes. Protocol 2 and app callers can never enter this lane.
+
 If the new Tool cannot start or its first `status` fails, restore the last-good Tool before any skill or state change. Later failures use Attention and Recovery.
 
 ## Installation, updates, and removal

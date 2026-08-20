@@ -6,6 +6,7 @@ import { parseManifest } from '../manifest/parse-manifest.mjs';
 import { extractSkillName } from '../manifest/resolve-selections.mjs';
 import { loadRegistry } from '../registry/load-registry.mjs';
 import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
+import { createLegacyBridge } from './legacy-bridge.mjs';
 import { inspectLocalGitSource } from './local-source.mjs';
 import { observeAttention, prepareAttentionCapacity } from './attention.mjs';
 import {
@@ -53,7 +54,14 @@ export function createManagementModule(options = {}) {
   const applyRecovery = options.applyRecovery ?? (async (plan) => applyPlan({ plan, approval: approvePlan(plan) }));
   const inspectRecovery = options.inspectRecovery ?? (() => recover({ scope: { id: 'user', root: home } }));
   const runtime = { home, statePath, now, inspectGit, apply, applyRecovery, inspectRecovery };
-  return Object.freeze({ execute: (request) => execute(request, runtime) });
+  const legacyBridge = createLegacyBridge({
+    env: options.legacyRuntime?.env,
+    operations: options.legacyRuntime?.operations,
+  });
+  return Object.freeze({
+    execute: (request) => execute(request, runtime),
+    executeLegacy: (rawRequest) => legacyBridge.execute(rawRequest),
+  });
 }
 
 export async function executeManagement(request, options = {}) {

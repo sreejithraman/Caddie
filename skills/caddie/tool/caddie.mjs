@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
-import { runTool } from './src/protocol/run-tool.mjs';
-import { extendedOperations } from './src/protocol/operations.mjs';
+import os from 'node:os';
+import { serveTool } from './src/adapter/serve.mjs';
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
 
-const { response, exitCode } = await runTool(Buffer.concat(chunks).toString('utf8'), {
+const { response, exitCode } = await serveTool(Buffer.concat(chunks).toString('utf8'), {
   env: process.env,
-  operations: extendedOperations,
+  home: process.env.HOME ?? os.homedir(),
 });
 
 process.stdout.write(`${JSON.stringify(response)}\n`);
