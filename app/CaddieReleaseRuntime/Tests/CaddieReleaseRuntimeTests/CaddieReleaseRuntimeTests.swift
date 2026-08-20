@@ -433,6 +433,42 @@ final class CaddieReleaseRuntimeTests: XCTestCase {
         XCTAssertEqual(try readLifecycleOwner(directory: claim.directory).nonce, claim.nonce)
     }
 
+    func testMissingLifecycleClaimIsARetryWhileExistingDamageStillFails() throws {
+        let fixture = try Fixture()
+        let missing = fixture.support.appendingPathComponent("Release Lifecycle.lock", isDirectory: true)
+        XCTAssertNil(try readLifecycleOwnerIfPresent(directory: missing))
+
+        try FileManager.default.createDirectory(at: missing, withIntermediateDirectories: true)
+        XCTAssertThrowsError(try readLifecycleOwnerIfPresent(directory: missing)) { error in
+            XCTAssertEqual(error as? ReleaseRuntimeFault, .malformedLifecycleClaim)
+        }
+
+        try FileManager.default.removeItem(at: missing)
+        try FileManager.default.createSymbolicLink(
+            at: missing,
+            withDestinationURL: fixture.support.appendingPathComponent("missing-claim-target", isDirectory: true)
+        )
+        XCTAssertThrowsError(try readLifecycleOwnerIfPresent(directory: missing)) { error in
+            XCTAssertEqual(error as? ReleaseRuntimeFault, .malformedLifecycleClaim)
+        }
+
+        let replaced = fixture.support.appendingPathComponent("replaced-claim", isDirectory: true)
+        try FileManager.default.createDirectory(at: replaced, withIntermediateDirectories: true)
+        let replacementOwner = LifecycleOwner(
+            version: 1,
+            nonce: UUID(),
+            processID: getpid(),
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+        XCTAssertNil(try readLifecycleOwnerIfPresent(directory: replaced) { directory, fileManager in
+            try fileManager.removeItem(at: directory)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder.caddie.encode(replacementOwner).write(to: directory.appendingPathComponent("owner.json"))
+            throw ReleaseRuntimeFault.malformedLifecycleClaim
+        })
+        XCTAssertEqual(try readLifecycleOwnerIfPresent(directory: replaced), replacementOwner)
+    }
+
     func testLaunchRecordPublicLeaseAndLifecycleClaimUseBackgroundProtection() async throws {
         let fixture = try Fixture()
         let runtime = CaddieReleaseRuntime(supportRoot: fixture.support)

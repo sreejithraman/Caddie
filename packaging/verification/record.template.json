@@ -1,0 +1,70 @@
+{
+  "schema": "caddie-release-verification-draft-v1",
+  "recordVersion": 1,
+  "recordStatus": "draft",
+  "generatedAt": null,
+  "generatedBy": "template",
+  "workflowRunURL": null,
+  "source": {
+    "commit": null,
+    "clean": null
+  },
+  "environment": {
+    "platform": null,
+    "architecture": null,
+    "macOSVersion": null,
+    "nodeVersion": null,
+    "swiftVersion": null
+  },
+  "release": {
+    "releaseID": null,
+    "appVersion": null,
+    "toolVersion": null,
+    "toolFingerprint": null,
+    "nodeVersion": null,
+    "nodeFingerprint": null,
+    "skillVersion": null,
+    "skillFingerprint": null,
+    "toolProtocolVersion": null,
+    "supportedSkillProtocolVersions": [],
+    "minimumStateFormatVersion": null,
+    "maximumStateFormatVersion": null,
+    "signedArtifactSHA256": null,
+    "appcastEntryURL": null
+  },
+  "checks": [
+    { "id": "repository-node-tests", "kind": "automated", "status": "not-run", "reason": "template-not-run" },
+    { "id": "swift-package-tests", "kind": "automated", "status": "not-run", "reason": "template-not-run" },
+    { "id": "development-app-build", "kind": "automated", "status": "not-run", "reason": "template-not-run" },
+    { "id": "installed-codex", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "installed-claude", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "state-fixtures", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "prior-release-pairings", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "fault-injection", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "developer-id-signature", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "hardened-runtime", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "notarization", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "stapling", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "sparkle-signature", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "sparkle-prior-update", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "homebrew-install", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "disk-image-install", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "login-and-folder-access", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "tool-fallback", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "app-removal-reinstall", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "observe-only-live", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "authorized-clean-update", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "unsafe-update-blocked", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "notification-and-handoff", "kind": "human", "status": "not-run", "reason": "human-proof-required" },
+    { "id": "macos-13", "kind": "human", "status": "not-run", "reason": "human-proof-required" }
+  ],
+  "qualification": {
+    "liveUserReconciliationEligible": false,
+    "blockers": [
+      "source-not-collected",
+      "automated-checks-not-run",
+      "signed-release-not-supplied",
+      "human-proof-not-run"
+    ]
+  }
+}

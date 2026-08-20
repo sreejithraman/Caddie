@@ -8,11 +8,13 @@ const test = require('node:test');
 const repoRoot = path.resolve(__dirname, '..');
 
 test('installed Claude Code discovers a skill exposed by an individual directory symlink', async (t) => {
+  if (process.env.CADDIE_REQUIRE_CLAUDE !== '1') {
+    t.skip('Claude Code runs only in the release gate');
+    return;
+  }
   const probe = spawnSync('claude', ['--version'], { encoding: 'utf8' });
   if (probe.error?.code === 'ENOENT') {
-    if (process.env.CADDIE_REQUIRE_CLAUDE === '1') assert.fail('Claude Code is required by the release gate');
-    t.skip('Claude Code is not installed');
-    return;
+    assert.fail('Claude Code is required by the release gate');
   }
   assert.equal(probe.status, 0, probe.stderr);
 
@@ -41,11 +43,13 @@ test('installed Claude Code discovers a skill exposed by an individual directory
 });
 
 test('installed Codex discovers a real skill in the standard user root', async (t) => {
+  if (process.env.CADDIE_REQUIRE_CODEX !== '1') {
+    t.skip('Codex runs only in the release gate');
+    return;
+  }
   const probe = spawnSync('codex', ['--version'], { encoding: 'utf8' });
   if (probe.error?.code === 'ENOENT') {
-    if (process.env.CADDIE_REQUIRE_CODEX === '1') assert.fail('Codex is required by the release gate');
-    t.skip('Codex is not installed');
-    return;
+    assert.fail('Codex is required by the release gate');
   }
   assert.equal(probe.status, 0, probe.stderr);
 

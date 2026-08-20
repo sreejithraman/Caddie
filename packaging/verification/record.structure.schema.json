@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sreejithraman/Caddie/blob/main/packaging/verification/record.structure.schema.json",
+  "title": "Caddie Release Verification Draft Structural Schema",
+  "description": "Structural checks only. This schema does not validate proof or qualify live User Skill reconciliation. Use npm run verify:record for the authoritative draft contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "recordVersion",
+    "recordStatus",
+    "generatedAt",
+    "generatedBy",
+    "workflowRunURL",
+    "source",
+    "environment",
+    "release",
+    "checks",
+    "qualification"
+  ],
+  "properties": {
+    "schema": {
+      "const": "caddie-release-verification-draft-v1"
+    },
+    "recordVersion": {
+      "const": 1
+    },
+    "recordStatus": {
+      "const": "draft"
+    },
+    "generatedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "generatedBy": {
+      "enum": ["template", "local-macos", "github-actions"]
+    },
+    "workflowRunURL": {
+      "type": ["string", "null"],
+      "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "clean"],
+      "properties": {
+        "commit": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "clean": {
+          "type": ["boolean", "null"]
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "architecture", "macOSVersion", "nodeVersion", "swiftVersion"],
+      "properties": {
+        "platform": {
+          "enum": ["macos", null]
+        },
+        "architecture": {
+          "enum": ["arm64", "x86_64", null]
+        },
+        "macOSVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$"
+        },
+        "nodeVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "swiftVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$"
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseID",
+        "appVersion",
+        "toolVersion",
+        "toolFingerprint",
+        "nodeVersion",
+        "nodeFingerprint",
+        "skillVersion",
+        "skillFingerprint",
+        "toolProtocolVersion",
+        "supportedSkillProtocolVersions",
+        "minimumStateFormatVersion",
+        "maximumStateFormatVersion",
+        "signedArtifactSHA256",
+        "appcastEntryURL"
+      ],
+      "properties": {
+        "releaseID": { "type": "null" },
+        "appVersion": { "type": "null" },
+        "toolVersion": { "type": "null" },
+        "toolFingerprint": { "type": "null" },
+        "nodeVersion": { "type": "null" },
+        "nodeFingerprint": { "type": "null" },
+        "skillVersion": { "type": "null" },
+        "skillFingerprint": { "type": "null" },
+        "toolProtocolVersion": { "type": "null" },
+        "supportedSkillProtocolVersions": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "minimumStateFormatVersion": { "type": "null" },
+        "maximumStateFormatVersion": { "type": "null" },
+        "signedArtifactSHA256": { "type": "null" },
+        "appcastEntryURL": { "type": "null" }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "status", "reason"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "kind": {
+            "enum": ["automated", "human"]
+          },
+          "status": {
+            "enum": ["passed", "failed", "not-run"]
+          },
+          "reason": {
+            "enum": ["command-failed", "command-timed-out", "human-proof-required", "template-not-run", null]
+          }
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["liveUserReconciliationEligible", "blockers"],
+      "properties": {
+        "liveUserReconciliationEligible": {
+          "const": false
+        },
+        "blockers": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "source-not-collected",
+              "source-not-clean",
+              "automated-checks-not-run",
+              "automated-check-failed",
+              "signed-release-not-supplied",
+              "human-proof-not-run"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
