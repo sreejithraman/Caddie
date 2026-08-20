@@ -8,16 +8,14 @@ export function observeAttention(state, causes, at, provedSubjects) {
   const observed = new Set(causes.map((item) => stableKey(item)));
   for (const item of state.attention.filter((entry) => entry.state !== 'resolved')) {
     if (provedSubjects.has(item.subjectId) && !observed.has(item.stableKey)) {
-      item.state = 'resolved';
-      item.resolvedAt = at;
-      item.updatedAt = at;
+      resolve(state, item, at);
     }
   }
   for (const item of causes) {
     const key = stableKey(item);
     const open = state.attention.find((entry) => entry.stableKey === key && entry.state !== 'resolved');
     if (open) {
-      if (priorityRank(item.priority) > priorityRank(open.priority)) queueNotification(state, open, at, 'priority-raised');
+      if (priorityRank(item.priority) > priorityRank(open.priority)) queueNotification(state, open, at, 'priority-raised', item.priority);
       open.priority = item.priority;
       open.updatedAt = at;
       open.observations += 1;
@@ -39,9 +37,7 @@ export function prepareAttentionCapacity(state, causes, provedSubjects, reserve,
   const observed = new Set(causes.map((item) => stableKey(item)));
   for (const item of state.attention.filter((entry) => entry.state !== 'resolved')) {
     if (provedSubjects.has(item.subjectId) && !observed.has(item.stableKey)) {
-      item.state = 'resolved';
-      item.resolvedAt = at;
-      item.updatedAt = at;
+      resolve(state, item, at);
     }
   }
   const open = state.attention.filter((item) => item.state !== 'resolved');
@@ -49,8 +45,8 @@ export function prepareAttentionCapacity(state, causes, provedSubjects, reserve,
   return open.length + newKeys.size + reserve <= MAX_OPEN_ATTENTION;
 }
 
-function queueNotification(state, attention, at, reason) {
-  const id = `effect-${hashValue({ attention: attention.id, reason }).slice(0, 24)}`;
+function queueNotification(state, attention, at, reason, target = null) {
+  const id = `effect-${hashValue({ attention: attention.id, reason, target }).slice(0, 24)}`;
   if (state.outsideEffects.some((item) => item.id === id)) return;
   const pending = state.outsideEffects.filter((item) => item.outcome === null);
   if (pending.length >= 100) return;
@@ -58,6 +54,15 @@ function queueNotification(state, attention, at, reason) {
     version: 2, id, kind: 'notification', subjectId: attention.subjectId,
     attentionId: attention.id, reason, outcome: null, createdAt: at,
   });
+}
+
+function resolve(state, item, at) {
+  item.state = 'resolved';
+  item.resolvedAt = at;
+  item.updatedAt = at;
+  if (state.activity.some((entry) => entry.kind === 'attention-engaged' && entry.details?.attentionId === item.id)) {
+    queueNotification(state, item, at, 'opened', 'resolved');
+  }
 }
 
 function stableKey(item) { return `${item.subjectId}\0${item.code}\0${item.condition}`; }

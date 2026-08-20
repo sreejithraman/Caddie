@@ -102,13 +102,31 @@ export function compactManagementState(state, at) {
   const open = state.attention.filter((item) => item.state !== 'resolved');
   const resolved = pruneRecent(state.attention.filter((item) => item.state === 'resolved'), at);
   state.attention = [...open, ...resolved];
-  state.activity = pruneRecent(state.activity, at);
+  state.activity = compactActivity(state.activity, open, at);
   state.pendingActions = bounded(state.pendingActions.filter((item) => item.status === 'pending' || item.expiresAt >= at));
   state.outsideEffects = bounded([
     ...state.outsideEffects.filter((item) => item.outcome === null),
     ...state.outsideEffects.filter((item) => item.outcome !== null),
   ]);
   state.receipts = bounded(state.receipts);
+}
+
+function compactActivity(activity, openAttention, at) {
+  const openIds = new Set(openAttention.map((item) => item.id));
+  const keptAttentionIds = new Set();
+  const engagement = [];
+  for (const item of activity) {
+    const attentionId = item.kind === 'attention-engaged' ? item.details?.attentionId : null;
+    if (!openIds.has(attentionId) || keptAttentionIds.has(attentionId)) continue;
+    keptAttentionIds.add(attentionId);
+    engagement.push(item);
+  }
+  const keptIds = new Set(engagement.map((item) => item.id));
+  const recent = pruneRecent(activity.filter((item) => !keptIds.has(item.id)), at)
+    .slice(0, MAX_RECENT_RECORDS - engagement.length);
+  return [...engagement, ...recent]
+    .sort((left, right) => String(right.updatedAt ?? right.createdAt).localeCompare(String(left.updatedAt ?? left.createdAt)))
+    .slice(0, MAX_RECENT_RECORDS);
 }
 
 export function publicSelection(selection, status) {

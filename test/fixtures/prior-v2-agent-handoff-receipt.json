@@ -1,0 +1,48 @@
+{
+  "id": "prior-v2-handoff-receipt",
+  "requestHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "result": {
+    "version": 2,
+    "ok": true,
+    "requestId": "prior-v2-handoff-request",
+    "operation": "act",
+    "result": {
+      "snapshot": {
+        "version": 2,
+        "state": "uninitialized",
+        "revision": 7,
+        "freshness": { "checkedAt": null },
+        "compatibility": { "protocol": 2, "state": 2 },
+        "coverage": { "status": "unknown", "issues": [] },
+        "summary": { "selections": 0, "current": 0, "ready": 0, "attention": 0 },
+        "sources": [],
+        "userSkills": [],
+        "projectSkills": [],
+        "readyWork": [],
+        "authorizations": [],
+        "attention": [],
+        "recentAttention": [],
+        "activity": [],
+        "pendingActions": [],
+        "outsideEffects": [
+          {
+            "version": 2,
+            "id": "effect-prior-v2-handoff",
+            "kind": "agent-handoff",
+            "subjectId": "prior-subject",
+            "outcome": null,
+            "createdAt": "2026-08-03T12:00:00.000Z",
+            "provider": "codex",
+            "workFolder": "/tmp/prior-work-folder",
+            "prompt": "Review the prior Attention item."
+          }
+        ],
+        "pause": { "active": false, "reason": null, "safetyTriggered": false, "startedAt": null },
+        "watchSet": [],
+        "continuations": []
+      }
+    }
+  },
+  "replayRisk": false,
+  "createdAt": "2026-08-03T12:00:00.000Z"
+}

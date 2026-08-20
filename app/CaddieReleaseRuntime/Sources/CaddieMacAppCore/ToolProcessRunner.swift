@@ -48,6 +48,7 @@ struct BoundedToolProcessRunner: ToolProcessRunning, Sendable {
         let errors = Pipe()
         let state = ProcessState(maximumStdout: maximumStdout, maximumStderr: maximumStderr)
         let box = ProcessBox(process)
+        let outputLock = NSLock()
         process.executableURL = launch.executable
         process.arguments = launch.arguments
         process.environment = environment
@@ -57,23 +58,29 @@ struct BoundedToolProcessRunner: ToolProcessRunning, Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             output.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-                if state.appendStdout(data) { stop(box, fault: .stdoutOverflow, state: state, grace: stopGrace) }
+                outputLock.withLock {
+                    let data = handle.availableData
+                    guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+                    if state.appendStdout(data) { stop(box, fault: .stdoutOverflow, state: state, grace: stopGrace) }
+                }
             }
             errors.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-                if state.appendStderr(data) { stop(box, fault: .stderrOverflow, state: state, grace: stopGrace) }
+                outputLock.withLock {
+                    let data = handle.availableData
+                    guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+                    if state.appendStderr(data) { stop(box, fault: .stderrOverflow, state: state, grace: stopGrace) }
+                }
             }
             process.terminationHandler = { process in
                 output.fileHandleForReading.readabilityHandler = nil
                 errors.fileHandleForReading.readabilityHandler = nil
-                state.appendRemaining(
-                    stdout: output.fileHandleForReading.readDataToEndOfFile(),
-                    stderr: errors.fileHandleForReading.readDataToEndOfFile()
-                )
-                let result = state.finish(status: process.terminationStatus)
+                let result = outputLock.withLock {
+                    state.appendRemaining(
+                        stdout: output.fileHandleForReading.readDataToEndOfFile(),
+                        stderr: errors.fileHandleForReading.readDataToEndOfFile()
+                    )
+                    return state.finish(status: process.terminationStatus)
+                }
                 continuation.resume(with: result)
             }
             do { try process.run() } catch {

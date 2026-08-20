@@ -70,12 +70,17 @@ private struct CaddieMenu: View {
         GroupBox("Needs attention") {
             VStack(alignment: .leading, spacing: 6) {
                 if let recovery = model.menuSnapshot.recovery { Label(recovery.status, systemImage: "cross.case.fill") }
+                ForEach(model.menuSnapshot.pendingActions.filter { ["finish-recovery", "rollback-recovery"].contains($0.intent.type) }) { action in
+                    Button(action.intent.type == "finish-recovery" ? "Finish" : "Roll back") {
+                        Task { await model.invoke(actionID: action.id, extendedTimeout: true) }
+                    }
+                }
                 if model.menuSnapshot.pause.active {
                     Label("Safety pause: \(model.menuSnapshot.pause.reason ?? "updates need review")", systemImage: "pause.circle.fill")
                     Text("Resume checks that the safety issue is gone before automatic updates restart.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(toolAttention) { item in Label(item.code, systemImage: "exclamationmark.triangle.fill") }
+                ForEach(toolAttention) { item in AttentionRow(model: model, item: item, allowHandoff: false) }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -104,7 +109,11 @@ private struct CaddieMenu: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Ready Work").font(.headline)
                 ForEach(model.menuSnapshot.readyWork) { work in
-                    Label(work.selectionId, systemImage: "arrow.down.circle")
+                    HStack {
+                        Label(work.selectionId, systemImage: "arrow.down.circle")
+                        Spacer()
+                        Button("Update") { Task { await model.update(selectionID: work.selectionId) } }
+                    }
                 }
             }
         }
@@ -137,6 +146,14 @@ private struct CaddieMenu: View {
             if model.loginItemStatus == .requiresApproval {
                 Button("Open Login Items settings") { model.openLoginItemSettings() }.padding(.horizontal, 14)
             }
+            if !model.notificationsEnabled && model.menuSnapshot.summary.attention > 0 {
+                Text("Turn on silent notices to learn when blocked work changes.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.top, 6)
+            }
+            Toggle("Notifications", isOn: Binding(
+                get: { model.notificationsEnabled },
+                set: { enabled in Task { await model.setNotificationsEnabled(enabled) } }
+            )).padding(.horizontal, 14).padding(.vertical, 8)
             Divider()
             HStack {
                 Button("About Caddie") { NSApplication.shared.orderFrontStandardAboutPanel(nil) }
@@ -190,10 +207,18 @@ private struct SourceCard: View {
                 }
                 if expanded {
                     ForEach(model.menuSnapshot.skills(for: source.id)) { skill in
-                        HStack { Text(skill.name ?? skill.selectedPath); Spacer(); Text(skill.status).foregroundStyle(.secondary) }
+                        HStack {
+                            Text(skill.name ?? skill.selectedPath)
+                            Spacer()
+                            Text(skill.status).foregroundStyle(.secondary)
+                            Toggle("Automatic", isOn: Binding(
+                                get: { model.menuSnapshot.isAuthorized(skill.id) },
+                                set: { enabled in Task { await model.setAuthorization(selectionID: skill.id, enabled: enabled) } }
+                            )).labelsHidden()
+                        }
                     }
                     ForEach(model.menuSnapshot.attention(for: source.id)) { item in
-                        Label(item.code, systemImage: "exclamationmark.triangle")
+                        AttentionRow(model: model, item: item, allowHandoff: model.canHandoff(item))
                     }
                     ForEach(readyWork) { work in
                         Label("Ready: \(work.kind)", systemImage: "arrow.down.circle")
@@ -205,6 +230,10 @@ private struct SourceCard: View {
                     if needsFolderAccess, let checkout = source.checkout {
                         Button("Grant Access") { model.grantAccess(to: checkout) }
                     }
+                    HStack {
+                        Button("Mute source") { model.muteSource(source.id) }
+                        Button("Unmute source") { model.unmuteSource(source.id) }
+                    }.font(.caption)
                 }
             }
         }
@@ -235,5 +264,32 @@ private struct SourceCard: View {
     private var sourceActivity: [AppSnapshot.Activity] {
         let skillIDs = Set(model.menuSnapshot.skills(for: source.id).map(\.id))
         return model.menuSnapshot.activity.filter { $0.subjectId == source.id || skillIDs.contains($0.subjectId) }
+    }
+}
+
+private struct AttentionRow: View {
+    @ObservedObject var model: AppModel
+    let item: AppSnapshot.Attention
+    let allowHandoff: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(item.code, systemImage: "exclamationmark.triangle")
+            HStack {
+                Button("Retry") { Task { await model.retry(attentionID: item.id) } }
+                Button(model.isMuted(item) ? "Unmute" : "Mute") {
+                    if model.isMuted(item) { model.unmute(item) } else { model.mute(item) }
+                }
+                if allowHandoff {
+                    Menu("Open in Agent") {
+                        Button("\(model.lastAgentProvider.displayName) (Last used)") {
+                            Task { await model.handoff(attentionID: item.id, provider: model.lastAgentProvider) }
+                        }
+                        let other: AgentProvider = model.lastAgentProvider == .codex ? .claude : .codex
+                        Button(other.displayName) { Task { await model.handoff(attentionID: item.id, provider: other) } }
+                    }
+                }
+            }.font(.caption)
+        }
     }
 }

@@ -10,9 +10,12 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public let userSkills: [UserSkill]
     public let projectSkills: [ProjectSkill]
     public let readyWork: [ReadyWork]
+    public let authorizations: [Authorization]
     public let attention: [Attention]
+    public let recentAttention: [Attention]
     public let activity: [Activity]
     public let pendingActions: [PendingAction]
+    public let outsideEffects: [OutsideEffect]
     public let pause: Pause
     public let watchSet: [Watch]
     public let recovery: Recovery?
@@ -73,6 +76,19 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         public let code: String
         public let priority: String
         public let state: String
+        public let stableKey: String
+        public let condition: String
+        public let observations: Int
+        public let createdAt: String
+        public let updatedAt: String
+    }
+
+    public struct Authorization: Codable, Equatable, Identifiable, Sendable {
+        public var id: String { selectionId }
+        public let selectionId: String
+        public let active: Bool
+
+        private enum CodingKeys: String, CodingKey { case selectionId, active }
     }
 
     public struct Activity: Codable, Equatable, Identifiable, Sendable {
@@ -87,7 +103,24 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         public let status: String
         public let intent: Intent
 
-        public struct Intent: Codable, Equatable, Sendable { public let type: String }
+        public struct Intent: Codable, Equatable, Sendable {
+            public let type: String
+            public let selectionId: String?
+            public let attentionId: String?
+            public let provider: String?
+        }
+    }
+
+    public struct OutsideEffect: Codable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let kind: String
+        public let subjectId: String
+        public let outcome: String?
+        public let attentionId: String?
+        public let reason: String?
+        public let provider: String?
+        public let workFolder: String?
+        public let prompt: String?
     }
 
     public struct Pause: Codable, Equatable, Sendable {
@@ -111,8 +144,8 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         revision: 0,
         freshness: .init(checkedAt: nil),
         summary: .init(selections: 0, current: 0, ready: 0, attention: 0),
-        sources: [], userSkills: [], projectSkills: [], readyWork: [], attention: [], activity: [],
-        pendingActions: [], pause: .init(active: false, reason: nil, safetyTriggered: false), watchSet: [], recovery: nil
+        sources: [], userSkills: [], projectSkills: [], readyWork: [], authorizations: [], attention: [], recentAttention: [], activity: [],
+        pendingActions: [], outsideEffects: [], pause: .init(active: false, reason: nil, safetyTriggered: false), watchSet: [], recovery: nil
     )
 
     public func skills(for sourceID: String) -> [UserSkill] {
@@ -122,6 +155,10 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public func attention(for sourceID: String) -> [Attention] {
         let skillIDs = Set(skills(for: sourceID).map(\.id))
         return attention.filter { $0.subjectId == sourceID || skillIDs.contains($0.subjectId) }
+    }
+
+    public func isAuthorized(_ selectionID: String) -> Bool {
+        authorizations.contains { $0.selectionId == selectionID && $0.active }
     }
 }
 

@@ -126,7 +126,7 @@ public actor CaddieReleaseRuntime {
     public func inspectTakeoverClaim() throws -> TakeoverClaimEvidence? {
         let path = supportRoot.appendingPathComponent("Release Lifecycle.takeover", isDirectory: true)
         guard fileManager.fileExists(atPath: path.path) else { return nil }
-        let owner = try readLifecycleOwner(directory: path)
+        let owner = try readLifecycleOwner(directory: path, fileManager: fileManager)
         return TakeoverClaimEvidence(
             path: path.path,
             nonce: owner.nonce,
@@ -202,7 +202,7 @@ public actor CaddieReleaseRuntime {
         try verify(binding)
         let lease = ToolLease(id: UUID(), releaseID: binding.releaseID, processID: processID, createdAt: Date())
         let destination = leasesRoot.appendingPathComponent("\(lease.id.uuidString).json")
-        try encoder.encode(lease).write(to: destination, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try encoder.encode(lease).write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return lease
     }
 
@@ -374,6 +374,7 @@ public actor CaddieReleaseRuntime {
             try StrictJSON.validateLaunchRecord(data)
             let record = try decoder.decode(ToolLaunchRecord.self, from: data)
             guard record.version == 1, record.revision > 0 else { throw ReleaseRuntimeFault.malformedLaunchRecord }
+            try migrateBackgroundFileProtection(at: launchRecordURL, fileManager: fileManager)
             return record
         } catch let fault as ReleaseRuntimeFault { throw fault }
         catch { throw ReleaseRuntimeFault.malformedLaunchRecord }
@@ -381,7 +382,7 @@ public actor CaddieReleaseRuntime {
 
     private func writeLaunchRecord(_ record: ToolLaunchRecord) throws {
         try prepareRoots()
-        try encoder.encode(record).write(to: launchRecordURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try encoder.encode(record).write(to: launchRecordURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     private func processIsAlive(_ processID: Int32) -> Bool {
@@ -405,6 +406,7 @@ public actor CaddieReleaseRuntime {
                   lease.releaseID.wholeMatch(of: /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/) != nil else {
                 throw ReleaseRuntimeFault.malformedLease
             }
+            try migrateBackgroundFileProtection(at: leaseURL, fileManager: fileManager)
             if processIsAlive(lease.processID) {
                 protected.insert(lease.releaseID)
             } else {

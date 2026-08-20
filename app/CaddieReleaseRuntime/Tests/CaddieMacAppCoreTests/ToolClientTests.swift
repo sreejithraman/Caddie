@@ -11,6 +11,19 @@ final class ToolClientTests: XCTestCase {
         XCTAssertEqual(String(decoding: output, as: UTF8.self), "fast")
     }
 
+    func testRunnerDrainsInterleavedOutputWithoutStalling() async throws {
+        let started = Date()
+        let output = try await BoundedToolProcessRunner(stopGrace: 0.01).run(
+            launch: .init(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "for index in $(seq 1 2000); do printf x; printf y >&2; done"]
+            ),
+            environment: ProcessInfo.processInfo.environment, request: Data(), timeout: 2
+        )
+        XCTAssertEqual(output, Data(repeating: Character("x").asciiValue!, count: 2_000))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
     func testRunnerStopsTimedOutProcess() async {
         await XCTAssertThrowsErrorAsync {
             _ = try await BoundedToolProcessRunner(stopGrace: 0.01).run(
@@ -96,6 +109,53 @@ final class ToolClientTests: XCTestCase {
         XCTAssertEqual(secondInput["approval"] as? String, "explicit")
     }
 
+    func testEveryMenuDomainActionUsesOneClosedBoundedActForm() async throws {
+        let intents: [(AppActionIntent, [String: String])] = [
+            (.authorize(selectionID: "selection-one"), ["type": "authorize-reconciliation", "selectionId": "selection-one"]),
+            (.revokeAuthorization(selectionID: "selection-one"), ["type": "revoke-reconciliation", "selectionId": "selection-one"]),
+            (.update(selectionID: "selection-one"), ["type": "update-selection", "selectionId": "selection-one"]),
+            (.retry(attentionID: "attention-one"), ["type": "retry", "attentionId": "attention-one"]),
+            (.handoff(attentionID: "attention-one", provider: .codex), ["type": "agent-handoff", "attentionId": "attention-one", "provider": "codex"]),
+            (.handoff(attentionID: "attention-one", provider: .claude), ["type": "agent-handoff", "attentionId": "attention-one", "provider": "claude"]),
+        ]
+        let runner = ScriptedRunner(results: Array(repeating: .success(Self.uninitializedResponse), count: intents.count + 2))
+        let client = ToolLaunchClient(
+            supportRoot: URL(fileURLWithPath: "/tmp/caddie-test"), environment: [:],
+            resolver: FixedResolver(), runner: runner, retryDelay: {}
+        )
+        for (intent, _) in intents { _ = try await client.request(intent) }
+        _ = try await client.invoke(actionID: "opaque-action", extendedTimeout: false)
+        _ = try await client.report(effectID: "opaque-effect", outcome: .delivered)
+
+        let requests = try await runner.requests().map { try XCTUnwrap(JSONSerialization.jsonObject(with: $0) as? [String: Any]) }
+        for (index, pair) in intents.enumerated() {
+            let input = try XCTUnwrap(requests[index]["input"] as? [String: Any])
+            XCTAssertEqual(input["form"] as? String, "request")
+            XCTAssertNotNil(input["idempotencyId"] as? String)
+            let intent = try XCTUnwrap(input["intent"] as? [String: String])
+            XCTAssertEqual(intent, pair.1)
+            XCTAssertEqual(Set(input.keys), ["idempotencyId", "form", "intent"])
+        }
+        let invoke = try XCTUnwrap(requests[intents.count]["input"] as? [String: Any])
+        XCTAssertEqual(Set(invoke.keys), ["idempotencyId", "form", "actionId", "approval"])
+        XCTAssertEqual(invoke["actionId"] as? String, "opaque-action")
+        let report = try XCTUnwrap(requests[intents.count + 1]["input"] as? [String: Any])
+        XCTAssertEqual(Set(report.keys), ["idempotencyId", "form", "effectId", "outcome"])
+        XCTAssertEqual(report["effectId"] as? String, "opaque-effect")
+    }
+
+    func testActionMatchingRejectsStalePendingWorkForAnotherSubject() {
+        let other = AppSnapshot.PendingAction.Intent(
+            type: "update-selection", selectionId: "selection-old", attentionId: nil, provider: nil
+        )
+        XCTAssertFalse(AppActionIntent.update(selectionID: "selection-new").matches(other))
+        let exact = AppSnapshot.PendingAction.Intent(
+            type: "agent-handoff", selectionId: nil, attentionId: "attention-one", provider: "claude"
+        )
+        XCTAssertFalse(AppActionIntent.handoff(attentionID: "attention-one", provider: .codex).matches(exact))
+        XCTAssertTrue(AppActionIntent.handoff(attentionID: "attention-one", provider: .claude).matches(exact))
+    }
+
     func testClientRejectsExtraAndConflictingEnvelopeBranches() async {
         for malformed in [
             #"{"version":2,"ok":true,"requestId":"fixture","operation":"status","result":{"snapshot":{}},"error":{"code":"x","message":"x","disposition":"bug"}}"#,
@@ -130,6 +190,27 @@ final class ToolClientTests: XCTestCase {
         )
         let response = try JSONDecoder().decode(ToolResponse.self, from: output)
         XCTAssertEqual(response.result?.snapshot, .empty)
+    }
+
+    func testToolAgentHandoffEffectCarriesExactAttentionIntoAppSnapshot() throws {
+        var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.uninitializedResponse) as? [String: Any])
+        var result = try XCTUnwrap(envelope["result"] as? [String: Any])
+        var snapshot = try XCTUnwrap(result["snapshot"] as? [String: Any])
+        snapshot["attention"] = [[
+            "version": 2, "id": "attention-one", "stableKey": "stable", "subjectId": "selection-one",
+            "code": "blocked", "condition": "same", "priority": "high", "state": "opened-in-agent",
+            "observations": 1, "createdAt": "2026-08-03T14:00:00Z", "updatedAt": "2026-08-03T14:00:00Z",
+        ]]
+        snapshot["outsideEffects"] = [[
+            "version": 2, "id": "effect-one", "kind": "agent-handoff", "subjectId": "selection-one",
+            "attentionId": "attention-one", "provider": "codex", "workFolder": "/tmp/work", "prompt": "Help",
+            "outcome": NSNull(), "createdAt": "2026-08-03T14:00:00Z",
+        ]]
+        result["snapshot"] = snapshot
+        envelope["result"] = result
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        let response = try ToolResponse.validated(data, requestId: "fixture", operation: "status")
+        XCTAssertEqual(response.result?.snapshot.outsideEffects.first?.attentionId, "attention-one")
     }
 
     func testLauncherLivesInsideTheBoundSourceSkillArtifact() {
