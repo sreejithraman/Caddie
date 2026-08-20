@@ -64,6 +64,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         public let name: String?
         public let sourceId: String?
         public let selectedPath: String?
+        public let code: String?
     }
 
     public struct InventorySkill: Codable, Equatable, Identifiable, Sendable {
@@ -103,6 +104,17 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         public let inheritedUserSkillCount: Int
         public let overrideCount: Int
         public let status: String
+        public let selectedSkillCount: Int?
+        public let issueCode: String?
+        public let repairAvailable: Bool?
+        public let repositoryId: String?
+        public let checkoutKind: String?
+        public let branch: String?
+        public let mainProjectRoot: String?
+        public let workingTreeClean: Bool?
+        public let upstreamState: String?
+        public let includedInDefaultBranch: Bool?
+        public let lifecycle: String?
     }
 
     public struct ReadyWork: Codable, Equatable, Identifiable, Sendable {
@@ -150,6 +162,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
             public let selectionId: String?
             public let attentionId: String?
             public let provider: String?
+            public let projectRoot: String?
         }
     }
 

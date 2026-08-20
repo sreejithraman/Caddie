@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export const MANAGEMENT_PROTOCOL_VERSION = 2;
 export const MANAGEMENT_OPERATIONS = Object.freeze(['status', 'cycle', 'act']);
 export const CYCLE_MODES = Object.freeze(['observe-only', 'authorized-user-reconciliation']);
@@ -79,6 +81,8 @@ function validateIntent(intent) {
     'resume-reconciliation': ['type'],
     retry: ['type', 'attentionId'],
     'agent-handoff': ['type', 'attentionId', 'provider'],
+    'repair-project-state': ['type', 'projectRoot'],
+    'stop-tracking-project': ['type', 'projectRoot'],
   };
   if (!Object.hasOwn(shapes, intent.type)) throw new ManagementError('unsupported-intent', 'Domain intent is not supported');
   exactKeys(intent, shapes[intent.type], `${intent.type} intent`);
@@ -86,6 +90,12 @@ function validateIntent(intent) {
   if (intent.attentionId !== undefined) boundedString(intent.attentionId, 'attentionId', 128);
   if (intent.provider !== undefined && !['codex', 'claude'].includes(intent.provider)) {
     throw new ManagementError('invalid-agent-provider', 'Agent provider must be codex or claude');
+  }
+  if (intent.projectRoot !== undefined) {
+    boundedString(intent.projectRoot, 'projectRoot', 4096);
+    if (!path.isAbsolute(intent.projectRoot) || path.resolve(intent.projectRoot) !== intent.projectRoot) {
+      throw new ManagementError('invalid-project-root', 'projectRoot must be an exact absolute path');
+    }
   }
 }
 

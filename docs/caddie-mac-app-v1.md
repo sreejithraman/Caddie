@@ -70,7 +70,9 @@ Use a folder picker when the user adds a new local Skill Source. Existing regist
 
 Open on the Skills view. Show all detected skills, including skills that Caddie does not manage.
 
-The Skills view starts with User Skills, then shows one section for each registered project. Each project section shows its Project Skills and overrides. An expandable “Also uses N User Skills” row shows enabled User Skills that the project does not override.
+The Skills view starts with User Skills, then groups registered checkouts by Git repository. A repository with more than one registered checkout shows Main and Worktree sections. Each checkout section shows its Project Skills and overrides. An expandable “Also uses N User Skills” row shows enabled User Skills that the checkout does not override.
+
+Project inspection faults use “Needs review,” not durable Attention. Show the exact reason when known. A verified older Project ledger may offer Repair; the Tool must prove every owned Skill before it changes only the old Project ID. Stop tracking removes only the exact registry entry and keeps the project folder, Project Skills, and project state unchanged. A clean worktree whose commit is in the default branch and whose upstream is gone may be marked “Likely finished,” but Caddie never removes or changes a Git worktree.
 
 Each skill row shows its name, status, and source. Use the Git URL for Git sources and the folder path for local sources. Show the installed path, selected path, and update setting when the user expands the row. Show an unmanaged skill's installed path instead of an unknown source message.
 

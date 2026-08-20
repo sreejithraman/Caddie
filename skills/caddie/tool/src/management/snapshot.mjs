@@ -71,6 +71,10 @@ export function projectSnapshot(snapshot, pagingKey, continuationToken = null, f
   projected.continuations = (snapshot.continuations ?? []).filter((item) => !fields.includes(item.field));
   const pagingIssues = [];
   for (const field of fields) {
+    if (!Object.hasOwn(snapshot, field)) {
+      delete projected[field];
+      continue;
+    }
     const records = snapshot[field] ?? [];
     const offset = requested?.field === field ? requested.offset : 0;
     if (requested?.field === field && offset >= records.length) {

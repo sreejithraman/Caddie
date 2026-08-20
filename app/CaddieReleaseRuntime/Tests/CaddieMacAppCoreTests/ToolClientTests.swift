@@ -137,6 +137,8 @@ final class ToolClientTests: XCTestCase {
             (.retry(attentionID: "attention-one"), ["type": "retry", "attentionId": "attention-one"]),
             (.handoff(attentionID: "attention-one", provider: .codex), ["type": "agent-handoff", "attentionId": "attention-one", "provider": "codex"]),
             (.handoff(attentionID: "attention-one", provider: .claude), ["type": "agent-handoff", "attentionId": "attention-one", "provider": "claude"]),
+            (.repairProject(projectRoot: "/tmp/project"), ["type": "repair-project-state", "projectRoot": "/tmp/project"]),
+            (.stopTrackingProject(projectRoot: "/tmp/project"), ["type": "stop-tracking-project", "projectRoot": "/tmp/project"]),
         ]
         let runner = ScriptedRunner(results: Array(repeating: .success(Self.uninitializedResponse), count: intents.count + 2))
         let client = ToolLaunchClient(
@@ -166,11 +168,11 @@ final class ToolClientTests: XCTestCase {
 
     func testActionMatchingRejectsStalePendingWorkForAnotherSubject() {
         let other = AppSnapshot.PendingAction.Intent(
-            type: "update-selection", selectionId: "selection-old", attentionId: nil, provider: nil
+            type: "update-selection", selectionId: "selection-old", attentionId: nil, provider: nil, projectRoot: nil
         )
         XCTAssertFalse(AppActionIntent.update(selectionID: "selection-new").matches(other))
         let exact = AppSnapshot.PendingAction.Intent(
-            type: "agent-handoff", selectionId: nil, attentionId: "attention-one", provider: "claude"
+            type: "agent-handoff", selectionId: nil, attentionId: "attention-one", provider: "claude", projectRoot: nil
         )
         XCTAssertFalse(AppActionIntent.handoff(attentionID: "attention-one", provider: .codex).matches(exact))
         XCTAssertTrue(AppActionIntent.handoff(attentionID: "attention-one", provider: .claude).matches(exact))

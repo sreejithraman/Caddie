@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, readlink, realpath } from 'node:fs/promises';
+import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
@@ -9,10 +10,19 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { fingerprint } = require('../apply/filesystem');
 const execFileAsync = promisify(execFile);
+const workerPath = fileURLToPath(new URL('./local-source-worker.mjs', import.meta.url));
+const WORKER_TIMEOUT_MS = Object.freeze({
+  'read-text': 3_000,
+  'inspect-local-git': 8_000,
+  'inspect-project-checkout': 3_000,
+  'inspect-project-marker': 3_000,
+});
 
 const READ_ONLY_GIT_COMMANDS = Object.freeze([
   Object.freeze(['rev-parse', '--show-toplevel']),
+  Object.freeze(['rev-parse', '--git-common-dir']),
   Object.freeze(['symbolic-ref', '--quiet', '--short', 'HEAD']),
+  Object.freeze(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']),
   Object.freeze(['rev-parse', '--verify', 'HEAD^{commit}']),
   Object.freeze(['status', '--porcelain=v1', '--untracked-files=all']),
   Object.freeze(['ls-files', '--others', '--ignored', '--exclude-standard']),
@@ -33,7 +43,19 @@ export class LocalSourceInspectionError extends Error {
   }
 }
 
-export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCommit = null, runGit = defaultRunGit }) {
+export async function readLocalSourceText(filePath, { runWorker = defaultRunWorker } = {}) {
+  const result = await runWorker('read-text', { filePath });
+  return result.text;
+}
+
+export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCommit = null, runGit = null }) {
+  if (runGit === null) {
+    return defaultRunWorker('inspect-local-git', { checkout, selectedPath, acceptedCommit });
+  }
+  return inspectLocalGitSourceInProcess({ checkout, selectedPath, acceptedCommit, runGit });
+}
+
+export async function inspectLocalGitSourceInProcess({ checkout, selectedPath, acceptedCommit = null, runGit = defaultRunGit }) {
   if (typeof checkout !== 'string' || !path.isAbsolute(checkout)) {
     throw new LocalSourceInspectionError('invalid-checkout', 'Local checkout must be an absolute path');
   }
@@ -108,6 +130,112 @@ export async function inspectLocalGitSource({ checkout, selectedPath, acceptedCo
   };
 }
 
+export async function inspectProjectCheckout({ projectRoot, runGit = null }) {
+  if (runGit === null) {
+    try {
+      return await defaultRunWorker('inspect-project-checkout', { projectRoot });
+    } catch {
+      return defaultRunWorker('inspect-project-marker', { projectRoot })
+        .catch(() => plainProjectCheckout(projectRoot));
+    }
+  }
+  return inspectProjectCheckoutInProcess({ projectRoot, runGit });
+}
+
+export async function inspectProjectCheckoutInProcess({ projectRoot, runGit = defaultRunGit }) {
+  const exactProjectRoot = await realpath(projectRoot);
+  let repositoryRoot;
+  try {
+    repositoryRoot = await realpath((await git(runGit, exactProjectRoot, ['rev-parse', '--show-toplevel'])).stdout.trim());
+  } catch {
+    return plainProjectCheckout(exactProjectRoot);
+  }
+  if (!inside(repositoryRoot, exactProjectRoot)) return plainProjectCheckout(exactProjectRoot);
+  const relativeProjectPath = path.relative(repositoryRoot, exactProjectRoot);
+  const commonValue = (await git(runGit, repositoryRoot, ['rev-parse', '--git-common-dir'])).stdout.trim();
+  const commonDirectory = path.resolve(repositoryRoot, commonValue);
+  const mainRepositoryRoot = path.basename(commonDirectory) === '.git' ? path.dirname(commonDirectory) : repositoryRoot;
+  const mainProjectRoot = path.resolve(mainRepositoryRoot, relativeProjectPath);
+  let branch = null;
+  try { branch = (await git(runGit, repositoryRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim(); } catch {}
+  const status = (await git(runGit, repositoryRoot, [
+    'status', '--porcelain=v1', '--untracked-files=all', '--branch',
+  ])).stdout.trim().split('\n').filter(Boolean);
+  const header = status[0]?.startsWith('## ') ? status[0] : '';
+  const workingTreeClean = status.slice(header ? 1 : 0).length === 0;
+  const upstreamState = header.includes('[gone]') ? 'gone' : header.includes('...') ? 'tracked' : 'none';
+  let includedInDefaultBranch = null;
+  try {
+    const defaultBranch = (await git(runGit, repositoryRoot, [
+      'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD',
+    ])).stdout.trim();
+    try {
+      await git(runGit, repositoryRoot, ['merge-base', '--is-ancestor', 'HEAD', defaultBranch]);
+      includedInDefaultBranch = true;
+    } catch (error) {
+      if (error?.code === 1 || error?.exitCode === 1) includedInDefaultBranch = false;
+    }
+  } catch {}
+  const checkoutKind = path.resolve(exactProjectRoot) === mainProjectRoot ? 'main' : 'worktree';
+  return {
+    repositoryId: `repository-${createHash('sha256').update(`${commonDirectory}\0${relativeProjectPath}`).digest('hex').slice(0, 24)}`,
+    checkoutKind, branch: branch || null, mainProjectRoot,
+    workingTreeClean, upstreamState, includedInDefaultBranch,
+    lifecycle: checkoutKind === 'worktree' && workingTreeClean && upstreamState === 'gone'
+      && includedInDefaultBranch === true ? 'likely-finished' : 'active',
+  };
+}
+
+function plainProjectCheckout(projectRoot) {
+  return {
+    repositoryId: repositoryId(path.join(projectRoot, '.git'), ''),
+    checkoutKind: 'project', branch: null, mainProjectRoot: projectRoot,
+    workingTreeClean: null, upstreamState: 'unknown', includedInDefaultBranch: null, lifecycle: 'active',
+  };
+}
+
+export async function inspectProjectCheckoutMarkerInProcess({ projectRoot }) {
+  const exactProjectRoot = await realpath(projectRoot);
+  let repositoryRoot = exactProjectRoot;
+  let marker = null;
+  while (true) {
+    const candidate = path.join(repositoryRoot, '.git');
+    try {
+      const stat = await lstat(candidate);
+      if (stat.isDirectory()) marker = { kind: 'main', commonDirectory: candidate };
+      else if (stat.isFile()) {
+        const content = await readFile(candidate, 'utf8');
+        const match = /^gitdir:\s*(.+)\s*$/m.exec(content);
+        if (match) {
+          const gitDirectory = path.resolve(repositoryRoot, match[1]);
+          marker = {
+            kind: 'worktree',
+            commonDirectory: path.basename(path.dirname(gitDirectory)) === 'worktrees'
+              ? path.dirname(path.dirname(gitDirectory)) : gitDirectory,
+          };
+        }
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (marker || path.dirname(repositoryRoot) === repositoryRoot) break;
+    repositoryRoot = path.dirname(repositoryRoot);
+  }
+  if (!marker) return plainProjectCheckout(exactProjectRoot);
+  const relativeProjectPath = path.relative(repositoryRoot, exactProjectRoot);
+  const mainRepositoryRoot = path.dirname(marker.commonDirectory);
+  return {
+    repositoryId: repositoryId(marker.commonDirectory, relativeProjectPath),
+    checkoutKind: marker.kind,
+    branch: null,
+    mainProjectRoot: path.resolve(mainRepositoryRoot, relativeProjectPath),
+    workingTreeClean: null,
+    upstreamState: 'unknown',
+    includedInDefaultBranch: null,
+    lifecycle: 'active',
+  };
+}
+
 async function selectedBytesMatchHead(runGit, checkout, selectedPathspec) {
   const raw = (await git(runGit, checkout, [
     'ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', selectedPathspec,
@@ -165,10 +293,40 @@ async function defaultRunGit(args, options) {
   return execFileAsync('git', args, options);
 }
 
+async function defaultRunWorker(operation, input) {
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [workerPath, operation, JSON.stringify(input)], {
+      encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: WORKER_TIMEOUT_MS[operation] ?? 3_000,
+      killSignal: 'SIGKILL', windowsHide: true,
+    });
+    const response = JSON.parse(stdout);
+    if (response.ok === true) return response.result;
+    throw workerError(response.error);
+  } catch (error) {
+    if (error?.killed || error?.signal === 'SIGKILL' || error?.code === 'ETIMEDOUT') {
+      throw new LocalSourceInspectionError('source-unavailable', 'Local source did not respond in time');
+    }
+    if (error instanceof LocalSourceInspectionError) throw error;
+    throw new LocalSourceInspectionError('source-unavailable', 'Local source could not be inspected', boundedCause(error));
+  }
+}
+
+function repositoryId(commonDirectory, relativeProjectPath) {
+  return `repository-${createHash('sha256').update(`${commonDirectory}\0${relativeProjectPath}`).digest('hex').slice(0, 24)}`;
+}
+
+function workerError(value) {
+  return new LocalSourceInspectionError(
+    typeof value?.code === 'string' ? value.code : 'source-unavailable',
+    typeof value?.message === 'string' ? value.message : 'Local source could not be inspected',
+    value?.details && typeof value.details === 'object' ? value.details : {},
+  );
+}
+
 async function git(runGit, checkout, command) {
   assertReadOnly(command);
   return runGit(['--no-optional-locks', '-C', checkout, ...command], {
-    encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+    encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 2_500, killSignal: 'SIGKILL',
     env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
   });
 }

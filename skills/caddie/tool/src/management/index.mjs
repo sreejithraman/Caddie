@@ -6,10 +6,12 @@ import { parseManifest } from '../manifest/parse-manifest.mjs';
 import { extractSkillName } from '../manifest/resolve-selections.mjs';
 import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
 import { createLegacyBridge } from './legacy-bridge.mjs';
-import { inspectLocalGitSource } from './local-source.mjs';
+import { inspectLocalGitSource, readLocalSourceText } from './local-source.mjs';
+import { invokeProjectAction, prepareProjectAction } from './project-actions.mjs';
 import { buildSkillInventory, inspectInstalledSkills, inspectProjectSkillInventory } from './inventory.mjs';
 import {
-  inventoryStorePath, preflightInventoryProjection, readInventoryProjection, writeInventoryProjection,
+  inventoryProjectionNeedsRepair, inventoryStorePath, preflightInventoryProjection, readInventoryProjection,
+  writeInventoryProjection,
 } from './inventory-store.mjs';
 import { observeAttention, prepareAttentionCapacity } from './attention.mjs';
 import {
@@ -53,12 +55,16 @@ export function createManagementModule(options = {}) {
   const statePath = options.statePath ?? userLayout(home).managementStatePath;
   const now = options.now ?? (() => new Date());
   const inspectGit = options.inspectLocalGitSource ?? inspectLocalGitSource;
+  const readSourceText = options.readLocalSourceText
+    ?? (options.inspectLocalGitSource ? (filePath) => readFile(filePath, 'utf8') : readLocalSourceText);
   const preflightInventory = options.preflightInventoryProjection ?? preflightInventoryProjection;
+  const writeInventory = options.writeInventoryProjection ?? writeInventoryProjection;
   const apply = options.applySelection ?? applySelection;
   const applyRecovery = options.applyRecovery ?? (async (plan) => applyPlan({ plan, approval: approvePlan(plan) }));
   const inspectRecovery = options.inspectRecovery ?? (() => recover({ scope: { id: 'user', root: home } }));
   const runtime = {
-    home, statePath, inventoryPath: inventoryStorePath(statePath), now, inspectGit, preflightInventory,
+    home, statePath, inventoryPath: inventoryStorePath(statePath), now, inspectGit, readSourceText,
+    preflightInventory, writeInventory,
     apply, applyRecovery, inspectRecovery,
   };
   const legacyBridge = createLegacyBridge({
@@ -99,8 +105,17 @@ async function execute(rawRequest, runtime) {
 }
 
 async function executeLocked(request, runtime) {
-  const state = await readManagementState(runtime.statePath);
-  if (await migrateInlineInventory(state, runtime)) await writeManagementState(runtime.statePath, state);
+  let state = await readManagementState(runtime.statePath);
+  const inlineProjectionNeedsRepair = await inventoryProjectionNeedsRepair(runtime.inventoryPath);
+  if (await migrateInlineInventory(state, runtime, { allowProjectionRepair: inlineProjectionNeedsRepair })) {
+    await writeManagementState(runtime.statePath, state);
+  }
+
+  const repairInventory = await inventoryProjectionNeedsRepair(runtime.inventoryPath);
+  const preparedReceiptRepair = repairInventory && state.receipts.length > 0 ? structuredClone(state) : null;
+  if (preparedReceiptRepair) {
+    expireReceiptsMissingInventory(preparedReceiptRepair, runtime, { keepCurrentRevision: false });
+  }
 
   const idempotencyId = request.input.idempotencyId;
   const requestHash = digest(request);
@@ -108,6 +123,10 @@ async function executeLocked(request, runtime) {
   if (receipt) {
     if (receipt.requestHash !== requestHash) {
       throw new ManagementError('idempotency-conflict', 'Idempotency ID was reused with different input');
+    }
+    if (preparedReceiptRepair) {
+      await writeManagementState(runtime.statePath, preparedReceiptRepair);
+      throw new ManagementError('idempotency-result-expired', 'This request already ran, but its saved result has expired', 'replan');
     }
     return addInventoryToResult(structuredClone(receipt.result), runtime, state.pagingKey);
   }
@@ -123,6 +142,11 @@ async function executeLocked(request, runtime) {
   const snapshot = request.operation === 'cycle'
     ? await cycle(next, request.input, runtime)
     : await act(next, request.input, runtime);
+  if (preparedReceiptRepair) {
+    await writeManagementState(runtime.statePath, preparedReceiptRepair);
+    next.receipts = structuredClone(preparedReceiptRepair.receipts);
+    next.idempotencyTombstones = structuredClone(preparedReceiptRepair.idempotencyTombstones);
+  }
   next.revision += 1;
   const hasFreshInventory = snapshot.skillInventory !== undefined && snapshot.projects !== undefined;
   const richSnapshot = { ...await addInventoryProjection(snapshot, runtime), revision: next.revision };
@@ -135,14 +159,16 @@ async function executeLocked(request, runtime) {
     ...next.receipts,
   ];
   compactManagementState(next, timestamp(runtime));
-  if (hasFreshInventory) await writeInventoryProjection(runtime.inventoryPath, {
-    revision: next.revision, skillInventory: richSnapshot.skillInventory, projects: richSnapshot.projects,
-  }, retainedInventoryRevisions(next));
+  if (hasFreshInventory) {
+    await runtime.writeInventory(runtime.inventoryPath, {
+      revision: next.revision, skillInventory: richSnapshot.skillInventory, projects: richSnapshot.projects,
+    }, retainedInventoryRevisions(next), { allowRepair: repairInventory });
+  }
   await writeManagementState(runtime.statePath, next);
   return response;
 }
 
-async function migrateInlineInventory(state, runtime) {
+async function migrateInlineInventory(state, runtime, { allowProjectionRepair = false } = {}) {
   const receiptSnapshots = state.receipts.map((receipt) => ({ receipt, snapshot: receipt.result?.result?.snapshot }))
     .filter(({ snapshot }) => Array.isArray(snapshot?.skillInventory) && Array.isArray(snapshot?.projects));
   const inlineSnapshots = [state.snapshot, ...receiptSnapshots.map(({ snapshot }) => snapshot)]
@@ -175,7 +201,7 @@ async function migrateInlineInventory(state, runtime) {
       revision: snapshot.revision,
       skillInventory: snapshot.skillInventory,
       projects: snapshot.projects,
-    }, retainedRevisions);
+    }, retainedRevisions, { allowRepair: allowProjectionRepair });
   }
   const expiredIds = new Set(expiredReceipts.map((receipt) => receipt.id));
   state.receipts = state.receipts.filter((receipt) => !expiredIds.has(receipt.id));
@@ -221,6 +247,26 @@ function makeReceiptRoom(state, runtime) {
   state.receipts.pop();
 }
 
+function expireReceiptsMissingInventory(state, runtime, { keepCurrentRevision = true } = {}) {
+  const kept = [];
+  const expired = [];
+  for (const receipt of state.receipts) {
+    if (keepCurrentRevision && receipt.result?.result?.snapshot?.revision === state.revision) kept.push(receipt);
+    else expired.push(receipt);
+  }
+  const priorTombstones = new Set(state.idempotencyTombstones.map((item) => item.idHash));
+  const additions = expired.filter((item) => !priorTombstones.has(digest(item.id))).map((item) => ({
+    idHash: digest(item.id), requestHash: item.requestHash, createdAt: item.createdAt ?? timestamp(runtime),
+  }));
+  if (state.idempotencyTombstones.length + additions.length > MAX_IDEMPOTENCY_TOMBSTONES) {
+    throw new ManagementError('idempotency-capacity', 'Caddie cannot safely expire inventory results', 'needs-user', {
+      capacity: MAX_IDEMPOTENCY_TOMBSTONES,
+    });
+  }
+  state.receipts = kept;
+  state.idempotencyTombstones.push(...additions);
+}
+
 function hasReplayRisk(request, before, after) {
   if (request.operation === 'cycle') {
     const prior = new Set(before.activity.map((item) => item.id));
@@ -230,7 +276,7 @@ function hasReplayRisk(request, before, after) {
   if (request.input.form === 'request') return true;
   if (request.input.form !== 'invoke') return false;
   const action = before.pendingActions.find((item) => item.id === request.input.actionId);
-  return ['update-selection', 'agent-handoff', 'finish-recovery', 'rollback-recovery'].includes(action?.intent?.type);
+  return ['update-selection', 'agent-handoff', 'finish-recovery', 'rollback-recovery', 'repair-project-state', 'stop-tracking-project'].includes(action?.intent?.type);
 }
 
 function statusSnapshot(state) {
@@ -281,11 +327,12 @@ async function cycle(state, input, runtime) {
   ));
   const inventoryProjection = buildSkillInventory(inventory, prospectiveStatuses);
   const capacityProjection = buildSkillInventory(inventory, capacityStatuses);
-  await runtime.preflightInventory(runtime.inventoryPath, {
+  const inventoryPreflight = await runtime.preflightInventory(runtime.inventoryPath, {
     revision: state.revision + 1,
     skillInventory: capacityProjection.skillInventory,
     projects: capacityProjection.projects,
   }, retainedInventoryRevisions(state));
+  if (inventoryPreflight?.replacesInvalid) expireReceiptsMissingInventory(state, runtime);
   assertSnapshotCapacity(state, snapshotFrom(state, capacityStatuses, readyWork, at, {
     projectSkills: inventory.projectSkills,
     skillInventory: capacityProjection.skillInventory,
@@ -378,17 +425,19 @@ async function act(state, input, runtime) {
     state.activity.unshift(activity('action-expired', action.subjectId, at, { actionId: action.id }));
     return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
   }
-  await invokePendingAction(state, action, runtime, at);
+  const refreshProjects = await invokePendingAction(state, action, runtime, at);
   action.status = 'invoked';
   action.invokedAt = at;
   state.activity.unshift(activity('action-invoked', action.subjectId, at, { actionId: action.id, intent: action.intent.type }));
+  if (refreshProjects) return cycle(state, { mode: 'observe-only', refreshProjects: true }, runtime);
   return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
 }
 
 async function createPendingAction(state, intent, runtime, at) {
   const id = `action-${hashValue({ intent, revision: state.revision, at }).slice(0, 24)}`;
   const action = {
-    version: 2, id, status: 'pending', subjectId: intent.selectionId ?? intent.attentionId ?? 'tool',
+    version: 2, id, status: 'pending',
+    subjectId: intent.selectionId ?? intent.attentionId ?? (intent.projectRoot ? `project-${hashValue(intent.projectRoot).slice(0, 24)}` : 'tool'),
     intent: structuredClone(intent), boundRevision: state.revision, createdAt: at,
     expiresAt: new Date(new Date(at).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     approvalPrompt: promptFor(intent), preservationRules: ['Preserve Skill Enablement and owned harness exposure'],
@@ -399,6 +448,13 @@ async function createPendingAction(state, intent, runtime, at) {
     const selection = inventory.selections.find((item) => item.id === intent.selectionId);
     if (!selection) throw new ManagementError('unknown-selection', 'Skill Selection does not exist', 'replan');
     action.preconditions = selectionPreconditions(selection);
+  }
+  if (['repair-project-state', 'stop-tracking-project'].includes(intent.type)) {
+    action.projectPreconditions = await prepareProjectAction(intent, runtime.home);
+    action.preservationRules = intent.type === 'stop-tracking-project'
+      ? ['Keep the Project folder and every Skill unchanged']
+      : ['Change only the older Project ID after all owned Skills match'];
+    action.recoveryEffect = 'Interrupted writes require Finish or Roll back';
   }
   if (intent.type === 'agent-handoff') {
     const attention = state.attention.find((item) => item.id === intent.attentionId && item.state !== 'resolved');
@@ -418,6 +474,10 @@ async function createPendingAction(state, intent, runtime, at) {
 
 async function invokePendingAction(state, action, runtime, at) {
   const intent = action.intent;
+  if (['repair-project-state', 'stop-tracking-project'].includes(intent.type)) {
+    await invokeProjectAction(action, runtime.home);
+    return true;
+  }
   if (['update-selection', 'finish-recovery', 'rollback-recovery'].includes(intent.type)) {
     const prospectiveSnapshot = state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
     assertSnapshotCapacity(state, prospectiveSnapshot);
@@ -515,6 +575,7 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
     fingerprint(layout.lockPath), fingerprint(layout.ledgerPath),
   ]);
   const selections = [];
+  const unavailableLocalSources = new Map();
   const selectedManifestSkills = manifest.skills.filter((raw) => (
     onlySelectionId === null || selectionId(raw.source, raw.path) === onlySelectionId
   ));
@@ -533,8 +594,15 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
     const skillFile = path.join(selectedRoot, 'SKILL.md');
     let name;
     let inspection;
-    try {
-      name = extractSkillName(await readFile(skillFile, 'utf8'), skillFile, path.basename(selectedRoot));
+    const knownFailure = unavailableLocalSources.get(raw.source);
+    if (knownFailure) {
+      name = provenanceEntry?.name ?? null;
+      inspection = {
+        kind: 'unavailable', code: knownFailure.code, detail: knownFailure.detail,
+        checkout: source.path, selectedPath: raw.path,
+      };
+    } else try {
+      name = extractSkillName(await runtime.readSourceText(skillFile), skillFile, path.basename(selectedRoot));
       const authorization = state.authorizations[id];
       inspection = await runtime.inspectGit({
         checkout: source.path, selectedPath: raw.path, acceptedCommit: authorization?.acceptedCommit ?? null,
@@ -545,6 +613,7 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
         kind: 'unavailable', code: unavailableCode(error), detail: stableCondition(error),
         checkout: source.path, selectedPath: raw.path,
       };
+      if (inspection.code === 'source-unavailable') unavailableLocalSources.set(raw.source, inspection);
     }
     const authorization = state.authorizations[id];
     const entry = provenanceEntry
@@ -786,6 +855,8 @@ function promptFor(intent) {
   if (intent.type === 'agent-handoff') return `Open this item in ${intent.provider === 'codex' ? 'Codex' : 'Claude'}?`;
   if (intent.type === 'finish-recovery') return 'Finish the interrupted Caddie change?';
   if (intent.type === 'rollback-recovery') return 'Roll back the interrupted Caddie change?';
+  if (intent.type === 'repair-project-state') return 'Repair this Project record after Caddie verifies every owned Skill?';
+  if (intent.type === 'stop-tracking-project') return 'Stop showing this Project in Caddie? Its folder and Skills will stay unchanged.';
   return 'Apply this Caddie action?';
 }
 
@@ -888,6 +959,7 @@ async function inspectOwnedExposure(ledger, name) {
 function unavailableCode(error) {
   if (error?.code === 'ENOENT') return 'missing-content';
   if (error?.code === 'EACCES' || error?.code === 'EPERM') return 'permission-denied';
+  if (error?.code === 'source-unavailable') return 'source-unavailable';
   return 'incomplete-evidence';
 }
 function absoluteHome(home) {

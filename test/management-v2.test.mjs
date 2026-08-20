@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 
 import { createManagementModule, ManagementError } from '../skills/caddie/tool/src/management/index.mjs';
-import { inspectLocalGitSource, localGitCommandPolicy } from '../skills/caddie/tool/src/management/local-source.mjs';
+import {
+  inspectLocalGitSource, inspectProjectCheckout, inspectProjectCheckoutMarkerInProcess,
+  localGitCommandPolicy, readLocalSourceText,
+} from '../skills/caddie/tool/src/management/local-source.mjs';
 import { observeAttention } from '../skills/caddie/tool/src/management/attention.mjs';
 import { compactManagementState } from '../skills/caddie/tool/src/management/snapshot.mjs';
 import {
@@ -79,6 +82,10 @@ test('versioned requests and durable state reject extra, malformed, and newer in
   await assert.rejects(
     management.execute(actRequest({ type: 'update-selection', selectionId: 'x'.repeat(513) }, 'long-intent')),
     (error) => error instanceof ManagementError && error.code === 'invalid-string',
+  );
+  await assert.rejects(
+    management.execute(actRequest({ type: 'stop-tracking-project', projectRoot: 'relative' }, 'relative-project')),
+    (error) => error instanceof ManagementError && error.code === 'invalid-project-root',
   );
 
   const newer = `${JSON.stringify({ ...emptyManagementState(), version: 3 })}\n`;
@@ -231,6 +238,41 @@ test('Local Source Inspection accepts the repository root as the selected skill'
   assert.equal(inspected.kind, 'git');
   assert.equal(inspected.selectedPathDirty, false);
   assert.equal(inspected.unrelatedDirty, false);
+});
+
+test('Local Source Inspection stops a file read that never answers', { skip: process.platform === 'win32' }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'caddie-stalled-source-'));
+  const stalledFile = path.join(root, 'SKILL.md');
+  await exec('mkfifo', [stalledFile]);
+
+  await assert.rejects(readLocalSourceText(stalledFile), (error) => error.code === 'source-unavailable');
+});
+
+test('Project checkout inspection groups a main checkout and finished worktree under one repository', async () => {
+  const fixture = await repositoryFixture(['one']);
+  const worktree = path.join(fixture.root, 'worktree');
+  await git(fixture.repo, 'remote', 'add', 'origin', 'https://example.test/repo.git');
+  await git(fixture.repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  await git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+  await git(fixture.repo, 'worktree', 'add', '-b', 'feature', worktree, 'HEAD');
+  await git(worktree, 'config', 'branch.feature.remote', 'origin');
+  await git(worktree, 'config', 'branch.feature.merge', 'refs/heads/missing');
+
+  const main = await inspectProjectCheckout({ projectRoot: fixture.repo });
+  const branch = await inspectProjectCheckout({ projectRoot: worktree });
+  const markerOnlyMain = await inspectProjectCheckoutMarkerInProcess({ projectRoot: fixture.repo });
+  const markerOnlyBranch = await inspectProjectCheckoutMarkerInProcess({ projectRoot: worktree });
+
+  assert.equal(main.checkoutKind, 'main');
+  assert.equal(branch.checkoutKind, 'worktree');
+  assert.equal(branch.repositoryId, main.repositoryId);
+  assert.equal(branch.mainProjectRoot, await realpath(fixture.repo));
+  assert.equal(branch.upstreamState, 'gone');
+  assert.equal(branch.includedInDefaultBranch, true);
+  assert.equal(branch.lifecycle, 'likely-finished');
+  assert.equal(markerOnlyBranch.repositoryId, markerOnlyMain.repositoryId);
+  assert.equal(markerOnlyBranch.checkoutKind, 'worktree');
+  assert.equal(markerOnlyBranch.mainProjectRoot, await realpath(fixture.repo));
 });
 
 test('a managed source folder inside a repository stays current and hands agents the Git work folder', async () => {
@@ -468,6 +510,266 @@ test('Snapshot inventory lists managed and unmanaged User and Project Skills wit
   assert.equal(inventoryStore.projections.length, 1);
 });
 
+test('inventory skips installed entries whose SKILL.md path cannot be a skill file', async () => {
+  const fixture = await managedFixture(['one']);
+  const invalidSkillRoot = path.join(fixture.home, '.agents', 'skills', 'invalid');
+  const fileLink = path.join(fixture.home, '.agents', 'skills', 'file-link');
+  const loopLink = path.join(fixture.home, '.agents', 'skills', 'loop-link');
+  await mkdir(path.join(invalidSkillRoot, 'SKILL.md'), { recursive: true });
+  await writeFile(path.join(fixture.root, 'not-a-skill'), 'plain file');
+  await symlink(path.join(fixture.root, 'not-a-skill'), fileLink);
+  await symlink(loopLink, loopLink);
+
+  const management = createManagementModule({ home: fixture.home });
+  const snapshot = (await management.execute(cycleRequest('observe-only', 'invalid-skill-file'))).result.snapshot;
+
+  assert.equal(snapshot.skillInventory.some((item) => item.installedPath === invalidSkillRoot), false);
+  assert.equal(snapshot.skillInventory.some((item) => item.installedPath === fileLink), false);
+  assert.equal(snapshot.skillInventory.some((item) => item.installedPath === loopLink), false);
+});
+
+test('a verified legacy Project ledger can be repaired without changing its skills', async () => {
+  const fixture = await managedFixture(['one']);
+  const project = await legacyProjectFixture(fixture, 'repair-project');
+  const management = createManagementModule({ home: fixture.home });
+  const observed = await management.execute(cycleRequest('observe-only', 'legacy-repair-observe'));
+  const summary = observed.result.snapshot.projects.find((item) => item.root === project.root);
+  assert.equal(summary.issueCode, 'legacy-project-scope');
+  assert.equal(summary.repairAvailable, true);
+
+  const beforeSkill = await fingerprint(project.skillPath);
+  const requested = await management.execute(actRequest({
+    type: 'repair-project-state', projectRoot: project.root,
+  }, 'legacy-repair-request'));
+  const action = requested.result.snapshot.pendingActions.find((item) => item.intent.type === 'repair-project-state');
+  assert.ok(action);
+  const repaired = await management.execute(actInvoke(action.id, 'legacy-repair-invoke'));
+
+  const ledger = JSON.parse(await readFile(project.ledgerPath, 'utf8'));
+  assert.equal(ledger.scopeId, `project:${project.root}`);
+  assert.equal(await fingerprint(project.skillPath), beforeSkill);
+  assert.equal(repaired.result.snapshot.projects.find((item) => item.root === project.root).issueCode, null);
+});
+
+test('Stop tracking removes only the exact Project registry entry', async () => {
+  const fixture = await managedFixture(['one']);
+  const project = await legacyProjectFixture(fixture, 'stop-project');
+  const otherRoot = path.join(fixture.root, 'other-project');
+  await mkdir(otherRoot, { recursive: true });
+  await json(path.join(fixture.stateRoot, 'registry.json'), {
+    version: 1, registeredProjects: [project.root, otherRoot],
+  });
+  const management = createManagementModule({ home: fixture.home });
+  await management.execute(cycleRequest('observe-only', 'stop-project-observe'));
+
+  const requested = await management.execute(actRequest({
+    type: 'stop-tracking-project', projectRoot: project.root,
+  }, 'stop-project-request'));
+  const action = requested.result.snapshot.pendingActions.find((item) => item.intent.type === 'stop-tracking-project');
+  assert.ok(action);
+  const stopped = await management.execute(actInvoke(action.id, 'stop-project-invoke'));
+
+  const registry = JSON.parse(await readFile(path.join(fixture.stateRoot, 'registry.json'), 'utf8'));
+  assert.deepEqual(registry.registeredProjects, [otherRoot]);
+  assert.equal(await fingerprint(project.skillPath) !== null, true);
+  assert.equal(stopped.result.snapshot.projects.some((item) => item.root === project.root), false);
+});
+
+test('Project actions stop when the bound state changes before approval', async () => {
+  const fixture = await managedFixture(['one']);
+  const project = await legacyProjectFixture(fixture, 'stale-project');
+  const management = createManagementModule({ home: fixture.home });
+  await management.execute(cycleRequest('observe-only', 'stale-project-observe'));
+  const requested = await management.execute(actRequest({
+    type: 'repair-project-state', projectRoot: project.root,
+  }, 'stale-project-request'));
+  const action = requested.result.snapshot.pendingActions.find((item) => item.intent.type === 'repair-project-state');
+  const ledger = JSON.parse(await readFile(project.ledgerPath, 'utf8'));
+  ledger.entries[0].fingerprint = '0'.repeat(64);
+  await json(project.ledgerPath, ledger);
+
+  await assert.rejects(
+    management.execute(actInvoke(action.id, 'stale-project-invoke')),
+    (error) => error instanceof ManagementError && error.code === 'action-preconditions-changed',
+  );
+});
+
+test('inventory keeps an unreadable installed User Skill visible with its permission folder', async (t) => {
+  const fixture = await managedFixture(['one']);
+  const deniedSkillRoot = path.join(fixture.home, '.agents', 'skills', 'denied');
+  const skillFile = path.join(deniedSkillRoot, 'SKILL.md');
+  await writeSkill(deniedSkillRoot, 'denied', 'unreadable skill');
+  await chmod(skillFile, 0o000);
+  t.after(async () => chmod(skillFile, 0o600));
+
+  const management = createManagementModule({ home: fixture.home });
+  const snapshot = (await management.execute(cycleRequest('observe-only', 'denied-user-skill'))).result.snapshot;
+
+  const denied = snapshot.skillInventory.find((item) => item.installedPath === deniedSkillRoot);
+  assert.deepEqual({
+    name: denied.name, status: denied.status, managed: denied.managed, permissionFolder: denied.permissionFolder,
+  }, {
+    name: 'denied', status: 'attention', managed: false, permissionFolder: deniedSkillRoot,
+  });
+});
+
+test('a registered project without a Caddie Manifest is current and lists detected skills as unmanaged', async () => {
+  const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'plain-project');
+  const installedPath = path.join(projectRoot, '.agents', 'skills', 'project-only');
+  await writeSkill(installedPath, 'project-only', 'unmanaged project skill');
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+
+  const snapshot = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'plain-registered-project'))).result.snapshot;
+
+  assert.equal(snapshot.projects[0].status, 'current');
+  assert.equal(snapshot.projects[0].projectSkillCount, 1);
+  assert.equal(snapshot.projectSkills.length, 0);
+  assert.deepEqual(snapshot.skillInventory.filter((item) => item.projectRoot === projectRoot).map((item) => ({
+    name: item.name, installedPath: item.installedPath, managed: item.managed, status: item.status,
+  })), [{ name: 'project-only', installedPath, managed: false, status: 'unmanaged' }]);
+});
+
+test('a bad Project Ledger without a Manifest stays scoped to that project', async () => {
+  const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'bad-ledger-project');
+  await mkdir(path.join(projectRoot, '.agents', '.caddie'), { recursive: true });
+  await writeFile(path.join(projectRoot, '.agents', '.caddie', 'ledger.json'), '{not-json');
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+
+  const snapshot = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'bad-ledger-without-manifest'))).result.snapshot;
+
+  assert.equal(snapshot.userSkills.length, 1);
+  assert.equal(snapshot.projects[0].status, 'attention');
+  assert.equal(snapshot.projectSkills[0].code, 'incomplete-project-state');
+});
+
+test('a Project Lock without a Manifest is incomplete state, not an empty project', async () => {
+  const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'lock-only-project');
+  await json(path.join(projectRoot, '.agents', '.caddie', 'lock.json'), { version: 1, sources: {} });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+
+  const snapshot = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'lock-without-manifest'))).result.snapshot;
+
+  assert.equal(snapshot.projects[0].status, 'attention');
+  assert.equal(snapshot.projectSkills[0].code, 'incomplete-project-state');
+});
+
+test('Project inventory refuses wrong paths and same-name entries from another selection', async () => {
+  const fixture = await managedFixture(['one']);
+  const projectRoot = path.join(fixture.root, 'ledger-project');
+  const projectSource = path.join(projectRoot, 'source');
+  const projectState = path.join(projectRoot, '.agents', '.caddie');
+  const installedPath = path.join(projectRoot, '.agents', 'skills', 'project-only');
+  await writeSkill(path.join(projectSource, 'project-only'), 'project-only', 'source');
+  await writeSkill(installedPath, 'project-only', 'installed');
+  await json(path.join(projectState, 'manifest.json'), {
+    version: 1, scope: 'project', sources: { source: { type: 'local', path: projectSource } },
+    selections: [{ source: 'source', path: 'project-only' }],
+  });
+  await json(path.join(projectState, 'ledger.json'), {
+    version: 1, scopeId: `project:${projectRoot}`, entries: [{
+      name: 'project-only', path: path.join(fixture.root, 'outside'), sourceId: 'other-source',
+      selectedPath: 'project-only', fingerprint: await fingerprint(installedPath),
+    }], harnessLinks: [], harnessSettings: [],
+  });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [projectRoot] });
+
+  const snapshot = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'wrong-project-provenance'))).result.snapshot;
+  const row = snapshot.skillInventory.find((item) => item.projectRoot === projectRoot && item.selectionId !== null);
+
+  assert.equal(snapshot.projects[0].status, 'attention');
+  assert.equal(snapshot.projectSkills[0].code, 'invalid-ledger-content');
+  assert.equal(row.installedPath, installedPath);
+  assert.equal(row.managed, false);
+  assert.equal(snapshot.skillInventory.filter((item) => item.projectRoot === projectRoot).length, 1);
+  assert.equal(new Set(snapshot.skillInventory.map((item) => item.id)).size, snapshot.skillInventory.length);
+
+  await json(path.join(projectState, 'ledger.json'), {
+    version: 1, scopeId: `project:${projectRoot}`, entries: [{
+      name: '../outside', path: path.join(projectRoot, '.agents', 'outside'), sourceId: 'source',
+      selectedPath: 'project-only', fingerprint: await fingerprint(installedPath),
+    }], harnessLinks: [], harnessSettings: [],
+  });
+  const traversal = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'traversal-project-name'))).result.snapshot;
+  const traversalRow = traversal.skillInventory.find((item) => item.projectRoot === projectRoot);
+  assert.equal(traversal.projectSkills[0].code, 'invalid-ledger-content');
+  assert.equal(traversalRow.installedPath, installedPath);
+  assert.equal(traversalRow.managed, false);
+
+  await json(path.join(projectState, 'manifest.json'), {
+    version: 1, scope: 'project', sources: { source: { type: 'git', url: 'https://example.com/skills.git' } },
+    selections: [{ source: 'source', path: 'project-only' }],
+  });
+  await json(path.join(projectState, 'ledger.json'), {
+    version: 1, scopeId: `project:${projectRoot}`, entries: [{
+      name: 'project-only', path: path.join(fixture.root, 'outside'), sourceId: 'other-source',
+      selectedPath: 'project-only', fingerprint: await fingerprint(installedPath),
+    }], harnessLinks: [], harnessSettings: [],
+  });
+  const gitConflict = (await createManagementModule({ home: fixture.home })
+    .execute(cycleRequest('observe-only', 'git-project-conflict'))).result.snapshot;
+  const gitRows = gitConflict.skillInventory.filter((item) => item.projectRoot === projectRoot);
+  assert.equal(gitRows.length, 1);
+  assert.equal(gitRows[0].managed, false);
+  assert.equal(new Set(gitConflict.skillInventory.map((item) => item.id)).size, gitConflict.skillInventory.length);
+});
+
+test('missing inventory data stays absent while malformed and oversized data fail status', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  await management.execute(cycleRequest('observe-only', 'inventory-file-baseline'));
+  const inventoryPath = `${fixture.statePath}.inventory-v1.json`;
+
+  await rm(inventoryPath);
+  const missing = await management.execute(request('status', {}, 'missing-inventory-file'));
+  assert.equal(hasObjectKey(missing.result.snapshot, 'skillInventory'), false);
+  assert.equal(missing.result.snapshot.userSkills.length, 1);
+  await assert.rejects(
+    management.execute(cycleRequest('observe-only', 'inventory-file-baseline')),
+    (error) => error instanceof ManagementError && error.code === 'idempotency-result-expired',
+  );
+  await management.execute(cycleRequest('observe-only', 'repair-missing-inventory-file'));
+
+  await writeFile(inventoryPath, '{not-json');
+  await assert.rejects(
+    management.execute(request('status', {}, 'malformed-inventory-file')),
+    (error) => error instanceof ManagementError && error.code === 'invalid-inventory-projection',
+  );
+  const interruptedRepair = createManagementModule({
+    home: fixture.home,
+    writeInventoryProjection: async () => { throw new Error('injected inventory write failure'); },
+  });
+  await assert.rejects(
+    interruptedRepair.execute(cycleRequest('observe-only', 'interrupted-inventory-repair')),
+    /injected inventory write failure/,
+  );
+  await assert.rejects(
+    interruptedRepair.execute(cycleRequest('observe-only', 'repair-missing-inventory-file')),
+    (error) => error instanceof ManagementError && error.code === 'idempotency-result-expired',
+  );
+  await management.execute(cycleRequest('observe-only', 'repair-malformed-inventory-file'));
+  assert.equal((await management.execute(request('status', {}, 'repaired-inventory-file'))).result.snapshot.skillInventory.length, 1);
+  await assert.rejects(
+    management.execute(cycleRequest('observe-only', 'inventory-file-baseline')),
+    (error) => error instanceof ManagementError && error.code === 'idempotency-result-expired',
+  );
+
+  await writeFile(inventoryPath, 'x'.repeat(16 * 1024 * 1024 + 1));
+  await assert.rejects(
+    management.execute(request('status', {}, 'oversized-inventory-file')),
+    (error) => error instanceof ManagementError && error.code === 'invalid-inventory-projection',
+  );
+  await management.execute(cycleRequest('observe-only', 'repair-oversized-inventory-file'));
+  assert.equal((await management.execute(request('status', {}, 'repaired-oversized-inventory-file'))).result.snapshot.skillInventory.length, 1);
+});
+
 test('inventory capacity stops authorized reconciliation before any skill write', async () => {
   const fixture = await managedFixture(['one']);
   const management = createManagementModule({ home: fixture.home });
@@ -494,7 +796,7 @@ test('inventory capacity stops authorized reconciliation before any skill write'
   assert.equal(await readFile(path.join(fixture.installed.one, 'body.txt'), 'utf8'), 'baseline\n');
 });
 
-test('a replay migrates complete inline inventory ahead of a paged receipt and strips the core state', async () => {
+test('a replay migrates complete inline inventory across a corrupt projection and strips the core state', async () => {
   const fixture = await managedFixture(['one']);
   const management = createManagementModule({ home: fixture.home });
   await management.execute(cycleRequest('observe-only', 'inline-inventory-baseline'));
@@ -521,7 +823,7 @@ test('a replay migrates complete inline inventory ahead of a paged receipt and s
     field: 'skillInventory', token: 'older-legacy-continuation', remaining: 5,
   });
   await writeFile(fixture.statePath, `${JSON.stringify(state, null, 2)}\n`);
-  await rm(`${fixture.statePath}.inventory-v1.json`);
+  await writeFile(`${fixture.statePath}.inventory-v1.json`, '{not-json');
 
   const replay = await management.execute(cycleRequest('observe-only', 'inline-inventory-current'));
 
@@ -1214,6 +1516,30 @@ async function managedFixture(names, { disabled = [] } = {}) {
   await json(ledgerPath, { version: 1, scopeId: 'user', entries, harnessLinks: [], harnessSettings: [] });
   await json(lockPath, { version: 1, sources: {} });
   return { ...repository, home, stateRoot, statePath, manifestPath, lockPath, ledgerPath, installed };
+}
+
+async function legacyProjectFixture(fixture, name) {
+  const root = path.join(fixture.root, name);
+  const stateRoot = path.join(root, '.agents', '.caddie');
+  const sourceRoot = path.join(root, 'skill-source');
+  const skillPath = path.join(root, '.agents', 'skills', 'project-skill');
+  await writeSkill(path.join(sourceRoot, 'project-skill'), 'project-skill', 'project baseline');
+  await cp(path.join(sourceRoot, 'project-skill'), skillPath, { recursive: true });
+  await json(path.join(stateRoot, 'manifest.json'), {
+    version: 1, scope: 'project', sources: { local: { type: 'local', path: sourceRoot } },
+    selections: [{ source: 'local', path: 'project-skill' }],
+  });
+  const ledgerPath = path.join(stateRoot, 'ledger.json');
+  await json(ledgerPath, {
+    version: 1, scopeId: `project:${path.basename(root)}`,
+    entries: [{
+      name: 'project-skill', path: skillPath, sourceId: 'local', selectedPath: 'project-skill',
+      fingerprint: await fingerprint(skillPath),
+    }],
+    harnessLinks: [], harnessSettings: [],
+  });
+  await json(path.join(fixture.stateRoot, 'registry.json'), { version: 1, registeredProjects: [root] });
+  return { root, stateRoot, ledgerPath, skillPath };
 }
 
 async function repositoryFixture(names) {
