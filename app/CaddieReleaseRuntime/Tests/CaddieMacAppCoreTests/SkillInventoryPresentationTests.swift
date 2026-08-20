@@ -83,17 +83,17 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertEqual(CaddieAppStatus(snapshot: .empty, isRunningCycle: false, updatesPaused: false), .waiting)
     }
 
-    func testSourcesUseGitOrFolderLocationAndKeepUnmanagedSkillsVisible() throws {
+    func testSourcesUseGitOrFolderLocationAndKeepUnmanagedUserSkillsSeparate() throws {
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(Self.fixture.utf8))
 
-        let sources = SkillInventoryPresentation(snapshot: snapshot).sources
+        let presentation = SkillInventoryPresentation(snapshot: snapshot)
+        let sources = presentation.sources
 
-        XCTAssertEqual(sources.map(\.name), ["Project Source", "Unmanaged", "User Source"])
+        XCTAssertEqual(sources.map(\.name), ["Project Source", "User Source"])
         XCTAssertEqual(sources.first { $0.name == "User Source" }?.location, "/tmp/user-source")
         XCTAssertEqual(sources.first { $0.name == "Project Source" }?.location, "https://example.test/skills.git")
-        XCTAssertEqual(sources.first { $0.name == "Unmanaged" }?.skills.map(\.name), ["loose"])
         XCTAssertEqual(sources.first { $0.name == "Project Source" }?.skillCountLabel, "2 skills")
-        XCTAssertEqual(sources.first { $0.name == "Unmanaged" }?.skillCountLabel, "1 skill")
+        XCTAssertEqual(presentation.unmanagedUserSkills.map(\.name), ["loose"])
     }
 
     func testReadyWorkUsesSkillNamesInsteadOfSelectionIDs() throws {
@@ -130,10 +130,10 @@ final class SkillInventoryPresentationTests: XCTestCase {
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(Self.fixture.utf8))
         let skills = snapshot.inventorySkills
 
-        XCTAssertEqual(skills.first { $0.status == "current" }?.statusLabel, "Up to date")
+        XCTAssertEqual(skills.first { $0.status == "current" }?.statusLabel, "Skills OK")
         XCTAssertEqual(skills.first { $0.status == "unmanaged" }?.statusLabel, "Not managed")
         XCTAssertEqual(skills.first { !$0.enabled }?.statusLabel, "Disabled")
-        XCTAssertEqual(skills.first { !$0.enabled }?.updateStatusLabel, "Up to date")
+        XCTAssertEqual(skills.first { !$0.enabled }?.updateStatusLabel, "Skills OK")
     }
 
     func testProjectPermissionPlaceholderStaysOutOfTheUnmanagedSourceGroup() throws {
@@ -159,7 +159,7 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.projects[0].projectSkills.first { $0.id == "permission" }?.permissionFolder,
                        "/tmp/example/.agents/skills")
         XCTAssertFalse(presentation.sources.flatMap(\.skills).contains { $0.id == "permission" })
-        XCTAssertTrue(presentation.sources.flatMap(\.skills).contains { $0.id == "named-project-skills" })
+        XCTAssertFalse(presentation.sources.flatMap(\.skills).contains { $0.id == "named-project-skills" })
     }
 
     func testUnreadableUserSkillStaysInUnmanagedAndMarksTheUserHeaderForAttention() throws {
@@ -180,7 +180,74 @@ final class SkillInventoryPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.inventoryOnlyUserReviewCount, 1)
         XCTAssertEqual(presentation.reviewCount, 1)
         XCTAssertEqual(CaddieAppStatus(snapshot: snapshot, isRunningCycle: false, updatesPaused: false), .needsReview)
-        XCTAssertEqual(presentation.sources.first { $0.name == "Unmanaged" }?.skills.map(\.name), ["denied", "loose"])
+        XCTAssertEqual(presentation.unmanagedUserSkills.map(\.name), ["denied", "loose"])
+    }
+
+    func testOneLogicalSourceGroupsGitCheckoutsAndListsEachUse() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        var inventory = try XCTUnwrap(object["skillInventory"] as? [[String: Any]])
+        inventory.append([
+            "version": 2, "id": "worktree-shared", "scope": "project", "projectRoot": "/tmp/worktree",
+            "name": "shared", "installedPath": "/tmp/worktree/.agents/skills/shared", "enabled": true,
+            "managed": true, "selectionId": "worktree-source:shared",
+            "origin": ["id": "origin-user", "sourceId": "worktree-source", "name": "User Source", "type": "local",
+                       "gitUrl": NSNull(), "localFolder": "/tmp/worktree/skills", "selectedPath": "shared"],
+            "shadowsSkillId": NSNull(), "status": "current",
+        ])
+        object["skillInventory"] = inventory
+        var projects = try XCTUnwrap(object["projects"] as? [[String: Any]])
+        projects.append([
+            "version": 2, "id": "project-worktree", "name": "Example", "root": "/tmp/worktree",
+            "projectSkillCount": 1, "inheritedUserSkillCount": 2, "overrideCount": 0, "status": "current",
+            "repositoryId": "repo", "checkoutKind": "worktree", "branch": "feature",
+            "mainProjectRoot": "/tmp/example", "workingTreeClean": true,
+        ])
+        object["projects"] = projects
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let source = try XCTUnwrap(SkillInventoryPresentation(snapshot: snapshot).sources.first { $0.id == "origin-user" })
+
+        XCTAssertEqual(source.locations, ["/tmp/user-source", "/tmp/worktree/skills"])
+        XCTAssertTrue(source.isRepository)
+        XCTAssertEqual(source.summaryLabel, "2 source folders")
+        XCTAssertEqual(source.skills.map(\.name), ["shared", "user-only"])
+        XCTAssertEqual(source.uses.count, 3)
+        XCTAssertEqual(source.uses.map(\.targetName), ["User Skills", "Worktree · feature", "User Skills"])
+        XCTAssertEqual(source.uses.compactMap(\.targetPath), ["/tmp/worktree"])
+    }
+
+    func testProjectSkillStoredInsideItsSourceFolderStaysOutOfSources() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        var inventory = try XCTUnwrap(object["skillInventory"] as? [[String: Any]])
+        inventory.append([
+            "version": 2, "id": "in-place", "scope": "project", "projectRoot": "/tmp/example",
+            "name": "in-place", "installedPath": "/tmp/example/.agents/skills/in-place", "enabled": true,
+            "managed": true, "selectionId": "project:in-place",
+            "origin": ["id": "in-place-source", "sourceId": "project", "name": "Project", "type": "local",
+                       "gitUrl": NSNull(), "localFolder": "/tmp/example/.agents/skills", "selectedPath": "in-place"],
+            "shadowsSkillId": NSNull(), "status": "current",
+        ])
+        object["skillInventory"] = inventory
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let presentation = SkillInventoryPresentation(snapshot: snapshot)
+
+        XCTAssertFalse(presentation.sources.contains { $0.id == "in-place-source" })
+        XCTAssertTrue(presentation.projects.flatMap(\.projectSkills).contains { $0.id == "in-place" })
+    }
+
+    func testSkillAndGitLabelsStayIndependent() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.fixture.utf8)) as? [String: Any])
+        var projects = try XCTUnwrap(object["projects"] as? [[String: Any]])
+        projects[0]["workingTreeClean"] = false
+        projects[0]["status"] = "current"
+        object["projects"] = projects
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+
+        let project = try XCTUnwrap(SkillInventoryPresentation(snapshot: snapshot).projects.first)
+
+        XCTAssertEqual(project.skillStateLabel, "Skills OK")
+        XCTAssertEqual(project.gitStateLabel, "Git: Has changes")
     }
 
     func testSourcesWithMatchingNamesAndLocationsUseTheirIDsAsTheFinalSortKey() throws {

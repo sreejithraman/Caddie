@@ -218,6 +218,18 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var inventorySkills: [InventorySkill] { skillInventory ?? [] }
     public var inventoryProjects: [ProjectInventory] { projects ?? [] }
 
+    func includingInventory(_ skillInventory: [InventorySkill], projects: [ProjectInventory]) -> AppSnapshot {
+        AppSnapshot(
+            version: version, state: state, revision: revision, freshness: freshness, summary: summary,
+            sources: sources, userSkills: userSkills, projectSkills: projectSkills,
+            skillInventory: skillInventory, projects: projects,
+            readyWork: readyWork, authorizations: authorizations, attention: attention,
+            recentAttention: recentAttention, activity: activity, pendingActions: pendingActions,
+            outsideEffects: outsideEffects, pause: pause, watchSet: watchSet, recovery: recovery,
+            continuations: continuations
+        )
+    }
+
     func completingPages(_ pages: [String: [AppSnapshot]]) -> AppSnapshot {
         func joined<T>(_ field: String, _ keyPath: KeyPath<AppSnapshot, [T]>) -> [T] {
             self[keyPath: keyPath] + (pages[field] ?? []).flatMap { $0[keyPath: keyPath] }

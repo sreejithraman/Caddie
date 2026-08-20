@@ -13,9 +13,30 @@ struct CaddieMenuApp: App {
             .appendingPathComponent(channel.applicationSupportFolder, isDirectory: true)
         let environment = channel.toolEnvironment(base: ProcessInfo.processInfo.environment, supportRoot: supportRoot)
         let toolHome = URL(fileURLWithPath: environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path)
+        let preview = PreviewLaunch(arguments: ProcessInfo.processInfo.arguments, channel: channel)
+        let previewResult: Result<AppSnapshot, Error>? = preview.directory.map { directory in
+            Result { try PreviewSnapshotLoader().load(from: directory) }
+        }
+        let initialSnapshot = try? previewResult?.get()
+        let initialError: String?
+        if case .failure(let error) = previewResult {
+            initialError = error.localizedDescription
+        } else {
+            initialError = preview.error
+        }
+        let client: any ToolCalling = preview.isRequested
+            ? PreviewDisabledToolClient()
+            : ToolLaunchClient(supportRoot: supportRoot, environment: environment)
+        let notifications: any NotificationDelivering = preview.isRequested
+            ? PreviewDisabledNotifications()
+            : SystemNotificationDelivery()
         let model = AppModel(
-            client: ToolLaunchClient(supportRoot: supportRoot, environment: environment),
-            toolStateRoot: toolHome.appendingPathComponent(".agents/.caddie", isDirectory: true)
+            client: client,
+            notifications: notifications,
+            toolStateRoot: toolHome.appendingPathComponent(".agents/.caddie", isDirectory: true),
+            mode: preview.isRequested ? .preview : .live,
+            initialError: initialError,
+            initialSnapshot: initialSnapshot ?? .empty
         )
         _model = StateObject(wrappedValue: model)
 
@@ -69,6 +90,51 @@ struct CaddieMenuApp: App {
             }
         )
     }
+}
+
+private struct PreviewLaunch {
+    let isRequested: Bool
+    let directory: URL?
+    let error: String?
+
+    init(arguments: [String], channel: CaddieBuildChannel) {
+        guard let index = arguments.firstIndex(of: "--preview-snapshot") else {
+            isRequested = false
+            directory = nil
+            error = nil
+            return
+        }
+        isRequested = true
+        guard channel == .development else {
+            directory = nil
+            error = "Read-only preview is available only in development builds."
+            return
+        }
+        let valueIndex = arguments.index(after: index)
+        guard arguments.indices.contains(valueIndex), !arguments[valueIndex].isEmpty else {
+            directory = nil
+            error = "The preview snapshot folder is missing."
+            return
+        }
+        directory = URL(fileURLWithPath: arguments[valueIndex], isDirectory: true)
+        error = nil
+    }
+}
+
+private struct PreviewDisabledToolClient: ToolCalling {
+    func status() async throws -> AppSnapshot { throw PreviewToolFault.readOnly }
+    func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot { throw PreviewToolFault.readOnly }
+    func request(_ intent: AppActionIntent) async throws -> AppSnapshot { throw PreviewToolFault.readOnly }
+    func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot { throw PreviewToolFault.readOnly }
+    func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot { throw PreviewToolFault.readOnly }
+    func requestResume() async throws -> AppSnapshot { throw PreviewToolFault.readOnly }
+
+    private enum PreviewToolFault: Error { case readOnly }
+}
+
+private struct PreviewDisabledNotifications: NotificationDelivering {
+    func requestPermission() async throws -> Bool { false }
+    func deliver(id: String, title: String, body: String, attentionID: String?) async throws {}
 }
 
 private struct CaddieMenuBarLabel: View {

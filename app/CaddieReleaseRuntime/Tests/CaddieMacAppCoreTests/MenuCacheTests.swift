@@ -5,6 +5,35 @@ import XCTest
 
 final class MenuCacheTests: XCTestCase {
     @MainActor
+    func testPreviewStartAndActionsNeverCallTheTool() async {
+        let tool = CountingTool()
+        let defaults = testDefaults()
+        defaults.set(true, forKey: "automaticUpdatesPaused")
+        defaults.set(true, forKey: "notificationsEnabled")
+        let model = AppModel(
+            client: tool,
+            defaults: defaults,
+            loginItem: DisabledLoginItem(),
+            mode: .preview,
+            initialSnapshot: snapshot(safetyPaused: false)
+        )
+
+        model.start()
+        model.syncNow()
+        await model.toggleAutomaticUpdates()
+        await model.update(selectionID: "selection-one")
+        await model.retry(attentionID: "attention-one")
+        await model.invoke(actionID: "action-one")
+        for _ in 0..<100 { await Task.yield() }
+
+        XCTAssertTrue(model.isPreview)
+        XCTAssertFalse(model.automaticUpdatesPaused)
+        XCTAssertFalse(model.notificationsEnabled)
+        let callCount = await tool.count()
+        XCTAssertEqual(callCount, 0)
+    }
+
+    @MainActor
     func testReadingMenuSnapshotDoesNotCallToolOrInspectFiles() async {
         let tool = CountingTool()
         let defaults = UserDefaults(suiteName: "MenuCacheTests-\(UUID().uuidString)")!

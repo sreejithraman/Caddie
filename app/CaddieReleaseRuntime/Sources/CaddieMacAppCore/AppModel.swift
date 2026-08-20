@@ -12,11 +12,14 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var notificationsEnabled: Bool
     @Published public private(set) var lastAgentProvider: AgentProvider
     @Published public var automaticUpdatesPaused: Bool {
-        didSet { defaults.set(automaticUpdatesPaused, forKey: Self.pauseKey) }
+        didSet {
+            if mode == .live { defaults.set(automaticUpdatesPaused, forKey: Self.pauseKey) }
+        }
     }
 
     public var menuSnapshot: AppSnapshot { snapshot }
     public var updatesPaused: Bool { automaticUpdatesPaused || snapshot.pause.active }
+    public var isPreview: Bool { mode == .preview }
 
     private static let pauseKey = "automaticUpdatesPaused"
     private static let providerKey = "lastAgentProvider"
@@ -27,6 +30,7 @@ public final class AppModel: ObservableObject {
     private let notificationPreferences: NotificationPreferences
     private let workspace: any WorkspaceOpening
     private let toolStateRoot: URL
+    private let mode: AppRunMode
     private var scheduler = CycleSchedulerState()
     private var scheduledWork: DispatchWorkItem?
     private var watcher: FSEventWatcher?
@@ -52,6 +56,8 @@ public final class AppModel: ObservableObject {
         workspace: any WorkspaceOpening = SystemWorkspaceOpener(),
         toolStateRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".agents/.caddie", isDirectory: true),
+        mode: AppRunMode = .live,
+        initialError: String? = nil,
         initialSnapshot: AppSnapshot = .empty
     ) {
         self.client = client
@@ -60,19 +66,22 @@ public final class AppModel: ObservableObject {
         self.notifications = notifications
         self.workspace = workspace
         self.toolStateRoot = toolStateRoot
+        self.mode = mode
         notificationPreferences = NotificationPreferences(defaults: defaults)
-        notificationsEnabled = notificationPreferences.enabled
+        notificationsEnabled = mode == .live ? notificationPreferences.enabled : false
         lastAgentProvider = AgentProvider(rawValue: defaults.string(forKey: Self.providerKey) ?? "") ?? .codex
         inventoryPresentation = SkillInventoryPresentation(snapshot: initialSnapshot)
         snapshot = initialSnapshot
+        lastError = initialError
         AttentionPanelRouter.shared.update(initialSnapshot)
-        automaticUpdatesPaused = defaults.bool(forKey: Self.pauseKey)
+        automaticUpdatesPaused = mode == .live ? defaults.bool(forKey: Self.pauseKey) : false
         loginItemStatus = loginItem.status
     }
 
     public func start() {
         guard !started else { return }
         started = true
+        guard !isPreview else { return }
         watcher = FSEventWatcher(
             toolStateRoot: toolStateRoot,
             onObservation: { [weak self] observation in
@@ -109,9 +118,13 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func syncNow() { receive(.syncNow) }
+    public func syncNow() {
+        guard !isPreview else { return }
+        receive(.syncNow)
+    }
 
     public func toggleAutomaticUpdates() async {
+        guard !isPreview else { return }
         if !updatesPaused {
             automaticUpdatesPaused = true
             return
@@ -131,6 +144,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func setStartAtLogin(_ enabled: Bool) {
+        guard !isPreview else { return }
         guard snapshot.state == "ready" else {
             showError("Finish Caddie setup before turning on Start at login.")
             return
@@ -142,10 +156,14 @@ public final class AppModel: ObservableObject {
         } catch { showError(readable(error)) }
     }
 
-    public func openLoginItemSettings() { loginItem.openSystemSettings() }
+    public func openLoginItemSettings() {
+        guard !isPreview else { return }
+        loginItem.openSystemSettings()
+    }
 
     @discardableResult
     public func prepareForAppRemoval() -> Bool {
+        guard !isPreview else { return false }
         if loginItem.status == .notRegistered || loginItem.status == .notFound { return true }
         do {
             try loginItem.setEnabled(false)
@@ -157,9 +175,13 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func refreshLoginStatus() { loginItemStatus = loginItem.status }
+    public func refreshLoginStatus() {
+        guard !isPreview else { return }
+        loginItemStatus = loginItem.status
+    }
 
     public func grantAccess(to exactPath: String) {
+        guard !isPreview else { return }
         guard let selected = FolderAccess.chooseFolder(for: exactPath) else { return }
         guard selected.standardizedFileURL.path == URL(fileURLWithPath: exactPath).standardizedFileURL.path else {
             showError("Choose the exact folder Caddie could not read.")
@@ -174,6 +196,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func setNotificationsEnabled(_ enabled: Bool) async {
+        guard !isPreview else { return }
         notificationToggleRevision += 1
         let revision = notificationToggleRevision
         if !enabled {
@@ -197,17 +220,29 @@ public final class AppModel: ObservableObject {
     }
 
     public func setAuthorization(selectionID: String, enabled: Bool) async {
+        guard !isPreview else { return }
         await perform(enabled ? .authorize(selectionID: selectionID) : .revokeAuthorization(selectionID: selectionID))
     }
 
-    public func update(selectionID: String) async { await perform(.update(selectionID: selectionID)) }
-    public func retry(attentionID: String) async { await perform(.retry(attentionID: attentionID)) }
-    public func repairProject(_ projectRoot: String) async { await perform(.repairProject(projectRoot: projectRoot)) }
+    public func update(selectionID: String) async {
+        guard !isPreview else { return }
+        await perform(.update(selectionID: selectionID))
+    }
+    public func retry(attentionID: String) async {
+        guard !isPreview else { return }
+        await perform(.retry(attentionID: attentionID))
+    }
+    public func repairProject(_ projectRoot: String) async {
+        guard !isPreview else { return }
+        await perform(.repairProject(projectRoot: projectRoot))
+    }
     public func stopTrackingProject(_ projectRoot: String) async {
+        guard !isPreview else { return }
         await perform(.stopTrackingProject(projectRoot: projectRoot))
     }
 
     public func invoke(actionID: String, extendedTimeout: Bool = false) async {
+        guard !isPreview else { return }
         let priorErrorRevision = errorRevision
         do {
             accept(try await client.invoke(actionID: actionID, extendedTimeout: extendedTimeout))
@@ -215,16 +250,29 @@ public final class AppModel: ObservableObject {
         } catch { showError(readable(error)) }
     }
 
-    public func mute(_ item: AppSnapshot.Attention) { notificationPreferences.muteAttention(stableKey: item.stableKey) }
-    public func unmute(_ item: AppSnapshot.Attention) { notificationPreferences.unmuteAttention(stableKey: item.stableKey) }
-    public func muteSource(_ sourceID: String) { notificationPreferences.muteSource(sourceID) }
-    public func unmuteSource(_ sourceID: String) { notificationPreferences.unmuteSource(sourceID) }
+    public func mute(_ item: AppSnapshot.Attention) {
+        guard !isPreview else { return }
+        notificationPreferences.muteAttention(stableKey: item.stableKey)
+    }
+    public func unmute(_ item: AppSnapshot.Attention) {
+        guard !isPreview else { return }
+        notificationPreferences.unmuteAttention(stableKey: item.stableKey)
+    }
+    public func muteSource(_ sourceID: String) {
+        guard !isPreview else { return }
+        notificationPreferences.muteSource(sourceID)
+    }
+    public func unmuteSource(_ sourceID: String) {
+        guard !isPreview else { return }
+        notificationPreferences.unmuteSource(sourceID)
+    }
     public func isMuted(_ item: AppSnapshot.Attention) -> Bool {
         notificationPreferences.isMuted(item, sourceID: sourceID(for: item))
     }
 
     public func canHandoff(_ item: AppSnapshot.Attention) -> Bool {
-        guard item.state == "open",
+        guard !isPreview,
+              item.state == "open",
               let skill = snapshot.userSkills.first(where: { $0.id == item.subjectId }),
               let checkout = skill.sourceCheckout,
               let source = snapshot.sources.first(where: { $0.id == skill.sourceId }),
@@ -236,6 +284,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func handoff(attentionID: String, provider: AgentProvider) async {
+        guard !isPreview else { return }
         let priorErrorRevision = errorRevision
         let handoffKey = "\(attentionID)\u{0}\(provider.rawValue)"
         guard handoffsInFlight.insert(handoffKey).inserted else { return }
