@@ -25,7 +25,7 @@ export function snapshotFrom(state, selections, readyWork, at, extra = {}) {
     version: 2, state: 'ready', revision: state.revision, freshness: { checkedAt: at },
     compatibility: { protocol: 2, state: 2 }, coverage: { status: 'complete', issues: [] },
     summary: { selections: selections.length, current: selections.filter((item) => item.status === 'current').length, ready: readyWork.length, attention: open.length },
-    sources: sourceSummaries(selections), userSkills: selections, projectSkills: [], readyWork,
+    sources: sourceSummaries(selections, state.authorizations), userSkills: selections, projectSkills: [], readyWork,
     authorizations: Object.values(state.authorizations), attention: open,
     recentAttention: state.attention.filter((item) => item.state === 'resolved'),
     activity: bounded(state.activity), pendingActions: bounded(state.pendingActions.filter((item) => item.status === 'pending').map(publicPendingAction)),
@@ -114,7 +114,7 @@ export function compactManagementState(state, at) {
 export function publicSelection(selection, status) {
   return {
     version: 2, id: selection.id, name: selection.name ?? null, sourceId: selection.sourceId,
-    selectedPath: selection.selectedPath, enabled: selection.enabled, status,
+    sourceCheckout: selection.sourceRoot ?? null, selectedPath: selection.selectedPath, enabled: selection.enabled, status,
     branch: selection.inspection?.branch ?? null, commit: selection.inspection?.commit ?? null,
     selectedPathDirty: selection.inspection?.selectedPathDirty ?? null,
     unrelatedDirty: selection.inspection?.unrelatedDirty ?? null,
@@ -123,12 +123,27 @@ export function publicSelection(selection, status) {
 
 export function bounded(items) { return items.slice(0, MAX_RECENT_RECORDS); }
 
-function sourceSummaries(selections) {
+function sourceSummaries(selections, authorizations) {
   const sources = new Map();
   for (const selection of selections) {
-    const current = sources.get(selection.sourceId) ?? { version: 2, id: selection.sourceId, skillCount: 0, attentionCount: 0 };
+    const current = sources.get(selection.sourceId) ?? {
+      version: 2, id: selection.sourceId, checkout: selection.sourceCheckout ?? null,
+      branch: selection.branch ?? null, skillCount: 0, attentionCount: 0,
+      state: 'current', automaticUpdates: false, nextAction: 'none',
+    };
     current.skillCount += 1;
-    if (selection.status === 'attention') current.attentionCount += 1;
+    if (selection.status === 'attention') {
+      current.attentionCount += 1;
+      current.state = 'attention';
+      current.nextAction = 'review-attention';
+    } else if (selection.status === 'ready' && current.state !== 'attention') {
+      current.state = 'ready';
+      current.nextAction = 'review-ready-work';
+    } else if (selection.status === 'manual-only' && current.state === 'current') {
+      current.state = 'manual-only';
+    }
+    current.branch = current.branch ?? selection.branch ?? null;
+    current.automaticUpdates ||= authorizations[selection.id]?.active === true;
     sources.set(selection.sourceId, current);
   }
   return [...sources.values()];

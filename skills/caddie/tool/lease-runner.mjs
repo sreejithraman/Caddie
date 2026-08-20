@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [recordPath, releaseID, toolPath, expectedAuthorization] = process.argv.slice(2);
+if (process.env.CADDIE_TEST_IGNORE_TERM === '1') process.on('SIGTERM', () => {});
 if (!recordPath || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(releaseID)
     || !path.isAbsolute(toolPath) || !/^[A-F0-9-]{36}$/.test(expectedAuthorization)) {
   throw new Error('the Tool lease runner arguments are invalid');

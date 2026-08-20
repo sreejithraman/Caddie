@@ -174,7 +174,7 @@ async function cycle(state, input, runtime) {
 
   let inventory;
   try {
-    inventory = await inspectInventory(state, runtime);
+    inventory = await inspectInventory(state, runtime, { refreshProjects: input.refreshProjects ?? true });
   } catch (error) {
     if (trustFault(error)) {
       pause(state, error.code ?? 'shared-state-fault', at);
@@ -389,7 +389,7 @@ async function invokePendingAction(state, action, runtime, at) {
   state.activity.unshift(activity('reconciled', selection.id, at, { planId: applied.planId ?? null, manual: true }));
 }
 
-async function inspectInventory(state, runtime, { onlySelectionId = null } = {}) {
+async function inspectInventory(state, runtime, { onlySelectionId = null, refreshProjects = true } = {}) {
   const layout = scopeLayout({ id: 'user', root: runtime.home }, runtime.home);
   const manifest = await parseManifest(layout.manifestPath, 'user', runtime.home);
   const ledger = await optionalJson(layout.ledgerPath, 'ledger');
@@ -453,7 +453,9 @@ async function inspectInventory(state, runtime, { onlySelectionId = null } = {})
       if (!present.has(id)) authorization.active = false;
     }
   }
-  const projectSkills = onlySelectionId === null ? await inspectProjectSkills(runtime.home) : [];
+  const projectSkills = onlySelectionId === null
+    ? (refreshProjects ? await inspectProjectSkills(runtime.home) : structuredClone(state.snapshot?.projectSkills ?? []))
+    : [];
   const watchPaths = [
     layout.stateRoot,
     ...selections.flatMap((selection) => [selection.sourceRoot, selection.installedPath]),

@@ -187,16 +187,22 @@ function validCoverageIssue(value) {
 }
 
 function validSourceSummary(value) {
-  return exactShape(value, ['version', 'id', 'skillCount', 'attentionCount'])
+  return exactShape(value, ['version', 'id', 'checkout', 'branch', 'skillCount', 'attentionCount', 'state', 'automaticUpdates', 'nextAction'])
     && value.version === MANAGEMENT_STATE_VERSION
-    && safeId(value.id) && Number.isSafeInteger(value.skillCount) && value.skillCount >= 0
-    && Number.isSafeInteger(value.attentionCount) && value.attentionCount >= 0;
+    && safeId(value.id) && (value.checkout === null || boundedText(value.checkout, 4096))
+    && (value.branch === null || boundedText(value.branch, 512))
+    && Number.isSafeInteger(value.skillCount) && value.skillCount >= 0
+    && Number.isSafeInteger(value.attentionCount) && value.attentionCount >= 0
+    && ['current', 'ready', 'attention', 'manual-only'].includes(value.state)
+    && typeof value.automaticUpdates === 'boolean'
+    && ['none', 'review-ready-work', 'review-attention'].includes(value.nextAction);
 }
 
 function validUserSkill(value) {
-  return exactShape(value, ['version', 'id', 'name', 'sourceId', 'selectedPath', 'enabled', 'status', 'branch', 'commit', 'selectedPathDirty', 'unrelatedDirty'])
+  return exactShape(value, ['version', 'id', 'name', 'sourceId', 'sourceCheckout', 'selectedPath', 'enabled', 'status', 'branch', 'commit', 'selectedPathDirty', 'unrelatedDirty'])
     && value.version === MANAGEMENT_STATE_VERSION && safeId(value.id)
     && (value.name === null || boundedText(value.name, 512)) && boundedText(value.sourceId, 512)
+    && (value.sourceCheckout === null || boundedText(value.sourceCheckout, 4096))
     && boundedText(value.selectedPath, 4096) && typeof value.enabled === 'boolean'
     && ['current', 'ready', 'attention', 'manual-only'].includes(value.status)
     && (value.branch === null || boundedText(value.branch, 512))
