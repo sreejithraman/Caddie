@@ -22,6 +22,12 @@ struct UserSkillsPage: View {
                     symbol: "magnifyingglass"
                 )
             } else {
+                Section {
+                    PageGuide(
+                        title: "Skills installed for your account",
+                        message: "Enabled User Skills are available in each project unless a Project Skill takes their place."
+                    )
+                }
                 ForEach(filteredSkills) { skill in
                     NavigationLink {
                         SkillDetailView(model: model, skillID: skill.id)
@@ -38,11 +44,7 @@ struct UserSkillsPage: View {
 
     private var filteredSkills: [AppSnapshot.InventorySkill] {
         guard !query.isEmpty else { return skills }
-        return skills.filter { skill in
-            skill.name.localizedCaseInsensitiveContains(query)
-                || skill.origin?.name.localizedCaseInsensitiveContains(query) == true
-                || skill.installedPath.localizedCaseInsensitiveContains(query)
-        }
+        return skills.filter { $0.matches(query) }
     }
 }
 
@@ -67,6 +69,12 @@ struct ProjectsPage: View {
                     symbol: "magnifyingglass"
                 )
             } else {
+                Section {
+                    PageGuide(
+                        title: "Skills by project",
+                        message: "Open a project to see its main checkout and worktrees, then see which Skills each one uses."
+                    )
+                }
                 ForEach(filteredGroups) { group in
                     NavigationLink {
                         ProjectDetailView(model: model, groupID: group.id)
@@ -114,6 +122,12 @@ struct SourcesPage: View {
                     symbol: "magnifyingglass"
                 )
             } else {
+                Section {
+                    PageGuide(
+                        title: "Where Skills come from",
+                        message: "A source is a Git repository or folder that provides one or more Skills."
+                    )
+                }
                 ForEach(filteredSources) { source in
                     NavigationLink {
                         SourceDetailView(model: model, sourceID: source.id)
@@ -156,8 +170,9 @@ struct ProjectSummaryRow: View {
                 Label("Needs review", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
             } else {
-                Text("Current").font(.caption).foregroundStyle(.secondary)
+                Text("Up to date").font(.caption).foregroundStyle(.secondary)
             }
+            NavigationHint()
         }
         .padding(.vertical, 7)
     }
@@ -178,6 +193,12 @@ struct ProjectDetailView: View {
             if let group {
                 List {
                     Section {
+                        PageGuide(
+                            title: "\(group.checkouts.count) \(group.checkouts.count == 1 ? "checkout" : "checkouts")",
+                            message: "The main checkout and its worktrees belong to the same Git repository."
+                        )
+                    }
+                    Section {
                         ForEach(group.checkouts) { checkout in
                             NavigationLink {
                                 CheckoutDetailView(model: model, projectID: checkout.project.id)
@@ -188,8 +209,6 @@ struct ProjectDetailView: View {
                         }
                     } header: {
                         Text("Checkouts")
-                    } footer: {
-                        Text("Main and worktree checkouts share a project because they belong to the same Git repository.")
                     }
                 }
             } else {
@@ -221,8 +240,9 @@ private struct CheckoutSummaryRow: View {
                 Label("Needs review", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
             } else {
-                Text("Current").font(.caption).foregroundStyle(.secondary)
+                Text("Up to date").font(.caption).foregroundStyle(.secondary)
             }
+            NavigationHint()
         }
         .padding(.vertical, 7)
     }
@@ -256,7 +276,7 @@ private struct CheckoutDetailView: View {
                 MissingInventoryItem(title: "Checkout no longer found")
             }
         }
-        .navigationTitle(section?.project.checkoutKindLabel ?? "Checkout")
+        .navigationTitle(section?.project.name ?? "Checkout")
         .confirmationDialog("Stop tracking this checkout?", isPresented: $confirmsStopTracking) {
             Button("Stop tracking", role: .destructive) {
                 guard let projectRoot = currentSection()?.project.root else { return }
@@ -270,35 +290,25 @@ private struct CheckoutDetailView: View {
 
     private func checkoutList(_ section: SkillInventoryPresentation.ProjectSection) -> some View {
         List {
-            Section("Checkout") {
-                DetailValue(label: "Kind", value: section.project.checkoutKindLabel)
-                if let branch = section.project.branch { DetailValue(label: "Branch", value: branch) }
-                DetailValue(label: "Folder", value: section.project.root)
-                DetailValue(label: "Status", value: section.project.status == "attention" ? "Needs review" : "Current")
-                if section.project.overrideCount > 0 {
-                    DetailValue(label: "Overrides", value: "\(section.project.overrideCount)")
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(checkoutTitle(section), systemImage: section.project.checkoutKind == "worktree" ? "arrow.triangle.branch" : "folder")
+                        .font(.headline)
+                    Text(section.project.root)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
-                if let mainProjectRoot = section.project.mainProjectRoot, mainProjectRoot != section.project.root {
-                    DetailValue(label: "Main checkout", value: mainProjectRoot)
-                }
-                if let workingTreeClean = section.project.workingTreeClean {
-                    DetailValue(label: "Working tree", value: workingTreeClean ? "Clean" : "Has changes")
-                }
-                if let upstreamState = section.project.upstreamState {
-                    DetailValue(label: "Upstream", value: upstreamState.capitalized)
-                }
-                if let included = section.project.includedInDefaultBranch {
-                    DetailValue(label: "In default branch", value: included ? "Yes" : "No")
-                }
-                if let lifecycle = section.project.lifecycle {
-                    DetailValue(label: "Lifecycle", value: lifecycle == "likely-finished" ? "Likely finished" : "Active")
-                }
+                .padding(.vertical, 4)
             }
 
             if section.project.status == "attention" {
-                Section("Needs review") {
-                    Label(reviewMessage(for: section), systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                Section("This checkout needs review") {
+                    Label {
+                        Text(reviewMessage(for: section)).foregroundStyle(.primary)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    }
                     HStack {
                         if section.project.repairAvailable == true {
                             Button("Repair") {
@@ -309,43 +319,82 @@ private struct CheckoutDetailView: View {
                         if section.project.issueCode == "permission-denied" {
                             Button("Grant Access") { model.grantAccess(to: accessPath(for: section)) }
                         }
-                        Button("Stop tracking…", role: .destructive) { confirmsStopTracking = true }
                     }
+                }
+            } else {
+                Section {
+                    Label("Caddie checked this checkout and found no issues.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
                 }
             }
 
-            Section("Project Skills") {
-                if section.projectSkills.isEmpty {
-                    Text("No Project Skills found").foregroundStyle(.secondary)
+            Section("Skills available here") {
+                NavigationLink {
+                    CheckoutSkillsView(model: model, projectID: projectID, scope: .project)
+                } label: {
+                    CheckoutSkillGroupRow(
+                        title: "Project Skills",
+                        message: projectSkillMessage(section),
+                        count: section.projectSkills.count,
+                        symbol: "folder.badge.gearshape"
+                    )
                 }
-                ForEach(section.projectSkills) { skill in
-                    NavigationLink {
-                        SkillDetailView(model: model, skillID: skill.id)
-                    } label: {
-                        SkillSummaryRow(skill: skill)
-                            .contentShape(Rectangle())
-                    }
+                NavigationLink {
+                    CheckoutSkillsView(model: model, projectID: projectID, scope: .user)
+                } label: {
+                    CheckoutSkillGroupRow(
+                        title: "User Skills",
+                        message: "Available in all projects unless replaced here",
+                        count: section.inheritedUserSkills.count,
+                        symbol: "person.crop.circle"
+                    )
                 }
             }
 
-            Section("User Skills used by this checkout") {
-                if section.inheritedUserSkills.isEmpty {
-                    Text("No User Skills are used by this checkout.").foregroundStyle(.secondary)
+            Section("Checkout details") {
+                DetailValue(label: "Type", value: section.project.checkoutKindLabel)
+                if let branch = section.project.branch { DetailValue(label: "Branch", value: branch) }
+                if section.project.overrideCount > 0 {
+                    DetailValue(label: "Skill replacements", value: "\(section.project.overrideCount)")
                 }
-                ForEach(section.inheritedUserSkills) { skill in
-                    NavigationLink {
-                        SkillDetailView(model: model, skillID: skill.id)
-                    } label: {
-                        SkillSummaryRow(skill: skill, inherited: true)
-                            .contentShape(Rectangle())
-                    }
+                if let mainProjectRoot = section.project.mainProjectRoot, mainProjectRoot != section.project.root {
+                    DetailValue(label: "Main checkout", value: mainProjectRoot)
                 }
+                if let workingTreeClean = section.project.workingTreeClean {
+                    DetailValue(label: "Working tree", value: workingTreeClean ? "Clean" : "Has changes")
+                }
+                if let upstreamState = section.project.upstreamState {
+                    DetailValue(label: "Upstream branch", value: upstreamState == "gone" ? "Gone" : upstreamState.capitalized)
+                }
+                if let included = section.project.includedInDefaultBranch {
+                    DetailValue(label: "Changes in default branch", value: included ? "Yes" : "No")
+                }
+                if let lifecycle = section.project.lifecycle {
+                    DetailValue(label: "Work", value: lifecycle == "likely-finished" ? "May be finished" : "Active")
+                }
+            }
+
+            Section("Tracking") {
+                Button("Stop tracking this checkout…", role: .destructive) { confirmsStopTracking = true }
             }
         }
     }
 
     private func currentSection() -> SkillInventoryPresentation.ProjectSection? {
         model.inventoryPresentation.projects.first { $0.project.id == projectID }
+    }
+
+    private func checkoutTitle(_ section: SkillInventoryPresentation.ProjectSection) -> String {
+        if let branch = section.project.branch {
+            return "\(section.project.checkoutKindLabel) · \(branch)"
+        }
+        return section.project.checkoutKindLabel
+    }
+
+    private func projectSkillMessage(_ section: SkillInventoryPresentation.ProjectSection) -> String {
+        let replacements = section.projectSkills.filter { $0.shadowsSkillId != nil }.map(\.name)
+        guard !replacements.isEmpty else { return "Used only in this checkout" }
+        return "Replaces User Skills: \(replacements.joined(separator: ", "))"
     }
 
     private var stopTrackingMessage: String {
@@ -358,7 +407,7 @@ private struct CheckoutDetailView: View {
     private func reviewMessage(for section: SkillInventoryPresentation.ProjectSection) -> String {
         switch section.project.issueCode {
         case "legacy-project-scope":
-            return "This checkout has an older Caddie record. Caddie can repair it after every owned Skill matches."
+            return "This checkout has an older Caddie record. Repair it after every owned Skill matches."
         case "invalid-ledger-content":
             return "The Skill list does not match this checkout’s Caddie record."
         case "missing-content":
@@ -377,6 +426,92 @@ private struct CheckoutDetailView: View {
     }
 }
 
+private enum CheckoutSkillScope {
+    case project
+    case user
+
+    var title: String { self == .project ? "Project Skills" : "User Skills" }
+}
+
+private struct CheckoutSkillsView: View {
+    @ObservedObject var model: AppModel
+    let projectID: String
+    let scope: CheckoutSkillScope
+    @State private var query = ""
+
+    var body: some View {
+        let skills = filteredSkills
+        List {
+            Section {
+                PageGuide(title: guideTitle, message: guideMessage)
+            }
+            if skills.isEmpty {
+                EmptyInventoryView(
+                    title: query.isEmpty ? "No \(scope.title)" : "No matching Skills",
+                    message: query.isEmpty ? emptyMessage : "Try a different search.",
+                    symbol: "magnifyingglass"
+                )
+            } else {
+                ForEach(skills) { skill in
+                    NavigationLink {
+                        SkillDetailView(model: model, skillID: skill.id)
+                    } label: {
+                        SkillSummaryRow(skill: skill)
+                            .contentShape(Rectangle())
+                    }
+                }
+            }
+        }
+        .searchable(text: $query, prompt: "Search \(scope.title)")
+        .navigationTitle(scope.title)
+    }
+
+    private var section: SkillInventoryPresentation.ProjectSection? {
+        model.inventoryPresentation.projects.first { $0.project.id == projectID }
+    }
+
+    private var filteredSkills: [AppSnapshot.InventorySkill] {
+        let all = scope == .project ? section?.projectSkills ?? [] : section?.inheritedUserSkills ?? []
+        guard !query.isEmpty else { return all }
+        return all.filter { $0.matches(query) }
+    }
+
+    private var guideTitle: String {
+        scope == .project ? "Used only in this checkout" : "Available in all projects"
+    }
+
+    private var guideMessage: String {
+        scope == .project
+            ? "A Project Skill takes the place of a User Skill with the same name."
+            : "This list leaves out User Skills replaced by a Project Skill here."
+    }
+
+    private var emptyMessage: String {
+        scope == .project ? "This checkout has no Project Skills." : "No User Skills apply to this checkout."
+    }
+}
+
+private struct CheckoutSkillGroupRow: View {
+    let title: String
+    let message: String
+    let count: Int
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.title3).foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).fontWeight(.semibold)
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("\(count)").font(.title3).foregroundStyle(.secondary)
+            NavigationHint()
+        }
+        .padding(.vertical, 5)
+    }
+}
+
 private struct SourceSummaryRow: View {
     let source: SkillInventoryPresentation.SourceSection
 
@@ -389,7 +524,8 @@ private struct SourceSummaryRow: View {
                 Text(source.location).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            Text("\(source.skills.count) skills").font(.caption).foregroundStyle(.secondary)
+            Text(source.skillCountLabel).font(.caption).foregroundStyle(.secondary)
+            NavigationHint()
         }
         .padding(.vertical, 7)
     }
@@ -447,13 +583,14 @@ struct SkillSummaryRow: View {
                 Text("User").font(.caption).foregroundStyle(.secondary)
             }
             Text(skill.statusLabel).font(.caption).foregroundStyle(skill.statusColor)
+            NavigationHint()
         }
         .padding(.vertical, 6)
     }
 
     private var originLabel: String {
         let source = skill.origin.map { "\($0.name) · \($0.location)" }
-            ?? "Unmanaged · \(skill.installedPath)"
+            ?? "Local folder · \(skill.installedPath)"
         return skill.permissionFolder == nil ? source : "Access needed · \(source)"
     }
 }
@@ -479,7 +616,8 @@ struct SkillDetailView: View {
         let folderAccessPath = folderAccessPath(for: skill, attentionItems: attentionItems)
         return List {
             Section("Skill") {
-                DetailValue(label: "Status", value: skill.statusLabel)
+                DetailValue(label: "Availability", value: skill.enabled ? "Available" : "Disabled")
+                DetailValue(label: "Update status", value: skill.updateStatusLabel)
                 DetailValue(label: "Scope", value: skill.scope == "project" ? "Project Skill" : "User Skill")
                 DetailValue(label: "Installed folder", value: skill.installedPath)
                 if let origin = skill.origin {
@@ -515,7 +653,9 @@ struct SkillDetailView: View {
                         set: { enabled in Task { await model.setAuthorization(selectionID: selectionID, enabled: enabled) } }
                     ))
                 } else if skill.scope == "project", skill.managed {
-                    LabeledContent("Updates", value: "Manual")
+                    LabeledContent("Update method", value: "With the project")
+                    Text("Caddie checks this Skill but does not change Project Skills automatically.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("Caddie does not manage this Skill.").foregroundStyle(.secondary)
                 }
@@ -621,16 +761,36 @@ private extension AppSnapshot.ProjectInventory {
 }
 
 private extension AppSnapshot.InventorySkill {
-    var statusLabel: String {
-        switch status {
-        case "manual-only": return "Manual"
-        case "unmanaged": return "Unmanaged"
-        case "attention": return "Needs review"
-        default: return status.capitalized
-        }
+    func matches(_ query: String) -> Bool {
+        name.localizedCaseInsensitiveContains(query)
+            || origin?.name.localizedCaseInsensitiveContains(query) == true
+            || installedPath.localizedCaseInsensitiveContains(query)
     }
 
     var statusColor: Color {
-        status == "attention" ? .orange : status == "ready" ? .blue : .secondary
+        if !enabled { return .secondary }
+        return status == "attention" ? .orange : status == "ready" ? .blue : .secondary
+    }
+}
+
+private struct PageGuide: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).fontWeight(.semibold)
+            Text(message).font(.callout).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct NavigationHint: View {
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .accessibilityHidden(true)
     }
 }

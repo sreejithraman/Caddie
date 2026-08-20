@@ -29,8 +29,16 @@ struct CaddieMenuApp: App {
             mainWindow = nil
         } else {
             locationMessage = nil
-            mainWindow = CaddieWindowController(model: model)
-            Task { @MainActor in model.start() }
+            let controller = CaddieWindowController(model: model)
+            mainWindow = controller
+            Task { @MainActor in
+                model.start()
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--show-main-window") {
+                    controller.show()
+                }
+                #endif
+            }
         }
     }
 

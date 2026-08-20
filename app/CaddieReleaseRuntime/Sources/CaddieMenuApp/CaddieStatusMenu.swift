@@ -61,9 +61,19 @@ struct CaddieStatusMenu: View {
     }
 
     private var lastChecked: String {
-        guard let checked = model.snapshot.freshness.checkedAt else { return "Waiting for first check" }
-        return "Last checked \(checked)"
+        caddieCheckedAtLabel(model.snapshot.freshness.checkedAt)
     }
+}
+
+func caddieCheckedAtLabel(_ checkedAt: String?, now: Date = Date()) -> String {
+    guard let checkedAt else { return "Waiting for first check" }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let date = formatter.date(from: checkedAt) ?? ISO8601DateFormatter().date(from: checkedAt)
+    guard let date else { return "Last check complete" }
+    let relative = RelativeDateTimeFormatter()
+    relative.unitsStyle = .full
+    return "Checked \(relative.localizedString(for: date, relativeTo: now))"
 }
 
 struct CaddieAppStatusPresentation {

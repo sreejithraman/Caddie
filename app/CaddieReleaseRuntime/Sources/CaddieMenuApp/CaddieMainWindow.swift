@@ -58,8 +58,7 @@ struct CaddieMainWindow: View {
     }
 
     private var lastChecked: String {
-        guard let checked = model.snapshot.freshness.checkedAt else { return "Waiting for first check" }
-        return "Last checked \(checked)"
+        caddieCheckedAtLabel(model.snapshot.freshness.checkedAt)
     }
 }
 
@@ -99,6 +98,14 @@ private struct CaddieOverview: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(status.overviewTitle).font(.largeTitle).fontWeight(.semibold)
                     Text(status.overviewMessage).foregroundStyle(.secondary)
+                    Text("User Skills can apply across projects. Project Skills stay with one project. Open any Skill to see its source.")
+                        .font(.callout).foregroundStyle(.secondary).padding(.top, 3)
+                    if model.updatesPaused {
+                        Button("Resume automatic updates") {
+                            Task { await model.toggleAutomaticUpdates() }
+                        }
+                        .padding(.top, 8)
+                    }
                 }
 
                 if let recovery = model.snapshot.recovery {
@@ -118,12 +125,11 @@ private struct CaddieOverview: View {
                 }
 
                 if model.snapshot.pause.active {
-                    GroupBox("Updates paused") {
+                    GroupBox("Why updates are paused") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(model.snapshot.pause.reason ?? "Updates need review.")
-                            Text("Resume checks that the issue is gone before automatic updates start again.")
+                            Text("Resume will check that the issue is gone before automatic updates start again.")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Button("Resume updates") { Task { await model.toggleAutomaticUpdates() } }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -149,12 +155,16 @@ private struct CaddieOverview: View {
 
                 HStack(spacing: 12) {
                     SummaryButton(
-                        title: "Needs review", value: presentation.reviewCount,
-                        symbol: "exclamationmark.triangle", color: presentation.needsReview ? .orange : .secondary
+                        title: presentation.reviewCount == 1 ? "Item needs review" : "Items need review",
+                        value: presentation.reviewCount,
+                        symbol: "exclamationmark.triangle", color: presentation.needsReview ? .orange : .secondary,
+                        action: reviewAction
                     )
                     SummaryButton(
-                        title: "Ready work", value: model.snapshot.readyWork.count,
-                        symbol: "arrow.down.circle", color: .blue
+                        title: model.snapshot.readyWork.count == 1 ? "Update available" : "Updates available",
+                        value: model.snapshot.readyWork.count,
+                        symbol: "arrow.down.circle", color: .blue,
+                        action: { selectPage(.userSkills) }
                     )
                     SummaryButton(
                         title: "User skills", value: presentation.userSkills.count,
@@ -187,29 +197,61 @@ private struct CaddieOverview: View {
                     }
                 }
 
-                if !model.snapshot.readyWork.isEmpty {
+                if !userReviewSkills.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Ready work").font(.title2).fontWeight(.semibold)
-                        ForEach(model.snapshot.readyWork) { work in
-                            HStack {
-                                Label(work.selectionId, systemImage: "arrow.down.circle")
-                                Spacer()
-                                Button("Update") { Task { await model.update(selectionID: work.selectionId) } }
+                        HStack {
+                            Text("User Skills to review").font(.title2).fontWeight(.semibold)
+                            Spacer()
+                            Button("View all") { selectPage(.userSkills) }
+                        }
+                        ForEach(userReviewSkills.prefix(5)) { skill in
+                            NavigationLink {
+                                SkillDetailView(model: model, skillID: skill.id)
+                            } label: {
+                                SkillSummaryRow(skill: skill).contentShape(Rectangle())
                             }
-                            .padding(12)
-                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+                            .buttonStyle(.plain)
                         }
                     }
                 }
 
-                if !model.snapshot.activity.isEmpty {
+                if !presentation.readySkills.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Updates available").font(.title2).fontWeight(.semibold)
+                            Spacer()
+                            Button("View all User Skills") { selectPage(.userSkills) }
+                        }
+                        ForEach(presentation.readySkills.prefix(5)) { item in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Label(item.name, systemImage: "arrow.down.circle")
+                                    if let source = item.sourceName {
+                                        Text("From \(source)").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Button("Update") { Task { await model.update(selectionID: item.work.selectionId) } }
+                            }
+                            .padding(12)
+                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        if presentation.readySkills.count > 5 {
+                            Text("\(presentation.readySkills.count - 5) more updates are available in User Skills.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if !presentation.recentActivity.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Recent activity").font(.title2).fontWeight(.semibold)
-                        ForEach(model.snapshot.activity.prefix(8)) { item in
-                            HStack {
-                                Text(item.kind)
+                        ForEach(presentation.recentActivity.prefix(5)) { item in
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
+                                Text(item.title)
                                 Spacer()
-                                Text(item.subjectId).foregroundStyle(.secondary)
+                                Text(item.subject).foregroundStyle(.secondary)
                             }
                             .font(.callout)
                         }
@@ -226,12 +268,26 @@ private struct CaddieOverview: View {
         presentation.projectGroups.filter(\.needsReview)
     }
 
+    private var userReviewSkills: [AppSnapshot.InventorySkill] {
+        presentation.userSkills.filter { $0.status == "attention" }
+    }
+
     private var toolAttention: [AppSnapshot.Attention] {
         model.snapshot.attention.filter { $0.subjectId == "tool" || $0.subjectId == "recovery" }
     }
 
     private var recoveryActions: [AppSnapshot.PendingAction] {
         model.snapshot.pendingActions.filter { ["finish-recovery", "rollback-recovery"].contains($0.intent.type) }
+    }
+
+    private var reviewAction: (() -> Void)? {
+        if presentation.reviewCount > 0, presentation.reviewCount == presentation.projectReviewCount {
+            return { selectPage(.projects) }
+        }
+        if presentation.reviewCount > 0, presentation.reviewCount == presentation.inventoryOnlyUserReviewCount {
+            return { selectPage(.userSkills) }
+        }
+        return nil
     }
 
 }
@@ -256,7 +312,15 @@ private struct SummaryButton: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(color)
+            HStack {
+                Image(systemName: symbol).foregroundStyle(color)
+                Spacer()
+                if action != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
             Text("\(value)").font(.title).fontWeight(.semibold)
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
