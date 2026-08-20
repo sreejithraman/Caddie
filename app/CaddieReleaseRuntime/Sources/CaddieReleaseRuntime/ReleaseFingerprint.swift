@@ -1,3 +1,4 @@
+import Darwin
 import CryptoKit
 import Foundation
 
@@ -15,6 +16,7 @@ public enum ReleaseFingerprint {
         }
 
         let root = url.standardizedFileURL
+        let canonicalRootPath = try root.canonicalPath()
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -25,10 +27,20 @@ public enum ReleaseFingerprint {
         var entries: [(String, UInt8, Data)] = []
         for case let child as URL in enumerator {
             let values = try child.resourceValues(forKeys: Set(keys))
-            let relative = String(child.path.dropFirst(root.path.count + 1))
             if values.isSymbolicLink == true {
                 throw ReleaseFingerprintFault.symbolicLink
-            } else if values.isDirectory == true {
+            }
+            let childPath = child.path
+            let parentPath: String
+            if childPath.hasPrefix(canonicalRootPath + "/") {
+                parentPath = canonicalRootPath
+            } else if childPath.hasPrefix(root.path + "/") {
+                parentPath = root.path
+            } else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            let relative = String(childPath.dropFirst(parentPath.count + 1))
+            if values.isDirectory == true {
                 entries.append((relative, 1, Data()))
             } else if values.isRegularFile == true {
                 entries.append((relative, 0, try Data(contentsOf: child)))
@@ -48,6 +60,14 @@ public enum ReleaseFingerprint {
 }
 
 enum ReleaseFingerprintFault: Error { case symbolicLink }
+
+private extension URL {
+    func canonicalPath() throws -> String {
+        guard let resolved = realpath(path, nil) else { throw CocoaError(.fileReadUnknown) }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+}
 
 private extension Digest {
     var hex: String { map { String(format: "%02x", $0) }.joined() }

@@ -160,6 +160,27 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public func isAuthorized(_ selectionID: String) -> Bool {
         authorizations.contains { $0.selectionId == selectionID && $0.active }
     }
+
+    func hasInspectionRelevantChanges(comparedTo prior: AppSnapshot) -> Bool {
+        version != prior.version || state != prior.state || summary != prior.summary
+            || sources != prior.sources || userSkills != prior.userSkills || projectSkills != prior.projectSkills
+            || readyWork != prior.readyWork || authorizations != prior.authorizations
+            || !Self.sameAttention(attention, prior.attention)
+            || !Self.sameAttention(recentAttention, prior.recentAttention)
+            || activity != prior.activity || pendingActions != prior.pendingActions
+            || outsideEffects != prior.outsideEffects || pause != prior.pause
+            || watchSet != prior.watchSet || recovery != prior.recovery
+    }
+
+    private static func sameAttention(_ left: [Attention], _ right: [Attention]) -> Bool {
+        guard left.count == right.count else { return false }
+        return zip(left, right).allSatisfy { current, prior in
+            current.id == prior.id && current.subjectId == prior.subjectId && current.code == prior.code
+                && current.priority == prior.priority && current.state == prior.state
+                && current.stableKey == prior.stableKey && current.condition == prior.condition
+                && current.createdAt == prior.createdAt
+        }
+    }
 }
 
 public struct ToolResponse: Decodable, Sendable {

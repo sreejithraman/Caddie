@@ -12,6 +12,13 @@ case "$mode" in
   --development)
     configuration=debug
     final_app_path="$package_root/.build/Caddie.app"
+    node_path=${CADDIE_DEVELOPMENT_NODE:-${commands[node]:-}}
+    node_version=$("$node_path" --version 2>/dev/null || true)
+    node_major=${${node_version#v}%%.*}
+    [[ -x "$node_path" && "$node_version" == v<->.* && "$node_major" -ge 22 ]] || {
+      print -u2 -- "Node 22 or later is required for a development build."
+      exit 2
+    }
     ;;
   --release)
     configuration=release
@@ -41,6 +48,9 @@ case "$mode" in
 esac
 
 swift build --disable-sandbox --package-path "$package_root" -c "$configuration" --arch arm64 --product CaddieMenuApp
+if [[ "$mode" == --development ]]; then
+  swift build --disable-sandbox --package-path "$package_root" -c "$configuration" --arch arm64 --product CaddieDevelopmentSetup
+fi
 binary_path=$(swift build --disable-sandbox --package-path "$package_root" -c "$configuration" --arch arm64 --show-bin-path)
 bundle_stage=$(mktemp -d "$package_root/.build/caddie-app.XXXXXX")
 app_path="$bundle_stage/Caddie.app"
@@ -60,4 +70,7 @@ fi
 mkdir -p "${final_app_path:h}"
 rm -rf -- "$final_app_path"
 mv "$app_path" "$final_app_path"
+if [[ "$mode" == --development ]]; then
+  "$binary_path/CaddieDevelopmentSetup" "$final_app_path" "$node_path" "$repo_root/skills/caddie"
+fi
 print -r -- "$final_app_path"

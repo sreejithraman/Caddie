@@ -121,6 +121,21 @@ final class MenuCacheTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    func testVerificationIgnoresOnlyCycleBookkeeping() {
+        let prior = snapshot(safetyPaused: false)
+        let bookkeepingOnly = AppSnapshot(
+            version: prior.version, state: prior.state, revision: prior.revision + 1,
+            freshness: .init(checkedAt: "2026-08-03T14:01:00Z"), summary: prior.summary,
+            sources: prior.sources, userSkills: prior.userSkills, projectSkills: prior.projectSkills,
+            readyWork: prior.readyWork, authorizations: prior.authorizations, attention: prior.attention,
+            recentAttention: prior.recentAttention, activity: prior.activity, pendingActions: prior.pendingActions,
+            outsideEffects: prior.outsideEffects, pause: prior.pause, watchSet: prior.watchSet, recovery: prior.recovery
+        )
+
+        XCTAssertFalse(bookkeepingOnly.hasInspectionRelevantChanges(comparedTo: prior))
+        XCTAssertTrue(snapshot(safetyPaused: true).hasInspectionRelevantChanges(comparedTo: prior))
+    }
+
     private func testDefaults() -> UserDefaults {
         UserDefaults(suiteName: "MenuPauseTests-\(UUID().uuidString)")!
     }

@@ -34,6 +34,15 @@ public struct ReleaseCompatibility: Codable, Equatable, Sendable {
     }
 }
 
+public extension ReleaseCompatibility {
+    static let caddieCurrent = ReleaseCompatibility(
+        toolProtocolVersion: 2,
+        supportedSkillProtocolVersions: [1, 2],
+        minimumStateFormatVersion: 1,
+        maximumStateFormatVersion: 1
+    )
+}
+
 public struct CaddieReleaseManifest: Codable, Equatable, Sendable {
     public let version: Int
     public let releaseID: String

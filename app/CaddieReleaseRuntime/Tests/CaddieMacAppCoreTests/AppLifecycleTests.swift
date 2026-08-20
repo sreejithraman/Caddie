@@ -47,6 +47,17 @@ final class AppLifecycleTests: XCTestCase {
         ), .allowed)
     }
 
+    func testDevelopmentToolUsesIsolatedHomeWhileReleaseKeepsUserEnvironment() {
+        let support = URL(fileURLWithPath: "/tmp/Caddie Development", isDirectory: true)
+        let base = ["HOME": "/Users/example", "TOKEN": "kept"]
+
+        XCTAssertEqual(
+            CaddieBuildChannel.development.toolEnvironment(base: base, supportRoot: support),
+            ["HOME": "/tmp/Caddie Development/Developer Home", "TOKEN": "kept"]
+        )
+        XCTAssertEqual(CaddieBuildChannel.release.toolEnvironment(base: base, supportRoot: support), base)
+    }
+
     func testBootstrapClassifiesAllSixPreservationCases() {
         let policy = BootstrapStatePolicy()
         XCTAssertEqual(policy.classify(.init(hasCaddieStateRoot: false)), .fresh)

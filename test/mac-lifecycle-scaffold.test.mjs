@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -100,14 +100,42 @@ test('release build rejects malformed bundle versions before building or signing
   }
 });
 
+test('development build rejects Node older than 22 before building', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'caddie-old-node-'));
+  try {
+    const oldNode = path.join(root, 'node');
+    await writeFile(oldNode, '#!/bin/sh\necho v20.19.0\n');
+    await chmod(oldNode, 0o755);
+    const result = spawnSync('scripts/build-caddie-menu-app.sh', ['--development'], {
+      encoding: 'utf8',
+      env: { ...process.env, CADDIE_DEVELOPMENT_NODE: oldNode },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /Node 22 or later/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Mac app rebuild cannot keep a stale bundle file', { skip: process.platform !== 'darwin' }, async () => {
-  let result = spawnSync('scripts/build-caddie-menu-app.sh', ['--development'], { encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stderr);
-  const marker = 'app/CaddieReleaseRuntime/.build/Caddie.app/Contents/stale-marker';
-  await writeFile(marker, 'must not survive');
-  result = spawnSync('scripts/build-caddie-menu-app.sh', ['--development'], { encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stderr);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  const supportRoot = await mkdtemp(path.join(os.tmpdir(), 'caddie-development-support-'));
+  try {
+    const options = {
+      encoding: 'utf8',
+      env: { ...process.env, CADDIE_DEVELOPMENT_SUPPORT_ROOT: supportRoot },
+    };
+    let result = spawnSync('scripts/build-caddie-menu-app.sh', ['--development'], options);
+    assert.equal(result.status, 0, result.stderr);
+    const marker = 'app/CaddieReleaseRuntime/.build/Caddie.app/Contents/stale-marker';
+    await writeFile(marker, 'must not survive');
+    result = spawnSync('scripts/build-caddie-menu-app.sh', ['--development'], options);
+    assert.equal(result.status, 0, result.stderr);
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(supportRoot, { recursive: true, force: true });
+  }
 });
 
 test('dry-run disk image packaging refuses overwrite and has one Applications target', async () => {
