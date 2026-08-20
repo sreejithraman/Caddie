@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Caddie updates</title>
+    <link>https://sreejithraman.github.io/Caddie/appcast.xml</link>
+    <description>Signed Caddie releases</description>
+    <language>en</language>
+    <!-- Generate release items with Sparkle's pinned generate_appcast tool. -->
+  </channel>
+</rss>

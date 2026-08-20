@@ -6,16 +6,34 @@ import SwiftUI
 @main
 struct CaddieMenuApp: App {
     @StateObject private var model: AppModel
+    private let locationMessage: String?
 
     init() {
-        let model = AppModel(client: ToolLaunchClient())
+        let channel = CaddieBuildChannel(bundleIdentifier: Bundle.main.bundleIdentifier)
+        let supportRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(channel.applicationSupportFolder, isDirectory: true)
+        let model = AppModel(client: ToolLaunchClient(supportRoot: supportRoot))
         _model = StateObject(wrappedValue: model)
-        Task { @MainActor in model.start() }
+        let assessment = AppLocationPolicy().assess(
+            bundleURL: Bundle.main.bundleURL,
+            homeURL: FileManager.default.homeDirectoryForCurrentUser,
+            channel: channel
+        )
+        if case .blocked(let reason) = assessment {
+            locationMessage = reason.userMessage
+        } else {
+            locationMessage = nil
+            Task { @MainActor in model.start() }
+        }
     }
 
     var body: some Scene {
         MenuBarExtra("Caddie", systemImage: menuSymbol) {
-            CaddieMenu(model: model)
+            if let locationMessage {
+                BlockedLocationMenu(message: locationMessage)
+            } else {
+                CaddieMenu(model: model)
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -27,8 +45,25 @@ struct CaddieMenuApp: App {
     }
 }
 
+private struct BlockedLocationMenu: View {
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Move Caddie", systemImage: "folder.badge.questionmark")
+                .font(.headline)
+            Text(message)
+            Divider()
+            Button("Quit") { NSApplication.shared.terminate(nil) }
+        }
+        .padding(16)
+        .frame(width: 320)
+    }
+}
+
 private struct CaddieMenu: View {
     @ObservedObject var model: AppModel
+    @State private var confirmsRemoval = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -51,6 +86,14 @@ private struct CaddieMenu: View {
         .alert("Caddie needs help", isPresented: Binding(
             get: { model.lastError != nil }, set: { if !$0 { model.clearError() } }
         )) { Button("OK") { model.clearError() } } message: { Text(model.lastError ?? "") }
+        .confirmationDialog("Prepare to remove Caddie?", isPresented: $confirmsRemoval) {
+            Button("Turn off login and quit") {
+                if model.prepareForAppRemoval() { NSApplication.shared.terminate(nil) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your Caddie Skill, Tool fallback, managed skills, and user and project state stay in place. You can then remove Caddie with Homebrew or move the app to Trash.")
+        }
     }
 
     private var header: some View {
@@ -157,6 +200,7 @@ private struct CaddieMenu: View {
             Divider()
             HStack {
                 Button("About Caddie") { NSApplication.shared.orderFrontStandardAboutPanel(nil) }
+                Button("Remove Caddie…") { confirmsRemoval = true }
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
             }.padding(14)

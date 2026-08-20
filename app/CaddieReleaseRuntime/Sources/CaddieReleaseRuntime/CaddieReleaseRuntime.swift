@@ -123,6 +123,28 @@ public actor CaddieReleaseRuntime {
         return record
     }
 
+    public func acquireLifecycleReservation() throws -> ReleaseLifecycleReservation {
+        ReleaseLifecycleReservation(
+            claim: try acquireLifecycleClaim(supportRoot: supportRoot, fileManager: fileManager)
+        )
+    }
+
+    public func acquireIdleLifecycleReservation() async throws -> ReleaseLifecycleReservation {
+        try prepareRoots()
+        let claim = try acquireLifecycleClaim(supportRoot: supportRoot, fileManager: fileManager)
+        do {
+            while try hasLiveLeases() {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try Task.checkCancellation()
+            return ReleaseLifecycleReservation(claim: claim)
+        } catch {
+            claim.release()
+            throw error
+        }
+    }
+
     public func inspectTakeoverClaim() throws -> TakeoverClaimEvidence? {
         let path = supportRoot.appendingPathComponent("Release Lifecycle.takeover", isDirectory: true)
         guard fileManager.fileExists(atPath: path.path) else { return nil }
@@ -390,29 +412,65 @@ public actor CaddieReleaseRuntime {
         return kill(processID, 0) == 0 || errno == EPERM
     }
 
-    private func protectedReleaseIDs(record: ToolLaunchRecord? = nil) throws -> Set<String> {
-        let launchRecord = record ?? (try? readLaunchRecord())
-        var protected = Set<String>()
-        if let launchRecord {
-            protected.formUnion([launchRecord.active.releaseID, launchRecord.lastGood.releaseID])
-        }
+    private func hasLiveLeases() throws -> Bool {
+        try !liveLeasesRemovingDead().isEmpty
+    }
+
+    private func liveLeasesRemovingDead() throws -> [ToolLease] {
+        var live: [ToolLease] = []
         for leaseURL in try fileManager.contentsOfDirectory(at: leasesRoot, includingPropertiesForKeys: nil) {
             guard leaseURL.pathExtension == "json" else { continue }
-            guard let data = try? Data(contentsOf: leaseURL),
-                  (try? StrictJSON.validateLease(data)) != nil,
+            let data: Data
+            do {
+                data = try Data(contentsOf: leaseURL)
+            } catch {
+                if fileWasRemoved(error) { continue }
+                throw ReleaseRuntimeFault.malformedLease
+            }
+            guard (try? StrictJSON.validateLease(data)) != nil,
                   let lease = try? decoder.decode(ToolLease.self, from: data),
                   lease.version == 1,
                   lease.processID > 0,
                   lease.releaseID.wholeMatch(of: /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/) != nil else {
                 throw ReleaseRuntimeFault.malformedLease
             }
-            try migrateBackgroundFileProtection(at: leaseURL, fileManager: fileManager)
+            do {
+                try migrateBackgroundFileProtection(at: leaseURL, fileManager: fileManager)
+            } catch {
+                if fileWasRemoved(error) { continue }
+                throw error
+            }
             if processIsAlive(lease.processID) {
-                protected.insert(lease.releaseID)
+                live.append(lease)
             } else {
-                try? fileManager.removeItem(at: leaseURL)
+                do {
+                    try fileManager.removeItem(at: leaseURL)
+                } catch {
+                    if fileWasRemoved(error) { continue }
+                    throw error
+                }
             }
         }
+        return live
+    }
+
+    private func protectedReleaseIDs(record: ToolLaunchRecord? = nil) throws -> Set<String> {
+        let launchRecord = record ?? (try? readLaunchRecord())
+        var protected = Set<String>()
+        if let launchRecord {
+            protected.formUnion([launchRecord.active.releaseID, launchRecord.lastGood.releaseID])
+        }
+        protected.formUnion(try liveLeasesRemovingDead().map(\.releaseID))
         return protected
     }
+}
+
+private func fileWasRemoved(_ error: Error) -> Bool {
+    let error = error as NSError
+    let cocoaMissingCodes = [
+        CocoaError.fileNoSuchFile.rawValue,
+        CocoaError.fileReadNoSuchFile.rawValue,
+    ]
+    return (error.domain == NSCocoaErrorDomain && cocoaMissingCodes.contains(error.code))
+        || (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT))
 }

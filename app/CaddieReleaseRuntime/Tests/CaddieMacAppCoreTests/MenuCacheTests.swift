@@ -107,6 +107,20 @@ final class MenuCacheTests: XCTestCase {
         XCTAssertEqual(model.loginItemStatus, .enabled)
     }
 
+    @MainActor
+    func testPreparingForRemovalTurnsOffLoginWithoutChangingToolOrSkillState() async {
+        let login = MutableLoginItem()
+        login.currentStatus = .enabled
+        let tool = CountingTool()
+        let model = AppModel(client: tool, defaults: testDefaults(), loginItem: login)
+
+        XCTAssertTrue(model.prepareForAppRemoval())
+
+        XCTAssertEqual(login.requestedValues, [false])
+        let count = await tool.count()
+        XCTAssertEqual(count, 0)
+    }
+
     private func testDefaults() -> UserDefaults {
         UserDefaults(suiteName: "MenuPauseTests-\(UUID().uuidString)")!
     }
@@ -155,7 +169,11 @@ private struct DisabledLoginItem: LoginItemManaging {
 @MainActor
 private final class MutableLoginItem: LoginItemManaging {
     var currentStatus: SMAppService.Status = .notRegistered
+    var requestedValues: [Bool] = []
     var status: SMAppService.Status { currentStatus }
-    func setEnabled(_ enabled: Bool) throws {}
+    func setEnabled(_ enabled: Bool) throws {
+        requestedValues.append(enabled)
+        currentStatus = enabled ? .enabled : .notRegistered
+    }
     func openSystemSettings() {}
 }
