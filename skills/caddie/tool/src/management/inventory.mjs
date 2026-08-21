@@ -1,7 +1,6 @@
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { access, readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -12,6 +11,15 @@ import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
 import { ManagementError } from './request.mjs';
 import { inspectProjectCheckout } from './local-source.mjs';
 import { inspectLegacyProjectRepair } from './project-actions.mjs';
+import {
+  digest,
+  fingerprintIfPresent,
+  optionalJson,
+  selectionId,
+} from './management-helpers.mjs';
+import { inspectInstalledSkills } from './user-skill-inventory.mjs';
+
+export { inspectInstalledSkills } from './user-skill-inventory.mjs';
 
 const require = createRequire(import.meta.url);
 const { fingerprint } = require('../apply/filesystem');
@@ -66,32 +74,6 @@ export function buildSkillInventory(inventory, statuses) {
     )),
     projects: projects.sort((left, right) => left.name.localeCompare(right.name) || left.root.localeCompare(right.root)),
   };
-}
-
-export async function inspectInstalledSkills(root) {
-  let entries;
-  try { entries = await readdir(root, { withFileTypes: true }); } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  }
-  const skills = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    const installedPath = path.join(root, entry.name);
-    const skillFile = path.join(installedPath, 'SKILL.md');
-    try {
-      const name = extractSkillName(await readFile(skillFile, 'utf8'), skillFile, entry.name);
-      skills.push({ name, installedPath });
-    } catch (error) {
-      if (['EACCES', 'EPERM'].includes(error?.code)) {
-        skills.push({ name: entry.name, installedPath, permissionFolder: installedPath });
-        continue;
-      }
-      if (['ENOENT', 'EISDIR', 'ENOTDIR', 'ELOOP'].includes(error?.code) || error?.code?.startsWith('skill-')) continue;
-      throw error;
-    }
-  }
-  return skills;
 }
 
 export async function inspectProjectSkillInventory(home, { runProjectWorker = defaultRunProjectWorker } = {}) {
@@ -406,27 +388,9 @@ function projectSummary(projectRoot, rows, status, {
   };
 }
 
-async function optionalJson(filePath) {
-  try { return JSON.parse(await readFile(filePath, 'utf8')); } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    if (error instanceof SyntaxError) throw new ManagementError('invalid-state', 'Caddie state is not valid JSON', 'needs-user');
-    throw error;
-  }
-}
-
-async function fingerprintIfPresent(target) {
-  if (!target) return null;
-  try { await access(target); return await fingerprint(target); } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-}
-
-function selectionId(sourceId, selectedPath) { return `${sourceId}:${path.normalize(selectedPath)}`; }
 function unavailableCode(error) {
   if (error?.code === 'invalid-ledger-content') return 'invalid-ledger-content';
   if (error?.code === 'ENOENT') return 'missing-content';
   if (error?.code === 'EACCES' || error?.code === 'EPERM') return 'permission-denied';
   return 'incomplete-evidence';
 }
-function digest(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }

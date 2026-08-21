@@ -1,19 +1,24 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { access, lstat, readFile, readlink } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parseManifest } from '../manifest/parse-manifest.mjs';
-import { extractSkillName } from '../manifest/resolve-selections.mjs';
-import { validateOwnershipLedger } from '../protocol/ledger-ownership.mjs';
 import { createLegacyBridge } from './legacy-bridge.mjs';
 import { inspectLocalGitSource, readLocalSourceText } from './local-source.mjs';
 import { invokeProjectAction, prepareProjectAction } from './project-actions.mjs';
-import { buildSkillInventory, inspectInstalledSkills, inspectProjectSkillInventory } from './inventory.mjs';
+import { buildSkillInventory, inspectProjectSkillInventory } from './inventory.mjs';
 import {
   inventoryProjectionNeedsRepair, inventoryStorePath, preflightInventoryProjection, readInventoryProjection,
   writeInventoryProjection,
 } from './inventory-store.mjs';
 import { observeAttention, prepareAttentionCapacity } from './attention.mjs';
+import {
+  digest,
+  optionalJson,
+  stableCondition,
+  validLock,
+} from './management-helpers.mjs';
+import { classifySelection, duplicateNames } from './selection-status.mjs';
+import { inspectUserSkillInventory } from './user-skill-inventory.mjs';
 import {
   ACT_FORMS,
   CYCLE_MODES,
@@ -75,10 +80,6 @@ export function createManagementModule(options = {}) {
     execute: (request) => execute(request, runtime),
     executeLegacy: (rawRequest) => legacyBridge.execute(rawRequest),
   });
-}
-
-export async function executeManagement(request, options = {}) {
-  return createManagementModule(options).execute(request);
 }
 
 async function execute(rawRequest, runtime) {
@@ -561,88 +562,16 @@ async function invokePendingAction(state, action, runtime, at) {
 }
 
 async function inspectInventory(state, runtime, { onlySelectionId = null, refreshProjects = true } = {}) {
-  const layout = scopeLayout({ id: 'user', root: runtime.home }, runtime.home);
-  const manifest = await parseManifest(layout.manifestPath, 'user', runtime.home);
-  const ledger = await optionalJson(layout.ledgerPath, 'ledger');
-  if (ledger !== null) {
-    try { validateOwnershipLedger(ledger, { expectedScopeId: 'user' }); } catch (error) {
-      throw new ManagementError('invalid-ledger', 'Caddie Ledger is malformed or unsupported', 'needs-user', { cause: error.code ?? 'invalid-ledger' });
-    }
-  }
-  const lock = await optionalJson(layout.lockPath, 'lock');
-  if (!validLock(lock)) throw new ManagementError('invalid-lock', 'Caddie Lock is missing, malformed, or unsupported', 'needs-user');
-  const [lockFingerprint, ledgerFingerprint] = await Promise.all([
-    fingerprint(layout.lockPath), fingerprint(layout.ledgerPath),
-  ]);
-  const selections = [];
-  const unavailableLocalSources = new Map();
-  const selectedManifestSkills = manifest.skills.filter((raw) => (
-    onlySelectionId === null || selectionId(raw.source, raw.path) === onlySelectionId
-  ));
-  const inspectOne = async (raw) => {
-    const source = manifest.sources[raw.source];
-    const id = selectionId(raw.source, raw.path);
-    if (source.type !== 'local') {
-      const entry = ledger?.entries.find((item) => item?.sourceId === raw.source && item?.selectedPath === raw.path) ?? null;
-      return {
-        id, name: entry?.name ?? null, sourceId: raw.source, selectedPath: raw.path, enabled: raw.enabled ?? true,
-        sourceType: source.type, sourceDefinition: source, installedPath: entry?.path ?? null, statusOnly: true,
-      };
-    }
-    const selectedRoot = path.resolve(source.path, raw.path);
-    const provenanceEntry = ledger?.entries.find((item) => item?.sourceId === raw.source && item?.selectedPath === raw.path) ?? null;
-    const skillFile = path.join(selectedRoot, 'SKILL.md');
-    let name;
-    let inspection;
-    const knownFailure = unavailableLocalSources.get(raw.source);
-    if (knownFailure) {
-      name = provenanceEntry?.name ?? null;
-      inspection = {
-        kind: 'unavailable', code: knownFailure.code, detail: knownFailure.detail,
-        checkout: source.path, selectedPath: raw.path,
-      };
-    } else try {
-      name = extractSkillName(await runtime.readSourceText(skillFile), skillFile, path.basename(selectedRoot));
-      const authorization = state.authorizations[id];
-      inspection = await runtime.inspectGit({
-        checkout: source.path, selectedPath: raw.path, acceptedCommit: authorization?.acceptedCommit ?? null,
-      });
-    } catch (error) {
-      name = provenanceEntry?.name ?? null;
-      inspection = {
-        kind: 'unavailable', code: unavailableCode(error), detail: stableCondition(error),
-        checkout: source.path, selectedPath: raw.path,
-      };
-      if (inspection.code === 'source-unavailable') unavailableLocalSources.set(raw.source, inspection);
-    }
-    const authorization = state.authorizations[id];
-    const entry = provenanceEntry
-      ?? ledger?.entries.find((item) => item?.name === name) ?? null;
-    const installedPath = entry?.path ?? (name ? path.join(layout.canonicalSkillsRoot, name) : null);
-    const installedFingerprint = await fingerprintIfPresent(installedPath);
-    const ownership = await inspectOwnedExposure(ledger, name);
-    const ownershipDigest = ownership.digest;
-    const baselineClean = inspection.kind === 'git' && inspection.branch !== null && !inspection.selectedPathDirty
-      && installedFingerprint !== null && installedFingerprint === inspection.fingerprint
-      && entry?.fingerprint === installedFingerprint && entry?.sourceId === raw.source && entry?.selectedPath === raw.path
-      && ownership.complete;
-    return {
-      id, name, sourceId: raw.source, selectedPath: raw.path, enabled: raw.enabled ?? true,
-      sourceType: source.type, sourceDefinition: source, sourceRoot: source.path, selectedRoot, installedPath, installedFingerprint,
-      inspection, ledgerEntry: entry, ownershipDigest, baselineClean, lockFingerprint, ledgerFingerprint,
-    };
-  };
-  const inspectionConcurrency = 6;
-  for (let offset = 0; offset < selectedManifestSkills.length; offset += inspectionConcurrency) {
-    selections.push(...await Promise.all(selectedManifestSkills.slice(offset, offset + inspectionConcurrency).map(inspectOne)));
-  }
+  const userInventory = await inspectUserSkillInventory(state, runtime, { onlySelectionId });
+  const {
+    manifest, lock, lockFingerprint, ledger, ledgerFingerprint, selections, installedUserSkills, layout, watchPaths,
+  } = userInventory;
   if (onlySelectionId === null) {
     const present = new Set(selections.map((selection) => selection.id));
     for (const [id, authorization] of Object.entries(state.authorizations)) {
       if (!present.has(id)) authorization.active = false;
     }
   }
-  const installedUserSkills = onlySelectionId === null ? await inspectInstalledSkills(layout.canonicalSkillsRoot) : [];
   const cachedInventory = !refreshProjects ? await readInventoryProjection(runtime.inventoryPath, state.revision) : null;
   const cachedProjectInventory = (cachedInventory?.skillInventory ?? state.snapshot?.skillInventory ?? [])
     .filter((item) => item.scope === 'project');
@@ -653,15 +582,6 @@ async function inspectInventory(state, runtime, { onlySelectionId = null, refres
       projects: structuredClone(cachedInventory?.projects ?? state.snapshot?.projects ?? []),
     })
     : { projectSkills: [], skillInventory: [], projects: [] };
-  const watchPaths = [
-    layout.stateRoot,
-    ...selections.flatMap((selection) => [
-      selection.sourceRoot,
-      selection.inspection?.repositoryRoot !== selection.inspection?.checkout ? selection.inspection?.repositoryRoot : null,
-      selection.installedPath,
-    ]),
-    ...(ledger?.harnessSettings ?? []).map((entry) => entry?.settingsPath ?? entry?.path).filter((item) => typeof item === 'string'),
-  ];
   return {
     manifest, lock, lockFingerprint, ledger, ledgerFingerprint, selections,
     projectSkills: projectData.projectSkills, projectInventory: projectData.skillInventory,
@@ -703,59 +623,6 @@ async function retryAttention(state, attentionId, runtime, at) {
   }
   observeAttention(state, causes, at, new Set([attention.subjectId]));
   state.activity.unshift(activity('retried', attention.subjectId, at, { attentionId }));
-}
-
-function classifySelection(selection, state, collisions) {
-  const causes = [];
-  if (selection.statusOnly) return { status: 'manual-only', causes, ready: null, eligible: false };
-  const auth = state.authorizations[selection.id];
-  if (collisions.has(selection.name)) causes.push(cause(selection.id, 'collision', selection.name));
-  if (selection.inspection.kind === 'unavailable') {
-    return {
-      status: 'attention', causes: [cause(selection.id, selection.inspection.code, selection.selectedPath)],
-      ready: null, eligible: false,
-    };
-  }
-  if (selection.inspection.kind !== 'git') {
-    const changed = selection.inspection.fingerprint && selection.inspection.fingerprint !== selection.installedFingerprint;
-    return {
-      status: 'manual-only', causes,
-      ready: changed ? { version: 2, id: `ready-${hashValue({ selection: selection.id, fingerprint: selection.inspection.fingerprint }).slice(0, 24)}`, selectionId: selection.id, kind: 'manual-update', authorized: false } : null,
-      eligible: false,
-    };
-  } else {
-    if (!selection.inspection.branch) causes.push(cause(selection.id, 'detached-head', selection.inspection.commit));
-    if (selection.inspection.selectedPathDirty) causes.push(cause(selection.id, 'selected-path-dirty', selection.selectedPath));
-  }
-  if (auth) {
-    const identityChanged = auth.sourceId !== selection.sourceId || auth.selectedPath !== selection.selectedPath
-      || auth.sourceCheckout !== selection.inspection.checkout;
-    if (identityChanged) auth.active = false;
-    if (identityChanged || auth.approvedBranch !== selection.inspection.branch) {
-      causes.push(cause(selection.id, identityChanged ? 'authorization-scope-changed' : 'wrong-branch', selection.inspection.branch ?? 'detached'));
-    }
-    if (selection.inspection.descendant === false) causes.push(cause(selection.id, 'non-descendant-commit', selection.inspection.commit));
-    if (auth.ownershipDigest !== selection.ownershipDigest) causes.push(cause(selection.id, 'owned-exposure-changed', selection.ownershipDigest));
-    if (auth.lockFingerprint !== selection.lockFingerprint) {
-      causes.push(cause(selection.id, 'lock-divergence', 'lock-baseline'));
-    }
-    if (auth.ledgerFingerprint !== selection.ledgerFingerprint && selection.ledgerEntry?.fingerprint !== auth.installedFingerprint) {
-      causes.push(cause(selection.id, 'divergence', 'ledger-document'));
-    }
-    if (selection.installedFingerprint !== auth.installedFingerprint) causes.push(cause(selection.id, 'drift', selection.installedFingerprint ?? 'missing'));
-    if (!selection.ledgerEntry || selection.ledgerEntry.fingerprint !== auth.installedFingerprint) causes.push(cause(selection.id, 'divergence', 'ledger-baseline'));
-  }
-  if (causes.length) return { status: 'attention', causes, ready: null, eligible: false };
-  const changed = auth && selection.inspection.fingerprint !== auth.sourceFingerprint;
-  if (changed) {
-    const ready = { version: 2, id: `ready-${hashValue({ selection: selection.id, commit: selection.inspection.commit }).slice(0, 24)}`, selectionId: selection.id, kind: 'update', authorized: auth.active };
-    return { status: 'ready', causes, ready, eligible: auth.active === true };
-  }
-  if (!auth) {
-    const ready = { version: 2, id: `ready-${hashValue({ selection: selection.id, fingerprint: selection.inspection.fingerprint }).slice(0, 24)}`, selectionId: selection.id, kind: 'authorization-available', authorized: false };
-    return { status: selection.baselineClean ? 'current' : 'ready', causes, ready, eligible: false };
-  }
-  return { status: 'current', causes, ready: null, eligible: false };
 }
 
 async function applySelection(selection, inventory, runtime) {
@@ -829,17 +696,6 @@ function assertSamePreconditions(expected, actual) {
   if (digest(expected) !== digest(actual)) throw new ManagementError('action-preconditions-changed', 'Live evidence changed after the action was created', 'replan');
 }
 
-function duplicateNames(selections) {
-  const counts = new Map();
-  for (const selection of selections) if (selection.name) counts.set(selection.name, (counts.get(selection.name) ?? 0) + 1);
-  return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
-}
-
-function cause(subjectId, code, condition, priority = 'high') {
-  return { subjectId, code, condition: String(condition), priority };
-}
-
-function stableCondition(error) { return String(error?.code ?? error?.message ?? 'unknown').slice(0, 256); }
 function verificationFault(error) { return error?.code === 'verification-failed' || error?.code === 'unowned-write'; }
 function trustFault(error) {
   return ['invalid-ledger', 'invalid-lock', 'invalid-recovery', 'malformed-management-state', 'unsupported-management-state-version', 'unsupported-registry', 'invalid-registry', 'invalid-registry-json', 'invalid-registered-projects'].includes(error?.code);
@@ -914,61 +770,11 @@ function queueRecoveryActions(state, recovery, at) {
   }
 }
 
-function selectionId(sourceId, selectedPath) { return `${sourceId}:${path.normalize(selectedPath)}`; }
-async function optionalJson(filePath, label = 'state') {
-  try { return JSON.parse(await readFile(filePath, 'utf8')); } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    if (error instanceof SyntaxError) throw new ManagementError(`invalid-${label}`, `Caddie ${label} is not valid JSON`, 'needs-user');
-    throw error;
-  }
-}
-function validLock(lock) {
-  if (!plainObject(lock) || Object.keys(lock).sort().join(',') !== 'sources,version' || lock.version !== 1) return false;
-  const entries = Array.isArray(lock.sources) ? lock.sources : plainObject(lock.sources) ? Object.values(lock.sources) : null;
-  return entries !== null && entries.every((entry) => plainObject(entry)
-    && entry.type === 'git' && typeof entry.url === 'string' && entry.url.length > 0
-    && typeof entry.commit === 'string' && /^[0-9a-f]{40,64}$/i.test(entry.commit)
-    && (entry.ref === undefined || typeof entry.ref === 'string'));
-}
-async function fingerprintIfPresent(target) {
-  if (!target) return null;
-  try { await access(target); return await fingerprint(target); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-}
-async function inspectOwnedExposure(ledger, name) {
-  const links = [];
-  for (const linkPath of (ledger?.harnessLinks ?? []).filter((item) => path.basename(item) === name).sort()) {
-    try {
-      const stat = await lstat(linkPath);
-      links.push({ path: linkPath, kind: stat.isSymbolicLink() ? 'symlink' : 'other', target: stat.isSymbolicLink() ? await readlink(linkPath) : null });
-    } catch (error) {
-      if (error.code === 'ENOENT') links.push({ path: linkPath, kind: 'missing', target: null });
-      else throw error;
-    }
-  }
-  const settings = [];
-  for (const entry of (ledger?.harnessSettings ?? []).filter((item) => item?.skill === name || item?.name === name)) {
-    const settingsPath = entry.settingsPath ?? entry.path;
-    settings.push({ ...entry, liveFingerprint: typeof settingsPath === 'string' ? await fingerprintIfPresent(settingsPath) : null });
-  }
-  return {
-    digest: digest({ links, settings }),
-    complete: links.every((item) => item.kind === 'symlink')
-      && settings.every((item) => item.liveFingerprint !== null),
-  };
-}
-function unavailableCode(error) {
-  if (error?.code === 'ENOENT') return 'missing-content';
-  if (error?.code === 'EACCES' || error?.code === 'EPERM') return 'permission-denied';
-  if (error?.code === 'source-unavailable') return 'source-unavailable';
-  return 'incomplete-evidence';
-}
 function absoluteHome(home) {
   if (typeof home !== 'string' || !path.isAbsolute(home)) throw new TypeError('management home must be an absolute path');
   return path.resolve(home);
 }
-function digest(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function timestamp(runtime) { return new Date(runtime.now()).toISOString(); }
-function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function retainedInventoryRevisions(state) {
   return [state.revision, ...state.receipts.map((item) => item.result?.result?.snapshot?.revision)
     .filter((item) => Number.isSafeInteger(item))];
