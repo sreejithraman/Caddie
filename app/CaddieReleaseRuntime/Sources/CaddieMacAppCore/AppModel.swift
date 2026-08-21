@@ -7,6 +7,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var snapshot: AppSnapshot = .empty
     @Published public private(set) var inventoryPresentation = SkillInventoryPresentation(snapshot: .empty)
     @Published public private(set) var isRunningCycle = false
+    @Published public private(set) var updatingSelectionIDs: Set<String> = []
     @Published public private(set) var lastError: String?
     @Published public private(set) var loginItemStatus: SMAppService.Status
     @Published public private(set) var notificationsEnabled: Bool
@@ -226,7 +227,13 @@ public final class AppModel: ObservableObject {
 
     public func update(selectionID: String) async {
         guard !isPreview else { return }
+        guard updatingSelectionIDs.insert(selectionID).inserted else { return }
+        defer { updatingSelectionIDs.remove(selectionID) }
         await perform(.update(selectionID: selectionID))
+    }
+
+    public func isUpdating(selectionID: String) -> Bool {
+        updatingSelectionIDs.contains(selectionID)
     }
     public func retry(attentionID: String) async {
         guard !isPreview else { return }
