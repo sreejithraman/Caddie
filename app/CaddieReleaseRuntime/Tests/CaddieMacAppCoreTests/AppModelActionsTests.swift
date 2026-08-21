@@ -5,6 +5,33 @@ import XCTest
 
 final class AppModelActionsTests: XCTestCase {
     @MainActor
+    func testUpdatePublishesImmediatePerSelectionProgressAndCoalescesRepeatedClicks() async {
+        let requested = snapshot(pending: [[
+            "id": "action-update", "status": "pending",
+            "intent": ["type": "update-selection", "selectionId": "selection-one"],
+        ]])
+        let tool = SuspendingUpdateTool(requested: requested, invoked: snapshot())
+        let model = AppModel(
+            client: tool, defaults: UserDefaults(suiteName: "UpdateProgress-\(UUID().uuidString)")!,
+            loginItem: TestLoginItem(), notifications: RecordingNotifications(), workspace: RecordingWorkspace()
+        )
+
+        let first = Task { @MainActor in await model.update(selectionID: "selection-one") }
+        await tool.waitUntilRequestStarts()
+        XCTAssertTrue(model.isUpdating(selectionID: "selection-one"))
+
+        let second = Task { @MainActor in await model.update(selectionID: "selection-one") }
+        for _ in 0..<10 { await Task.yield() }
+        let requestCount = await tool.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        await tool.resumeFirstRequest()
+        await first.value
+        await second.value
+        XCTAssertFalse(model.isUpdating(selectionID: "selection-one"))
+    }
+
+    @MainActor
     func testNotificationOptInDeliversOnceAndReportsRetriedEffect() async throws {
         let item = attention()
         let effect = notificationEffect()
@@ -382,6 +409,42 @@ private actor ActionTool: ToolCalling {
     func waitForReportCount(_ target: Int) async {
         if effects.count >= target { return }
         await withCheckedContinuation { effectWaiters.append((target, $0)) }
+    }
+}
+
+private actor SuspendingUpdateTool: ToolCalling {
+    let requested: AppSnapshot
+    let invoked: AppSnapshot
+    private var requests = 0
+    private var requestContinuation: CheckedContinuation<Void, Never>?
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(requested: AppSnapshot, invoked: AppSnapshot) {
+        self.requested = requested
+        self.invoked = invoked
+    }
+
+    func status() async throws -> AppSnapshot { invoked }
+    func cycle(_ cycle: ScheduledCycle) async throws -> AppSnapshot { invoked }
+    func request(_ intent: AppActionIntent) async throws -> AppSnapshot {
+        requests += 1
+        requestWaiters.forEach { $0.resume() }
+        requestWaiters = []
+        if requests == 1 {
+            await withCheckedContinuation { requestContinuation = $0 }
+        }
+        return requested
+    }
+    func invoke(actionID: String, extendedTimeout: Bool) async throws -> AppSnapshot { invoked }
+    func report(effectID: String, outcome: AppEffectOutcome) async throws -> AppSnapshot { invoked }
+    func requestCount() -> Int { requests }
+    func waitUntilRequestStarts() async {
+        if requests > 0 { return }
+        await withCheckedContinuation { requestWaiters.append($0) }
+    }
+    func resumeFirstRequest() {
+        requestContinuation?.resume()
+        requestContinuation = nil
     }
 }
 

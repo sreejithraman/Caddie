@@ -230,17 +230,27 @@ private struct CaddieOverview: View {
             if !presentation.readySkills.isEmpty {
                 Section("Updates available") {
                     ForEach(presentation.readySkills.prefix(5)) { item in
-                        LabeledContent {
-                            Button("Update") { Task { await model.update(selectionID: item.work.selectionId) } }
-                                .disabled(model.isPreview)
-                        } label: {
+                        let isUpdating = model.isUpdating(selectionID: item.work.selectionId)
+                        HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Label(item.name, systemImage: "arrow.down.circle")
                                 if let source = item.sourceName {
                                     Text("From \(source)").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
+                            Spacer()
+                            Button {
+                                Task { await model.update(selectionID: item.work.selectionId) }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if isUpdating { ProgressView().controlSize(.small) }
+                                    Text(isUpdating ? "Updating…" : "Update")
+                                }
+                            }
+                            .disabled(model.isPreview || isUpdating)
+                            .accessibilityLabel(isUpdating ? "Updating \(item.name)" : "Update \(item.name)")
                         }
+                        .accessibilityElement(children: .contain)
                     }
                     Button("Review updates in User Skills") { selectPage(.userSkills) }
                 }
