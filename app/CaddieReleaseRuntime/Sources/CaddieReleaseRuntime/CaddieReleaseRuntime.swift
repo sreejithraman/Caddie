@@ -51,7 +51,7 @@ public actor CaddieReleaseRuntime {
     ) async throws -> ToolLaunchRecord {
         try prepareRoots()
         let manifest = try readManifest(at: source)
-        try validateManifest(manifest)
+        try ReleaseManifestRules.validateManifest(manifest)
         guard !lifecycleOperationInProgress else { throw ReleaseRuntimeFault.lifecycleClaimBusy }
         lifecycleOperationInProgress = true
         defer { lifecycleOperationInProgress = false }
@@ -86,7 +86,7 @@ public actor CaddieReleaseRuntime {
             try observeStep(.promotedRelease)
 
             try verify(manifest, in: destination)
-            let binding = absoluteBinding(manifest, releaseRoot: destination)
+            let binding = ReleaseManifestRules.absoluteBinding(manifest, releaseRoot: destination)
             try verify(binding)
             do { try await statusCheck(binding) } catch {
                 throw ReleaseRuntimeFault.statusCheckFailed(String(describing: error))
@@ -278,27 +278,12 @@ public actor CaddieReleaseRuntime {
         catch { throw ReleaseRuntimeFault.malformedManifest }
     }
 
-    private func validateManifest(_ manifest: CaddieReleaseManifest) throws {
-        guard manifest.version == 1 else { throw ReleaseRuntimeFault.unsupportedManifestVersion(manifest.version) }
-        let idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-        guard manifest.releaseID.wholeMatch(of: idPattern) != nil else { throw ReleaseRuntimeFault.invalidReleaseID }
-        guard manifest.compatibility == .caddieCurrent else {
-            throw ReleaseRuntimeFault.incompatibleRelease("the required protocol or state range is absent")
-        }
-        for artifact in [manifest.app, manifest.node, manifest.tool, manifest.skill] {
-            guard !artifact.version.isEmpty, artifact.fingerprint.wholeMatch(of: /^[a-f0-9]{64}$/) != nil else {
-                throw ReleaseRuntimeFault.malformedManifest
-            }
-            _ = try safeRelativePath(artifact.path)
-        }
-    }
-
     private func verify(_ manifest: CaddieReleaseManifest, in root: URL) throws {
-        try validateManifest(manifest)
+        try ReleaseManifestRules.validateManifest(manifest)
         for (name, artifact) in [("app", manifest.app), ("Node", manifest.node), ("Tool", manifest.tool), ("Skill", manifest.skill)] {
-            let url = root.appendingPathComponent(try safeRelativePath(artifact.path))
+            let url = root.appendingPathComponent(try ReleaseManifestRules.safeRelativePath(artifact.path))
             guard fileManager.fileExists(atPath: url.path) else { throw ReleaseRuntimeFault.missingArtifact(name) }
-            let relative = try safeRelativePath(artifact.path)
+            let relative = try ReleaseManifestRules.safeRelativePath(artifact.path)
             let canonicalRoot = root.resolvingSymlinksInPath()
             guard url.resolvingSymlinksInPath() == canonicalRoot.appendingPathComponent(relative).standardizedFileURL else {
                 throw ReleaseRuntimeFault.symbolicLinkArtifact(name)
@@ -347,35 +332,6 @@ public actor CaddieReleaseRuntime {
                 throw ReleaseRuntimeFault.fingerprintMismatch(name)
             }
         }
-    }
-
-    private func absoluteBinding(_ manifest: CaddieReleaseManifest, releaseRoot: URL) -> ToolReleaseBinding {
-        func bind(_ artifact: ReleaseArtifact) -> ReleaseArtifact {
-            ReleaseArtifact(
-                version: artifact.version,
-                path: releaseRoot.appendingPathComponent(artifact.path).standardizedFileURL.path,
-                fingerprint: artifact.fingerprint
-            )
-        }
-        return ToolReleaseBinding(
-            releaseID: manifest.releaseID,
-            releasePath: releaseRoot.standardizedFileURL.path,
-            node: bind(manifest.node),
-            tool: bind(manifest.tool),
-            skill: bind(manifest.skill),
-            compatibility: manifest.compatibility
-        )
-    }
-
-    private func safeRelativePath(_ value: String) throws -> String {
-        let components = value.split(separator: "/", omittingEmptySubsequences: false)
-        let path = NSString(string: value).standardizingPath
-        guard !value.isEmpty, !value.hasPrefix("/"),
-              !components.contains(where: { $0 == ".." || $0 == "." || $0.isEmpty }),
-              path != ".", path != "..", !path.hasPrefix("../") else {
-            throw ReleaseRuntimeFault.invalidArtifactPath(value)
-        }
-        return path
     }
 
     private func readLaunchRecord() throws -> ToolLaunchRecord {

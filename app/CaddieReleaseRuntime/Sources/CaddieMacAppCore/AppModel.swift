@@ -300,24 +300,26 @@ public final class AppModel: ObservableObject {
                 return
             }
             var current = snapshot
-            var effect = matchingHandoffEffect(in: current, attentionID: attentionID, provider: provider)
+            var effect = AppEffectSelection.handoffEffect(
+                in: current, attentionID: attentionID, provider: provider
+            )
             if effect == nil {
-                var action = current.pendingActions.first(where: {
-                    $0.intent.type == "agent-handoff" && $0.intent.attentionId == attentionID
-                        && $0.intent.provider == provider.rawValue
-                })
+                var action = AppEffectSelection.pendingHandoffAction(
+                    in: current, attentionID: attentionID, provider: provider
+                )
                 if action == nil {
                     current = try await client.request(.handoff(attentionID: attentionID, provider: provider))
                     accept(current)
-                    action = current.pendingActions.first(where: {
-                        $0.intent.type == "agent-handoff" && $0.intent.attentionId == attentionID
-                            && $0.intent.provider == provider.rawValue
-                    })
+                    action = AppEffectSelection.pendingHandoffAction(
+                        in: current, attentionID: attentionID, provider: provider
+                    )
                 }
                 guard let action else { throw AppActionFault.missingPendingAction }
                 current = try await client.invoke(actionID: action.id, extendedTimeout: false)
                 accept(current)
-                effect = matchingHandoffEffect(in: current, attentionID: attentionID, provider: provider)
+                effect = AppEffectSelection.handoffEffect(
+                    in: current, attentionID: attentionID, provider: provider
+                )
             }
             guard let effect, let folder = effect.workFolder, let prompt = effect.prompt else {
                 throw AppActionFault.missingOutsideEffect
@@ -338,14 +340,6 @@ public final class AppModel: ObservableObject {
             if outcome == .opened { openedHandoffs[handoffKey] = effect }
             clearError(ifUnchangedSince: priorErrorRevision)
         } catch { showError(readable(error)) }
-    }
-
-    private func matchingHandoffEffect(
-        in snapshot: AppSnapshot, attentionID: String, provider: AgentProvider
-    ) -> AppSnapshot.OutsideEffect? {
-        snapshot.outsideEffects.first {
-            $0.kind == "agent-handoff" && $0.attentionId == attentionID && $0.provider == provider.rawValue
-        }
     }
 
     private func perform(_ intent: AppActionIntent) async {
@@ -462,7 +456,7 @@ public final class AppModel: ObservableObject {
     private func drainEffects() async {
         while !Task.isCancelled && notificationsEnabled && effectDrainDirty {
             effectDrainDirty = false
-            guard let (effect, item) = nextNotification() else { continue }
+            guard let (effect, item) = AppEffectSelection.nextNotification(in: snapshot) else { continue }
             let outcome: AppEffectOutcome
             if isMuted(item) { outcome = .unavailable }
             else if notificationPreferences.wasDelivered(effect.id) { outcome = .delivered }
@@ -486,15 +480,6 @@ public final class AppModel: ObservableObject {
         }
         effectDrainTask = nil
         if effectDrainDirty { scheduleEffectDrain() }
-    }
-
-    private func nextNotification() -> (AppSnapshot.OutsideEffect, AppSnapshot.Attention)? {
-        for effect in snapshot.outsideEffects where effect.kind == "notification" && effect.outcome == nil {
-            guard let id = effect.attentionId,
-                  let item = (snapshot.attention + snapshot.recentAttention).first(where: { $0.id == id }) else { continue }
-            return (effect, item)
-        }
-        return nil
     }
 
     private func readable(_ error: Error) -> String {
