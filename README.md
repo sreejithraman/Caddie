@@ -6,12 +6,17 @@ It is designed to give an agent a bird's-eye view of a user's skill environment:
 
 ## Status
 
-Caddie v1 is under active implementation.
+Caddie's current Tool management interface is protocol 2. The Caddie Mac App
+uses its `status`, `cycle`, and `act` contract. The checked-in Caddie Skill still
+uses the protocol 1 compatibility interface. See [the protocol](docs/protocol.md)
+for its support term.
 
 - [Caddie v1 specification](https://github.com/sreejithraman/Caddie/issues/1)
-- [First implementation ticket](https://github.com/sreejithraman/Caddie/issues/2)
+- [Caddie Mac App specification](docs/caddie-mac-app-v1.md)
 
-The specification and its tracer-bullet tickets remain the baseline v1 product requirements. Repository architecture decisions record accepted changes and supersede only the requirements they identify.
+The original v1 specification remains product history and covers the
+compatibility interface. The Mac app specification and repository architecture
+decisions define current behavior where they state a change.
 
 ## Intended experience
 
@@ -38,15 +43,20 @@ Caddie is an Agent App. Users interact through the Caddie Skill, which directs t
 - Leave ordinary repository authoring, worktrees, commits, and pull requests to the hosting agent.
 - Keep desired state, resolved state, and expensive semantic decisions durable; compute routine reports live.
 
-The v1 specification remains the baseline; see [the architecture decisions](docs/adr/) for accepted changes.
+See [the architecture decisions](docs/adr/) for accepted changes to the
+original specification.
 
 ## Caddie Tool
 
-The deterministic tool accepts one versioned JSON request on standard input:
+The deterministic Tool accepts one versioned JSON request on standard input.
+The main management interface uses Tool protocol 2:
 
 ```sh
-printf '%s\n' '{"version":1,"operation":"locate","input":{"cwd":"/path/to/project"}}' | node bin/caddie-tool.mjs
+printf '%s\n' '{"version":2,"requestId":"read-status","caller":"skill","operation":"status","input":{}}' | node bin/caddie-tool.mjs
 ```
+
+Tool protocol 1 still accepts the checked-in Skill's fixed operations. It does
+not define new management work.
 
 The self-contained Caddie Skill source is in `skills/caddie`. `.agents/skills` is reserved for installed User Skills and Project Skills, not source-repository organization. Bootstrap is the only intended human-facing shell action; normal management remains conversational and approval-gated.
 
