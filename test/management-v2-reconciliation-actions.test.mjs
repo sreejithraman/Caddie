@@ -133,6 +133,55 @@ test('a wrong checkout branch pauses but does not cancel the approved-branch gra
   assert.equal(applied.result.snapshot.attention.some((item) => item.code === 'wrong-branch'), false);
 });
 
+test('manual update returns a current snapshot and a repeated update is a proved no-op', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+  const selectionId = 'authored:skills/one';
+  const baseline = await management.execute(cycleRequest('observe-only', 'manual-update-baseline'));
+  assert.equal(baseline.result.snapshot.readyWork.length, 0);
+  await writeSkill(path.join(fixture.repo, 'skills', 'one'), 'one', 'manual update');
+  await git(fixture.repo, 'add', 'skills/one');
+  await git(fixture.repo, 'commit', '-m', 'manual update');
+
+  const observed = await management.execute(cycleRequest('observe-only', 'manual-update-observe'));
+  assert.equal(observed.result.snapshot.readyWork.some((item) => item.selectionId === selectionId), true);
+  assert.equal(observed.result.snapshot.readyWork[0].kind, 'manual-update');
+  const requested = await management.execute(actRequest(
+    { type: 'update-selection', selectionId },
+    'manual-update-request',
+  ));
+  const action = requested.result.snapshot.pendingActions.find((item) =>
+    item.intent.type === 'update-selection' && item.intent.selectionId === selectionId);
+  const updated = await management.execute(actInvoke(action.id, 'manual-update-invoke'));
+
+  assert.equal(await readFile(path.join(fixture.installed.one, 'body.txt'), 'utf8'), 'manual update\n');
+  assert.equal(updated.result.snapshot.readyWork.some((item) => item.selectionId === selectionId), false);
+  assert.equal(updated.result.snapshot.userSkills.find((item) => item.id === selectionId)?.status, 'current');
+  const repeatedRequest = await management.execute(actRequest(
+    { type: 'update-selection', selectionId },
+    'manual-update-repeat-request',
+  ));
+  const repeatedAction = repeatedRequest.result.snapshot.pendingActions.find((item) =>
+    item.intent.type === 'update-selection' && item.intent.selectionId === selectionId && item.status === 'pending');
+  const repeated = await management.execute(actInvoke(repeatedAction.id, 'manual-update-repeat-invoke'));
+  assert.equal(repeated.result.snapshot.readyWork.length, 0);
+  assert.equal(repeated.result.snapshot.activity.filter((item) => item.kind === 'reconciled').length, 1);
+});
+
+test('manual update request waits for the first completed check', async () => {
+  const fixture = await managedFixture(['one']);
+  const management = createManagementModule({ home: fixture.home });
+
+  await assert.rejects(
+    management.execute(actRequest(
+      { type: 'update-selection', selectionId: 'authored:skills/one' },
+      'manual-update-uninitialized',
+    )),
+    (error) => error instanceof ManagementError && error.code === 'snapshot-uninitialized'
+      && error.disposition === 'retry',
+  );
+});
+
 test('Recovery and verification faults start Reconciliation Pause and require Tool-created actions', async () => {
   const fixture = await managedFixture(['one']);
   const secretPath = '/private/secret/recovery-target';

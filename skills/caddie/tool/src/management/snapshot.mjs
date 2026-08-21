@@ -52,6 +52,27 @@ export function refreshSnapshot(state, at) {
   return prior;
 }
 
+export function refreshSelectionSnapshot(state, selectionStatus, at, inventoryProjection = null) {
+  const snapshot = refreshSnapshot(state, at);
+  snapshot.userSkills = snapshot.userSkills.map((item) => (
+    item.id === selectionStatus.id ? selectionStatus : item
+  ));
+  snapshot.readyWork = snapshot.readyWork.filter((item) => item.selectionId !== selectionStatus.id);
+  snapshot.summary = {
+    ...snapshot.summary,
+    current: snapshot.userSkills.filter((item) => item.status === 'current').length,
+    ready: snapshot.readyWork.length,
+  };
+  snapshot.sources = sourceSummaries(snapshot.userSkills, state.authorizations);
+  if (inventoryProjection) {
+    snapshot.skillInventory = inventoryProjection.skillInventory.map((item) => (
+      item.selectionId === selectionStatus.id ? { ...item, status: selectionStatus.status } : item
+    ));
+    snapshot.projects = inventoryProjection.projects;
+  }
+  return snapshot;
+}
+
 export function uninitializedSnapshot(revision, state = null) {
   return {
     version: 2, state: 'uninitialized', revision, freshness: { checkedAt: null },
