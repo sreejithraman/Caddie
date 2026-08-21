@@ -41,6 +41,7 @@ import {
   compactManagementState,
   publicSelection,
   projectSnapshot,
+  refreshSelectionSnapshot,
   refreshSnapshot,
   snapshotFrom,
   uninitializedSnapshot,
@@ -426,15 +427,23 @@ async function act(state, input, runtime) {
     state.activity.unshift(activity('action-expired', action.subjectId, at, { actionId: action.id }));
     return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
   }
-  const refreshProjects = await invokePendingAction(state, action, runtime, at);
+  const postAction = await invokePendingAction(state, action, runtime, at);
   action.status = 'invoked';
   action.invokedAt = at;
   state.activity.unshift(activity('action-invoked', action.subjectId, at, { actionId: action.id, intent: action.intent.type }));
-  if (refreshProjects) return cycle(state, { mode: 'observe-only', refreshProjects: true }, runtime);
+  if (postAction?.selectionStatus) {
+    return snapshotAfterSelectionUpdate(state, postAction.selectionStatus, runtime, at);
+  }
+  if (postAction) {
+    return cycle(state, { mode: 'observe-only', refreshProjects: postAction.refreshProjects }, runtime);
+  }
   return state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
 }
 
 async function createPendingAction(state, intent, runtime, at) {
+  if (intent.type === 'update-selection' && !state.snapshot) {
+    throw new ManagementError('snapshot-uninitialized', 'Check for updates before requesting an update', 'retry');
+  }
   const id = `action-${hashValue({ intent, revision: state.revision, at }).slice(0, 24)}`;
   const action = {
     version: 2, id, status: 'pending',
@@ -477,7 +486,7 @@ async function invokePendingAction(state, action, runtime, at) {
   const intent = action.intent;
   if (['repair-project-state', 'stop-tracking-project'].includes(intent.type)) {
     await invokeProjectAction(action, runtime.home);
-    return true;
+    return { refreshProjects: true };
   }
   if (['update-selection', 'finish-recovery', 'rollback-recovery'].includes(intent.type)) {
     const prospectiveSnapshot = state.snapshot ? refreshSnapshot(state, at) : uninitializedSnapshot(state.revision, state);
@@ -549,6 +558,9 @@ async function invokePendingAction(state, action, runtime, at) {
     return;
   }
   if (classified.causes.length) throw new ManagementError(classified.causes[0].code, 'Live evidence blocks this update', 'needs-user');
+  if (intent.type === 'update-selection' && !['update', 'manual-update'].includes(classified.ready?.kind)) {
+    return { selectionStatus: publicSelection(selection, 'current') };
+  }
   const applied = await runtime.apply(selection, inventory, runtime);
   const authorization = state.authorizations[selection.id];
   if (authorization) {
@@ -559,6 +571,12 @@ async function invokePendingAction(state, action, runtime, at) {
     advanceSharedBaselines(state, applied);
   }
   state.activity.unshift(activity('reconciled', selection.id, at, { planId: applied.planId ?? null, manual: true }));
+  return { selectionStatus: publicSelection(selection, 'current') };
+}
+
+async function snapshotAfterSelectionUpdate(state, selectionStatus, runtime, at) {
+  const projection = await readInventoryProjection(runtime.inventoryPath, state.revision);
+  return refreshSelectionSnapshot(state, selectionStatus, at, projection);
 }
 
 async function inspectInventory(state, runtime, { onlySelectionId = null, refreshProjects = true } = {}) {

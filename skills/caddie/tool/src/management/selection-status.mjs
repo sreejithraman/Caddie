@@ -73,12 +73,15 @@ export function classifySelection(selection, state, collisions) {
     return { status: 'ready', causes, ready, eligible: authorization.active === true };
   }
   if (!authorization) {
+    if (selection.baselineClean) {
+      return { status: 'current', causes, ready: null, eligible: false };
+    }
     const ready = {
       version: 2,
       id: `ready-${hashValue({ selection: selection.id, fingerprint: selection.inspection.fingerprint }).slice(0, 24)}`,
-      selectionId: selection.id, kind: 'authorization-available', authorized: false,
+      selectionId: selection.id, kind: 'manual-update', authorized: false,
     };
-    return { status: selection.baselineClean ? 'current' : 'ready', causes, ready, eligible: false };
+    return { status: 'ready', causes, ready, eligible: false };
   }
   return { status: 'current', causes, ready: null, eligible: false };
 }
