@@ -1,8 +1,29 @@
 # Caddie Tool protocol
 
-Caddie v1 uses one JSON request on standard input and emits exactly one JSON response envelope on standard output. The protocol version is `1`.
+Caddie's current management interface is Tool protocol 2. The Caddie Mac App
+uses this interface. The checked-in Caddie Skill still uses the protocol 1
+compatibility interface. Both send one JSON request on standard input and
+receive one JSON response on standard output. Diagnostics use standard error.
+
+## Version 2 management interface
+
+The version 2 management module accepts only `status`, `cycle`, and `act`. Each request has `version: 2`, a bounded request ID, caller kind, operation, and bounded operation input. `cycle` and `act` also require an idempotency ID. Reusing that ID with the same request returns the saved result while it remains cached; an older mutating ID fails safely after result compaction. Reusing an ID with different input always fails.
+
+`status` returns the last committed Caddie Snapshot without inspection or a write. It may accept one Tool-issued continuation token to read the next page of one detail list. Changed Snapshots make old tokens stale, and changed token bytes are invalid. `cycle` accepts `observe-only` or `authorized-user-reconciliation`; the Tool still proves which User Skill Selections may change. `act` creates a Tool-owned pending action, invokes one exact approved action, or records one outside effect result. Callers cannot submit paths, Git commands, harness changes, or raw Caddie Plan operations.
+
+The Tool stores the skill inventory and Registered Project summary in `management-v2.json.inventory-v1.json`. Each saved projection binds to a core Snapshot revision, and retained request results keep their needed projections. This adds the richer read model without changing the prior Tool's exact `management-v2.json` state shape.
+
+Recovery plans stay private in Tool state. A public Caddie Snapshot exposes only bounded Recovery status text, opaque action IDs, and public pending-action fields. It never returns Finish or Roll back plans or their operations.
+
+Local Source Inspection binds identity to the exact registered source folder and selected path. When that folder sits inside a Git checkout, inspection runs a fixed set of read-only Git commands from the containing checkout. It proves the branch, commit, ancestry, selected-path state, ignored files, and unrelated dirt. Selected bytes must match committed Git content. It does not fetch, pull, switch, merge, or use a remote. Non-Git local sources and Project Skills remain manual-only.
+
+## Version 1 compatibility interface
+
+Tool protocol 1 accepts one JSON request on standard input and emits exactly one JSON response envelope on standard output. The protocol version is `1`. It remains available for the checked-in Caddie Skill and does not define new management work. Tool protocol 2 is the last Tool version that accepts these requests. Tool protocol 3 must remove this compatibility interface once protocol 2 is the oldest supported Skill contract.
 
 Requests contain `version`, `operation`, and operation-specific input. Supported operations are `locate`, `inspect`, `inspect-source`, `compare`, `plan`, `apply-plan`, and `recover`.
+
+Bounded `inspect-source` evidence includes a deterministic `sha256:` cache reference. When file entries remain, coverage also includes a continuation cursor bound to the exact source fingerprint and the original evidence limits. Continue with the same request and limits plus `cursor`; changed content requires replanning and changed limits are invalid.
 
 `inspect` supports focused Available Skills, explicit bird's-eye, Adoption, `migration`, and `legacy-manager` views. Exact locked Git inspection may retain a content-bound disposable materialization for reconciliation. `plan` supports reconciliation plus `skill-enablement`, `skill-rename`, `adoption`, `unmanagement`, `cleanup`, `state-migration`, and `legacy-manager-cleanup` workflow variants. Every Caddie Plan has a deterministic human-readable `title` and approval prompt for conversation plus an immutable `id` for machine binding. Every mutating `apply-plan` request carries approval bound internally to that exact identifier.
 
@@ -36,17 +57,3 @@ All Caddie mutations at the standard user root, user Claude compatibility root, 
 Migration and legacy-manager cleanup are deliberately separate. `state-migration` is the only workflow allowed to remove the fixed legacy Caddie state root after copying supported state. `legacy-manager-cleanup` is the only workflow allowed to remove `~/.agents/.skill-lock.json`, and only when every entry is proven to be either represented by the current Caddie ledger with an exact installed fingerprint or obsolete because no installation remains. Malformed, conflicting, or unmanaged live entries block removal.
 
 `npm run test:release` is the harness and end-to-end release gate. It requires installed Codex and Claude Code binaries rather than silently skipping harness discovery; the compatibility decision is recorded in [ADR 0001](adr/0001-expose-individual-skills-to-claude.md).
-
-## Version 2 management Interface
-
-The version 2 management module accepts only `status`, `cycle`, and `act`. Each request has `version: 2`, a bounded request ID, caller kind, operation, and bounded operation input. `cycle` and `act` also require an idempotency ID. Reusing that ID with the same request returns the saved result while it remains cached; an older mutating ID fails safely after result compaction. Reusing an ID with different input always fails.
-
-`status` returns the last committed Snapshot without inspection or a write. It may accept one Tool-issued continuation token to read the next page of one detail list. Changed Snapshots make old tokens stale, and changed token bytes are invalid. `cycle` accepts `observe-only` or `authorized-user-reconciliation`; the Tool still proves which User Skill Selections may change. `act` creates a Tool-owned pending action, invokes one exact approved action, or records one outside effect result. Callers cannot submit paths, Git commands, harness changes, or raw Caddie Plan operations.
-
-The Tool stores the skill inventory and registered-project summary in `management-v2.json.inventory-v1.json`. Each saved projection binds to a core Snapshot revision, and retained request results keep their needed projections. This adds the richer read model without changing the prior Tool's exact `management-v2.json` state shape.
-
-Recovery plans stay private in Tool state. A public Snapshot exposes only bounded Recovery status text, opaque action IDs, and public pending-action fields. It never returns Finish or Roll back plans or their operations.
-
-Local Source Inspection binds identity to the exact registered source folder and selected path. When that folder sits inside a Git checkout, inspection runs a fixed set of read-only Git commands from the containing checkout. It proves the branch, commit, ancestry, selected-path state, ignored files, and unrelated dirt. Selected bytes must match committed Git content. It does not fetch, pull, switch, merge, or use a remote. Non-Git local sources and Project Skills remain manual-only.
-
-Bounded `inspect-source` evidence includes a deterministic `sha256:` cache reference. When file entries remain, coverage also includes a continuation cursor bound to the exact source fingerprint and the original evidence limits. Continue with the same request and limits plus `cursor`; changed content requires replanning and changed limits are invalid.
